@@ -9,6 +9,7 @@ otomatik algılanıyor.
 
 import json
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -21,8 +22,17 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 def _find_backend_exe() -> Path:
     """Windows'ta .exe uzantılı, Linux/macOS'ta uzantısız üretildiği için
-    ikisini de dener (bkz. backend/tests/run_tests.py'deki aynı mantık)."""
-    build_dir = Path(__file__).resolve().parent.parent / "backend" / "build"
+    ikisini de dener (bkz. backend/tests/run_tests.py'deki aynı mantık).
+
+    PyInstaller ile paketlenmiş haldeyken (`sys.frozen`) backend.exe, spec
+    dosyasındaki `binaries` girdisiyle ana .exe'yle aynı klasöre kopyalanıyor;
+    geliştirme ortamında ise CMake'in ürettiği `backend/build/` kullanılıyor.
+    """
+    if getattr(sys, "frozen", False):
+        build_dir = Path(sys.executable).resolve().parent
+    else:
+        build_dir = Path(__file__).resolve().parent.parent / "backend" / "build"
+
     for name in ("power_log_backend.exe", "power_log_backend"):
         candidate = build_dir / name
         if candidate.exists():
@@ -181,15 +191,19 @@ class App(ctk.CTk):
 
     def _on_load_file_click(self):
         """Dosya seçme penceresini açar; sadece .bin ve .ulog dosyalarını listeler."""
+        dialog_kwargs = {}
+        if DATA_DIR.exists():  # paketlenmiş dağıtımda örnek data/ klasörü bulunmaz
+            dialog_kwargs["initialdir"] = str(DATA_DIR)
+
         file_path = filedialog.askopenfilename(
             title="Log Dosyası Seç",
-            initialdir=str(DATA_DIR),
             filetypes=[
                 ("Uçuş logları", "*.bin *.ulog"),
                 ("ArduPilot log (.bin)", "*.bin"),
                 ("PX4 log (.ulog)", "*.ulog"),
                 ("Tüm dosyalar", "*.*"),
             ],
+            **dialog_kwargs,
         )
         if not file_path:
             return
