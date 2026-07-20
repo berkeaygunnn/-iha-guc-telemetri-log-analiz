@@ -84,6 +84,16 @@ class SyntheticLogTests(unittest.TestCase):
         motor3 = motor_by_id(data, 3)
         self.assertAlmostEqual(motor3["current_a"][5], 8.25, places=3)  # 30/4*1.1
 
+        # motor_factors = [0.8, 0.95, 1.1, 1.25] -> genel ortalama 1.025.
+        # motor1 (%-22) ve motor4 (%+22) dengesizlik eşiğini (%20) aşıyor,
+        # motor2/motor3 (%±7) aşmıyor. Her iki batarya da sadece ~%9 voltaj
+        # düşümü içeriyor (eşik %15), yani voltaj uyarısı beklenmiyor.
+        warnings = data["warnings"]
+        self.assertEqual(len(warnings), 2)
+        self.assertTrue(any("Motor 1" in w for w in warnings))
+        self.assertTrue(any("Motor 4" in w for w in warnings))
+        self.assertFalse(any("Batarya" in w for w in warnings))
+
     def test_ardupilot_synthetic(self):
         with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
             f.write(make_synthetic_log.generate())
@@ -105,6 +115,37 @@ class SyntheticLogTests(unittest.TestCase):
             path.unlink(missing_ok=True)
 
 
+class WarningRuleTests(unittest.TestCase):
+    """Kural tabanlı uyarı motorunun (computeWarnings) voltaj-düşümü kuralı
+    için ayrı, bilerek büyük bir düşüş içeren küçük bir fixture ile testi.
+    make_synthetic_log.generate()'in ana profili (motor dengesizliği testinde
+    kullanılıyor) kasten değiştirilmiyor; bunun yerine aynı dosyanın export
+    ettiği alt düzey yapı taşları (build_fmt_message/build_bat_message) ile
+    tek amaçlı, minimal bir buffer kuruluyor."""
+
+    def _generate_voltage_sag_log(self) -> bytes:
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 10.0)
+        out += make_synthetic_log.build_bat_message(1.0, 0, 12.0, 10.0)  # ~%29 düşüş (eşik %15)
+        return bytes(out)
+
+    def test_voltage_sag_warning_triggers(self):
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(self._generate_voltage_sag_log())
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            self.assertEqual(len(data["batteries"]), 1)
+            warnings = data["warnings"]
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("Batarya 1", warnings[0])
+        finally:
+            path.unlink(missing_ok=True)
+
+
 class RealLogRegressionTests(unittest.TestCase):
     """Gerçek örnek loglarla önceden doğrulanmış değerlere karşı regresyon çapası."""
 
@@ -114,18 +155,21 @@ class RealLogRegressionTests(unittest.TestCase):
         self.assertEqual(len(data["batteries"]), 1)
         self.assertEqual(len(data["batteries"][0]["time_s"]), 960)
         self.assertEqual(len(data["motors"]), 4)
+        self.assertIsInstance(data["warnings"], list)
 
     def test_ardupilot_real_idle(self):
         data = run_backend(DATA_DIR / "ArduCopter-SensorErrorFlags-00000012.BIN")
         self.assertEqual(data["meta"]["format"], "ardupilot")
         self.assertEqual(len(data["batteries"]), 1)
         self.assertEqual(len(data["batteries"][0]["time_s"]), 9)
+        self.assertIsInstance(data["warnings"], list)
 
     def test_px4_real_multi_battery(self):
         data = run_backend(DATA_DIR / "px4_sample_log_small.ulg")
         self.assertEqual(data["meta"]["format"], "px4")
         self.assertEqual(len(data["batteries"]), 2)  # bu logda gercekten 2 farkli guc kaynagi var
         self.assertEqual(len(data["motors"]), 0)  # bu logda esc_status hic loglanmamis
+        self.assertIsInstance(data["warnings"], list)
 
 
 if __name__ == "__main__":

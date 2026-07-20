@@ -68,7 +68,8 @@ TEXT_SECONDARY = "#c3c2b7"
 TEXT_MUTED = "#898781"
 GRIDLINE = "#2c2c2a"
 AXIS_LINE = "#383835"
-COLOR_CRITICAL = "#d03b3b"  # durum paleti: kritik/hata
+COLOR_CRITICAL = "#d03b3b"  # durum paleti: kritik/hata (backend hatası)
+COLOR_WARNING = "#d9a334"   # durum paleti: uyarı (backend'in kural tabanlı yorumları)
 
 # Birden fazla batarya/motor olduğunda her birine sabit sırada, kategorik bir
 # renk atamak için (kategori kimliği). Bir bataryanın voltaj ve akım çizgisi
@@ -99,6 +100,7 @@ class App(ctk.CTk):
 
         self._build_toolbar()
         self._build_stats_row()
+        self._build_warnings_area()
         self._build_status_label()
         self._build_motor_view_toggle()
         self._build_plot_area()
@@ -164,6 +166,21 @@ class App(ctk.CTk):
             )
             value_label.pack(anchor="w")
             self.stat_labels[key] = value_label
+
+    def _build_warnings_area(self):
+        """Backend'in kural tabanlı ürettiği uyarıları (ör. aşırı voltaj düşümü,
+        motor akım dengesizliği) gösteren satır. Uyarı yoksa boş kalır, ekstra
+        yer kaplamaz."""
+        self.warnings_label = ctk.CTkLabel(
+            self, text="", text_color=COLOR_WARNING, justify="left", anchor="w"
+        )
+        self.warnings_label.pack(side="top", fill="x", padx=16, pady=(0, 4))
+
+    def _update_warnings(self, warnings: list):
+        if not warnings:
+            self.warnings_label.configure(text="")
+            return
+        self.warnings_label.configure(text="\n".join(f"⚠ {message}" for message in warnings))
 
     def _build_status_label(self):
         """Hata mesajları için ayrı bir durum satırı (dosya etiketiyle karışmasın diye)."""
@@ -264,6 +281,7 @@ class App(ctk.CTk):
         biri kendi rengiyle (iki panelde de aynı renk) çizilir."""
         batteries = data.get("batteries", [])
         self._update_stats(batteries)
+        self._update_warnings(data.get("warnings", []))
 
         self.ax_voltage.clear()
         self._style_axes(self.ax_voltage, "Voltaj (V)")
