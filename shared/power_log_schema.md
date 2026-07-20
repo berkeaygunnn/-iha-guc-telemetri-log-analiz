@@ -28,12 +28,27 @@ Birden fazla batarya ya da motor olabileceği için ikisi de dizi.
       "time_s": [number, ...],
       "current_a": [number, ...] // o motorun çektiği akım
     }
-  ]
+  ],
+  "warnings": [string, ...]  // kural tabanlı, hazır gösterilecek uyarı cümleleri (bkz. aşağı)
 }
 ```
 
 Kural: her `time_s` dizisiyle eşleştiği veri dizisi (`voltage_v`,
 `current_a`, ...) her zaman aynı uzunlukta olmalı.
+
+## `warnings` alanı
+
+Backend, basit eşik tabanlı kurallarla (yapay zeka/ML yok) otomatik uyarı
+cümleleri üretir; frontend bunları olduğu gibi gösterir. v1 kapsamındaki
+kurallar (bkz. `backend/src/main.cpp` içindeki `computeWarnings`):
+
+- **Voltaj düşümü**: bir bataryanın ilk örnek voltajına göre en düşük voltajı
+  %15 veya daha fazla düştüyse uyarı üretilir.
+- **Motor akım dengesizliği**: bir motorun ortalama akımı, tüm motorların
+  ortalamalarının genel ortalamasından %20 veya daha fazla saparsa uyarı üretilir.
+
+Uyarı yoksa dizi boş (`[]`) döner. Eşikler `main.cpp`'de adlandırılmış sabitler;
+gerçek uçuş verisiyle kalibre edilene kadar başlangıç değerleridir.
 
 Örnek dosya: `power_log_example.json` — backend'in gerçek ArduPilot/PX4
 loglarından ürettiği JSON da bu yapıya uyar.

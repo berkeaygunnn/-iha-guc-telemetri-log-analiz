@@ -604,6 +604,15 @@ void writeNumberArray(std::ostream& out, const std::vector<double>& values) {
     out << "]";
 }
 
+void writeStringArray(std::ostream& out, const std::vector<std::string>& values) {
+    out << "[";
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) out << ", ";
+        writeJsonString(out, values[i]);
+    }
+    out << "]";
+}
+
 void writeMotors(std::ostream& out, const std::map<int, std::vector<MotorSamplePoint>>& motors) {
     out << "  \"motors\": [\n";
     size_t written = 0;
@@ -666,6 +675,77 @@ double computeDuration(const std::map<int, std::vector<BatterySamplePoint>>& bat
     return duration;
 }
 
+// Kural tabanlı otomatik yorumlama eşikleri: gerçek loglarla kalibre edilene
+// kadar makul başlangıç değerleri (CLAUDE.md'deki "gelecek özellikler" notu).
+constexpr double VOLTAGE_SAG_WARNING_THRESHOLD = 0.15;          // ilk voltaja göre %15 düşüş
+constexpr double MOTOR_CURRENT_IMBALANCE_THRESHOLD = 0.20;      // motorlar arası genel ortalamadan %20 sapma
+
+// Yüzdeyi tam sayıya yuvarlar (ekstra <cmath> bağımlılığı almamak için elle).
+int roundToPercent(double ratio) {
+    return static_cast<int>(ratio * 100.0 + 0.5);
+}
+
+// Batarya voltaj düşümü ve motor akım dengesizliği için basit, eşik tabanlı
+// kurallar uygulayıp insan-okunur uyarı metinleri üretir. Yapay zeka/ML
+// gerektirmez; ileride bu fonksiyonun yerini alacak bir model gelirse burası
+// değiştirilir (bkz. CLAUDE.md "Gelecek özellikler").
+std::vector<std::string> computeWarnings(const ParsedLog& log) {
+    std::vector<std::string> warnings;
+
+    for (const auto& entry : log.batteries) {
+        const std::vector<BatterySamplePoint>& points = entry.second;
+        if (points.empty()) continue;
+
+        double first = points.front().voltage_v;
+        double minVoltage = first;
+        for (const auto& point : points) {
+            if (point.voltage_v < minVoltage) minVoltage = point.voltage_v;
+        }
+        if (first <= 0.0) continue;  // bozuk/eksik veri; oran anlamsız olur
+
+        double sagRatio = (first - minVoltage) / first;
+        if (sagRatio >= VOLTAGE_SAG_WARNING_THRESHOLD) {
+            std::ostringstream msg;
+            msg << "Batarya " << entry.first << ": voltaj %" << roundToPercent(sagRatio)
+                << " düştü (" << first << "V → " << minVoltage << "V)";
+            warnings.push_back(msg.str());
+        }
+    }
+
+    if (!log.motors.empty()) {
+        std::map<int, double> motorAverages;
+        for (const auto& entry : log.motors) {
+            const std::vector<MotorSamplePoint>& points = entry.second;
+            if (points.empty()) continue;
+            double sum = 0.0;
+            for (const auto& point : points) sum += point.current_a;
+            motorAverages[entry.first] = sum / static_cast<double>(points.size());
+        }
+
+        if (!motorAverages.empty()) {
+            double overallMean = 0.0;
+            for (const auto& entry : motorAverages) overallMean += entry.second;
+            overallMean /= static_cast<double>(motorAverages.size());
+
+            if (overallMean > 0.0) {
+                for (const auto& entry : motorAverages) {
+                    double deviation = (entry.second - overallMean) / overallMean;
+                    if (deviation >= MOTOR_CURRENT_IMBALANCE_THRESHOLD ||
+                        deviation <= -MOTOR_CURRENT_IMBALANCE_THRESHOLD) {
+                        std::ostringstream msg;
+                        msg << "Motor " << entry.first << ": ortalama akımı diğer motorlardan %"
+                            << roundToPercent(deviation < 0 ? -deviation : deviation)
+                            << (deviation > 0 ? " daha fazla" : " daha az");
+                        warnings.push_back(msg.str());
+                    }
+                }
+            }
+        }
+    }
+
+    return warnings;
+}
+
 // Basarili olursa (en az bir batarya bulunduysa) true doner.
 bool writePowerLogJson(const std::string& inputLogPath, const std::string& outputPath) {
     ParsedLog parsed = parseLog(inputLogPath);
@@ -677,6 +757,7 @@ bool writePowerLogJson(const std::string& inputLogPath, const std::string& outpu
     }
 
     double duration_s = computeDuration(parsed.batteries);
+    std::vector<std::string> warnings = computeWarnings(parsed);
 
     out << "{\n";
     out << "  \"meta\": {\n";
@@ -691,10 +772,12 @@ bool writePowerLogJson(const std::string& inputLogPath, const std::string& outpu
     writeBatteries(out, parsed.batteries);
     out << ",\n";
     writeMotors(out, parsed.motors);
+    out << ",\n  \"warnings\": ";
+    writeStringArray(out, warnings);
     out << "\n}\n";
 
     std::cout << "JSON yazildi: " << outputPath << " (" << parsed.format << ", " << parsed.batteries.size()
-              << " batarya, " << parsed.motors.size() << " motor)" << std::endl;
+              << " batarya, " << parsed.motors.size() << " motor, " << warnings.size() << " uyari)" << std::endl;
 
     if (parsed.batteries.empty()) {
         std::cerr << "Uyari: dosyada batarya verisi bulunamadi. Desteklenmeyen ya da bozuk "

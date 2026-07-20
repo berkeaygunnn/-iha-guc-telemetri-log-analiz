@@ -49,6 +49,12 @@ class SmokeTests(unittest.TestCase):
         self.app.motor_view_toggle.set("Çizgi Grafiği")
         self.app._on_motor_view_change("Çizgi Grafiği")
 
+    def test_synthetic_bin_shows_motor_imbalance_warnings(self):
+        self._load_and_plot("synthetic_test_log.BIN")
+        warnings_text = self.app.warnings_label.cget("text")
+        self.assertIn("Motor 1", warnings_text)
+        self.assertIn("Motor 4", warnings_text)
+
 
 if __name__ == "__main__":
     unittest.main()
