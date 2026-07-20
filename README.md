@@ -16,6 +16,8 @@ log dosyalarını okuyup; batarya voltaj düşümünü (voltage sag) ve motor/ES
   (ortak zaman eksenini paylaşarak) çizilir.
 - Motor paneli, çizgi grafiği ile motor × zaman ısı haritası arasında tek
   tıkla geçiş yapabiliyor.
+- Birden fazla batarya (ör. ana + yedek güç kaynağı) ayrı ayrı, tutarlı
+  renklerle voltaj/akım panellerinde gösterilir.
 
 ## Mimari
 
@@ -62,7 +64,7 @@ loglardan birini (ya da kendi `.bin`/`.ulog` dosyanı) seç.
 - [x] PX4 `.ulog` parser'ı (batarya + motor/ESC)
 - [x] Gerçek ve sentetik loglarla uçtan uca test
 - [x] Güç dağıtım (busbar) ısı haritası
-- [ ] Birden fazla batarya desteği
+- [x] Birden fazla batarya desteği
 
 ## Lisans
 

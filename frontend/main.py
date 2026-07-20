@@ -35,18 +35,18 @@ TEXT_SECONDARY = "#c3c2b7"
 TEXT_MUTED = "#898781"
 GRIDLINE = "#2c2c2a"
 AXIS_LINE = "#383835"
-COLOR_VOLTAGE = "#3987e5"   # kategorik slot 1 (mavi)
-COLOR_CURRENT = "#e66767"   # kategorik slot 8 (kırmızı)
 COLOR_CRITICAL = "#d03b3b"  # durum paleti: kritik/hata
 
-# Motor akımı paneli için kategorik slotlar (sabit sırada, kategori kimliği).
-# Motor sayısı 4'ü geçerse (hexa/octo) baştan sarılır.
-MOTOR_COLORS = ["#3987e5", "#008300", "#d55181", "#c98500"]
+# Birden fazla batarya/motor olduğunda her birine sabit sırada, kategorik bir
+# renk atamak için (kategori kimliği). Bir bataryanın voltaj ve akım çizgisi
+# iki farklı panelde de AYNI rengi taşır ki paneller arasında göz takibiyle
+# eşleştirilebilsin. Sayı 4'ü geçerse (hexa/octo, çoklu batarya) baştan sarılır.
+SERIES_COLORS = ["#3987e5", "#008300", "#d55181", "#c98500"]
 
 # Isı haritası için ardışık (sequential) renk skalası: koyu yüzeyden başlayıp
 # markaya ait maviden geçip açık bir tona çıkar (düşük değer yüzeyde erir,
 # yüksek değer parlar) — koyu temada okunaklı olması için bu yönde.
-MOTOR_HEATMAP_COLORS = ["#141a22", COLOR_VOLTAGE, "#cde2fb"]
+MOTOR_HEATMAP_COLORS = ["#141a22", SERIES_COLORS[0], "#cde2fb"]
 
 
 class App(ctk.CTk):
@@ -212,22 +212,28 @@ class App(ctk.CTk):
             return json.load(f)
 
     def _plot_power_data(self, data: dict):
-        """Batarya voltajı/toplam akımı ve motor akımlarını, ortak zaman
-        eksenini paylaşan panellerde çizer."""
-        battery = data["battery"]
-        time_s = battery["time_s"]
-        voltage_v = battery["voltage_v"]
-        current_a = battery["current_a"]
-
-        self._update_stats(battery)
+        """Her bataryanın voltajı/akımı ve motor akımlarını, ortak zaman
+        eksenini paylaşan panellerde çizer. Birden fazla batarya varsa her
+        biri kendi rengiyle (iki panelde de aynı renk) çizilir."""
+        batteries = data.get("batteries", [])
+        self._update_stats(batteries)
 
         self.ax_voltage.clear()
         self._style_axes(self.ax_voltage, "Voltaj (V)")
-        self.ax_voltage.plot(time_s, voltage_v, color=COLOR_VOLTAGE, linewidth=2)
-
         self.ax_current.clear()
         self._style_axes(self.ax_current, "Toplam Akım (A)")
-        self.ax_current.plot(time_s, current_a, color=COLOR_CURRENT, linewidth=2)
+
+        for i, battery in enumerate(batteries):
+            color = SERIES_COLORS[i % len(SERIES_COLORS)]
+            label = f"Batarya {battery['id']}"
+            self.ax_voltage.plot(battery["time_s"], battery["voltage_v"], color=color, linewidth=2, label=label)
+            self.ax_current.plot(battery["time_s"], battery["current_a"], color=color, linewidth=2, label=label)
+
+        if len(batteries) > 1:
+            legend_kwargs = dict(loc="upper right", facecolor=SURFACE, edgecolor=AXIS_LINE,
+                                  labelcolor=TEXT_SECONDARY, fontsize=9)
+            self.ax_voltage.legend(**legend_kwargs)
+            self.ax_current.legend(**legend_kwargs)
 
         self._last_motors = data.get("motors", [])
         self._plot_motor_currents(self._last_motors)
@@ -258,7 +264,7 @@ class App(ctk.CTk):
         self.ax_motors.set_xlabel("Zaman (s)", color=TEXT_SECONDARY)
 
         for i, motor in enumerate(motors):
-            color = MOTOR_COLORS[i % len(MOTOR_COLORS)]
+            color = SERIES_COLORS[i % len(SERIES_COLORS)]
             self.ax_motors.plot(
                 motor["time_s"], motor["current_a"], color=color, linewidth=2,
                 label=f"Motor {motor['id']}",
@@ -302,24 +308,26 @@ class App(ctk.CTk):
         self._motor_colorbar.set_label("Akım (A)", color=TEXT_SECONDARY)
         self._motor_colorbar.ax.tick_params(colors=TEXT_MUTED)
 
-    def _update_stats(self, battery: dict):
-        """Üstteki özet satırını (süre, örnek sayısı, min/maks aralıklar) günceller."""
-        time_s = battery["time_s"]
-        voltage_v = battery["voltage_v"]
-        current_a = battery["current_a"]
+    def _update_stats(self, batteries: list):
+        """Üstteki özet satırını günceller: tüm bataryaların birleşimi olarak
+        (süre = en uzunu, voltaj/akım aralığı = hepsinin ortak min-maks'ı)."""
+        all_voltage = [v for battery in batteries for v in battery["voltage_v"]]
+        all_current = [c for battery in batteries for c in battery["current_a"]]
+        last_times = [battery["time_s"][-1] for battery in batteries if battery["time_s"]]
+        total_samples = sum(len(battery["time_s"]) for battery in batteries)
 
-        if not time_s:
+        if not last_times:
             for label in self.stat_labels.values():
                 label.configure(text="—")
             return
 
-        self.stat_labels["duration"].configure(text=f"{time_s[-1]:.1f} s")
-        self.stat_labels["samples"].configure(text=str(len(time_s)))
+        self.stat_labels["duration"].configure(text=f"{max(last_times):.1f} s")
+        self.stat_labels["samples"].configure(text=str(total_samples))
         self.stat_labels["voltage_range"].configure(
-            text=f"{min(voltage_v):.2f}–{max(voltage_v):.2f} V"
+            text=f"{min(all_voltage):.2f}–{max(all_voltage):.2f} V"
         )
         self.stat_labels["current_range"].configure(
-            text=f"{min(current_a):.1f}–{max(current_a):.1f} A"
+            text=f"{min(all_current):.1f}–{max(all_current):.1f} A"
         )
 
 

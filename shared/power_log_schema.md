@@ -5,19 +5,23 @@ JSON dosyası üretir. Frontend sadece bu JSON'u okur, log formatlarıyla hiç
 uğraşmaz.
 
 MVP kapsamı: batarya voltaj/akımı ve motor bazlı akım çekimi (zaman serisi).
+Birden fazla batarya ya da motor olabileceği için ikisi de dizi.
 
 ```
 {
   "meta": {
     "source_file": string,   // orijinal log dosyasının adı
     "format": "ardupilot" | "px4",
-    "duration_s": number     // uçuşun toplam süresi
+    "duration_s": number     // uçuşun toplam süresi (tüm bataryaların en sonuncusu)
   },
-  "battery": {
-    "time_s": [number, ...],     // örnekleme zaman damgaları (saniye)
-    "voltage_v": [number, ...],  // battery.time_s ile aynı uzunlukta
-    "current_a": [number, ...]   // toplam paket akımı
-  },
+  "batteries": [
+    {
+      "id": number,              // batarya sırası (1, 2, ...)
+      "time_s": [number, ...],    // örnekleme zaman damgaları (saniye)
+      "voltage_v": [number, ...], // batteries[i].time_s ile aynı uzunlukta
+      "current_a": [number, ...]  // o bataryanın akımı
+    }
+  ],
   "motors": [
     {
       "id": number,              // motor/ESC sırası (1, 2, 3, ...)
