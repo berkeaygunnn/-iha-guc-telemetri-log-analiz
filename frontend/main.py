@@ -12,8 +12,10 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import customtkinter as ctk
 from tkinter import filedialog
+from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
@@ -41,6 +43,11 @@ COLOR_CRITICAL = "#d03b3b"  # durum paleti: kritik/hata
 # Motor sayısı 4'ü geçerse (hexa/octo) baştan sarılır.
 MOTOR_COLORS = ["#3987e5", "#008300", "#d55181", "#c98500"]
 
+# Isı haritası için ardışık (sequential) renk skalası: koyu yüzeyden başlayıp
+# markaya ait maviden geçip açık bir tona çıkar (düşük değer yüzeyde erir,
+# yüksek değer parlar) — koyu temada okunaklı olması için bu yönde.
+MOTOR_HEATMAP_COLORS = ["#141a22", COLOR_VOLTAGE, "#cde2fb"]
+
 
 class App(ctk.CTk):
     def __init__(self):
@@ -49,10 +56,38 @@ class App(ctk.CTk):
         self.geometry("1050x850")
         self.configure(fg_color=SURFACE)
 
+        self.motor_view_mode = "line"  # "line" ya da "heatmap"
+        self._motor_colorbar = None
+        self._last_motors = None
+
         self._build_toolbar()
         self._build_stats_row()
         self._build_status_label()
+        self._build_motor_view_toggle()
         self._build_plot_area()
+
+    def _build_motor_view_toggle(self):
+        """Motor panelini çizgi grafiği/ısı haritası arasında değiştiren seçici."""
+        toggle_row = ctk.CTkFrame(self, fg_color="transparent")
+        toggle_row.pack(side="top", fill="x", padx=16, pady=(0, 8))
+
+        ctk.CTkLabel(
+            toggle_row, text="Motor Görünümü:", text_color=TEXT_MUTED, font=ctk.CTkFont(size=11)
+        ).pack(side="left", padx=(0, 8))
+
+        self.motor_view_toggle = ctk.CTkSegmentedButton(
+            toggle_row, values=["Çizgi Grafiği", "Isı Haritası"],
+            command=self._on_motor_view_change,
+        )
+        self.motor_view_toggle.set("Çizgi Grafiği")
+        self.motor_view_toggle.pack(side="left")
+
+    def _on_motor_view_change(self, value: str):
+        self.motor_view_mode = "heatmap" if value == "Isı Haritası" else "line"
+        if self._last_motors is not None:
+            self._plot_motor_currents(self._last_motors)
+            self.figure.tight_layout()
+            self.canvas.draw()
 
     def _build_toolbar(self):
         """Üst kısımdaki dosya yükleme butonu ve seçilen dosya etiketi."""
@@ -194,14 +229,31 @@ class App(ctk.CTk):
         self._style_axes(self.ax_current, "Toplam Akım (A)")
         self.ax_current.plot(time_s, current_a, color=COLOR_CURRENT, linewidth=2)
 
-        self._plot_motor_currents(data.get("motors", []))
+        self._last_motors = data.get("motors", [])
+        self._plot_motor_currents(self._last_motors)
 
         self.figure.tight_layout()
         self.canvas.draw()
 
     def _plot_motor_currents(self, motors: list):
+        """Motor panelini seçili görünüme (çizgi/ısı haritası) göre çizer.
+
+        Isı haritası bir colorbar eksen ekliyor ve bu, panelin grid
+        yerleşimini kalıcı değiştiriyor; bir sonraki çizimde (özellikle
+        çizgi grafiğine dönüşte) eskisini silmeye çalışmak yerine ekseni
+        sıfırdan yeniden oluşturmak matplotlib'de daha güvenilir.
+        """
+        self.figure.delaxes(self.ax_motors)
+        self.ax_motors = self.figure.add_subplot(313, sharex=self.ax_voltage)
+        self._motor_colorbar = None
+
+        if self.motor_view_mode == "heatmap":
+            self._plot_motor_heatmap(motors)
+        else:
+            self._plot_motor_lines(motors)
+
+    def _plot_motor_lines(self, motors: list):
         """Her motorun akımını kendi renginde çizer; motor yoksa panel boş kalır."""
-        self.ax_motors.clear()
         self._style_axes(self.ax_motors, "Motor Akımı (A)")
         self.ax_motors.set_xlabel("Zaman (s)", color=TEXT_SECONDARY)
 
@@ -217,6 +269,38 @@ class App(ctk.CTk):
                 loc="upper right", facecolor=SURFACE, edgecolor=AXIS_LINE,
                 labelcolor=TEXT_SECONDARY, fontsize=9,
             )
+
+    def _plot_motor_heatmap(self, motors: list):
+        """Motor x zaman ısı haritası: renk = o andaki akım.
+
+        Motorların örnekleme zamanları birebir aynı olmayabileceği için, ortak
+        bir zaman eksenine (tüm motorların zamanlarının birleşimi) interpolate
+        edilir.
+        """
+        self._style_axes(self.ax_motors, "Motor")
+        self.ax_motors.set_xlabel("Zaman (s)", color=TEXT_SECONDARY)
+        self.ax_motors.grid(False)  # ısı haritasında gridline gürültü yapar
+
+        if not motors:
+            return
+
+        all_times = sorted({t for motor in motors for t in motor["time_s"]})
+        grid = np.array([
+            np.interp(all_times, motor["time_s"], motor["current_a"])
+            for motor in motors
+        ])
+
+        cmap = LinearSegmentedColormap.from_list("motor_heat", MOTOR_HEATMAP_COLORS)
+        extent = [all_times[0], all_times[-1], 0.5, len(motors) + 0.5]
+        image = self.ax_motors.imshow(
+            grid, aspect="auto", origin="lower", extent=extent, cmap=cmap,
+        )
+        self.ax_motors.set_yticks(range(1, len(motors) + 1))
+        self.ax_motors.set_yticklabels([f"Motor {motor['id']}" for motor in motors])
+
+        self._motor_colorbar = self.figure.colorbar(image, ax=self.ax_motors, pad=0.01)
+        self._motor_colorbar.set_label("Akım (A)", color=TEXT_SECONDARY)
+        self._motor_colorbar.ax.tick_params(colors=TEXT_MUTED)
 
     def _update_stats(self, battery: dict):
         """Üstteki özet satırını (süre, örnek sayısı, min/maks aralıklar) günceller."""
