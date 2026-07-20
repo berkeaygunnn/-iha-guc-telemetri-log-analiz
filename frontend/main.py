@@ -19,7 +19,18 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-BACKEND_EXE = Path(__file__).resolve().parent.parent / "backend" / "build" / "power_log_backend.exe"
+def _find_backend_exe() -> Path:
+    """Windows'ta .exe uzantılı, Linux/macOS'ta uzantısız üretildiği için
+    ikisini de dener (bkz. backend/tests/run_tests.py'deki aynı mantık)."""
+    build_dir = Path(__file__).resolve().parent.parent / "backend" / "build"
+    for name in ("power_log_backend.exe", "power_log_backend"):
+        candidate = build_dir / name
+        if candidate.exists():
+            return candidate
+    return build_dir / "power_log_backend.exe"  # bulunamadıysa hata mesajında gösterilecek varsayılan yol
+
+
+BACKEND_EXE = _find_backend_exe()
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 # Uygulama genelinde kullanılacak tema ayarları (koyu tema + mavi renk paleti)

@@ -27,8 +27,8 @@ jobs:
       - name: Frontend bağımlılıkları
         run: pip install -r frontend/requirements.txt
 
-      - name: xvfb kur (Tkinter/CustomTkinter için sanal ekran)
-        run: sudo apt-get install -y xvfb
+      - name: xvfb ve python3-tk kur (Tkinter/CustomTkinter için gerekli)
+        run: sudo apt-get install -y xvfb python3-tk
 
       - name: Frontend duman testi
         run: xvfb-run -a python3 frontend/tests/test_smoke.py
