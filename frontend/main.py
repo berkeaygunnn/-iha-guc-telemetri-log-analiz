@@ -2,8 +2,8 @@
 
 Seçilen log dosyası backend'e (C++) verilir; backend onu parse edip
 shared/power_log_schema.md şemasına uygun bir JSON üretir, frontend de bu
-JSON'u okuyup grafiği çizer. ArduPilot .bin (batarya + motor/ESC) ve PX4 .ulog
-(şimdilik sadece batarya) destekleniyor; format dosya içeriğinden (magic byte)
+JSON'u okuyup grafiği çizer. ArduPilot .bin ve PX4 .ulog, ikisi de batarya ve
+motor/ESC verisiyle destekleniyor; format dosya içeriğinden (magic byte)
 otomatik algılanıyor.
 """
 

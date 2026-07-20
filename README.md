@@ -14,6 +14,8 @@ log dosyalarını okuyup; batarya voltaj düşümünü (voltage sag) ve motor/ES
   format seçmek zorunda değildir.
 - Koyu temalı arayüz: voltaj, toplam akım ve motor bazlı akım ayrı panellerde
   (ortak zaman eksenini paylaşarak) çizilir.
+- Motor paneli, çizgi grafiği ile motor × zaman ısı haritası arasında tek
+  tıkla geçiş yapabiliyor.
 
 ## Mimari
 
@@ -59,7 +61,7 @@ loglardan birini (ya da kendi `.bin`/`.ulog` dosyanı) seç.
 - [x] ArduPilot `.bin` parser'ı (batarya + motor/ESC)
 - [x] PX4 `.ulog` parser'ı (batarya + motor/ESC)
 - [x] Gerçek ve sentetik loglarla uçtan uca test
-- [ ] Güç dağıtım (busbar) ısı haritası
+- [x] Güç dağıtım (busbar) ısı haritası
 - [ ] Birden fazla batarya desteği
 
 ## Lisans
