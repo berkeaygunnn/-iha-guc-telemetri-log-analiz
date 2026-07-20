@@ -1,0 +1,34 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Backend'i derle
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          cmake -S backend -B backend/build -G Ninja
+          cmake --build backend/build
+
+      - name: Backend testleri
+        run: python3 backend/tests/run_tests.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Frontend bağımlılıkları
+        run: pip install -r frontend/requirements.txt
+
+      - name: xvfb kur (Tkinter/CustomTkinter için sanal ekran)
+        run: sudo apt-get install -y xvfb
+
+      - name: Frontend duman testi
+        run: xvfb-run -a python3 frontend/tests/test_smoke.py
