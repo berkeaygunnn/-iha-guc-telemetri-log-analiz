@@ -57,6 +57,24 @@ python main.py
 Açılan pencerede **Log Dosyası Yükle** ile `data/` klasöründeki örnek
 loglardan birini (ya da kendi `.bin`/`.ulog` dosyanı) seç.
 
+## Dağıtım (paketleme)
+
+Geliştirici olmayan biri Python/CMake kurmadan uygulamayı kullanabilsin diye,
+frontend PyInstaller ile tek bir klasöre (`.exe` + gerekli her şey) paketlenebilir:
+
+```
+.\scripts\build_release.ps1
+```
+
+Bu script backend'i derler, sonra `frontend/power_log_frontend.spec` dosyasına
+göre paketler. Sonuç: `dist/iha_guc_telemetri_analiz/` klasörü — bu klasörü
+olduğu gibi zip'leyip paylaşabilirsin; kullanıcı sadece içindeki
+`iha_guc_telemetri_analiz.exe`'yi çalıştırır (backend'in derlenmiş hâli aynı
+klasörde bulunduğu için ayrıca CMake/Ninja kurmasına gerek yoktur).
+
+Not: paket örnek `data/` log dosyalarını içermez — küçük kalması için;
+kullanıcı kendi `.bin`/`.ulog` dosyasını yükler.
+
 ## Proje durumu
 
 - [x] Python UI iskeleti
@@ -65,6 +83,7 @@ loglardan birini (ya da kendi `.bin`/`.ulog` dosyanı) seç.
 - [x] Gerçek ve sentetik loglarla uçtan uca test
 - [x] Güç dağıtım (busbar) ısı haritası
 - [x] Birden fazla batarya desteği
+- [x] PyInstaller ile paketleme (tek klasörlük dağıtım)
 
 ## Lisans
 

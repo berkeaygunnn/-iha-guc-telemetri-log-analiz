@@ -1,6 +1,10 @@
 # Backend derleme çıktıları (CMake/Ninja)
 backend/build/
 
+# PyInstaller paketleme ara/çıktı klasörleri
+frontend/build/
+dist/
+
 # Python
 __pycache__/
 *.pyc
