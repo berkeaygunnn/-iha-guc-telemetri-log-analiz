@@ -21,6 +21,7 @@ MSG_DATA = ord("D")
 
 BATTERY_MSG_ID = 1
 ESC_STATUS_MSG_ID = 2
+BATTERY2_MSG_ID = 3
 MOTOR_COUNT = 4
 
 
@@ -41,14 +42,14 @@ def build_format_message(fmt: str) -> bytes:
     return build_message(MSG_FORMAT, fmt.encode("ascii"))
 
 
-def build_subscription_message(msg_id: int, name: str) -> bytes:
-    payload = struct.pack("<B", 0) + struct.pack("<H", msg_id) + name.encode("ascii")
+def build_subscription_message(msg_id: int, name: str, multi_id: int = 0) -> bytes:
+    payload = struct.pack("<B", multi_id) + struct.pack("<H", msg_id) + name.encode("ascii")
     return build_message(MSG_SUBSCRIPTION, payload)
 
 
-def build_battery_data_message(time_s: float, voltage_v: float, current_a: float) -> bytes:
+def build_battery_data_message(msg_id: int, time_s: float, voltage_v: float, current_a: float) -> bytes:
     timestamp_us = int(time_s * 1e6)
-    payload = struct.pack("<H", BATTERY_MSG_ID) + struct.pack("<Qff", timestamp_us, voltage_v, current_a)
+    payload = struct.pack("<H", msg_id) + struct.pack("<Qff", timestamp_us, voltage_v, current_a)
     return build_message(MSG_DATA, payload)
 
 
@@ -72,8 +73,9 @@ def generate() -> bytes:
     out += build_format_message("battery_status:uint64_t timestamp;float voltage_v;float current_a;")
     out += build_format_message("esc_report:uint64_t timestamp;float esc_current;")
     out += build_format_message(f"esc_status:uint64_t timestamp;uint8_t esc_count;esc_report[{MOTOR_COUNT}] esc;")
-    out += build_subscription_message(BATTERY_MSG_ID, "battery_status")
-    out += build_subscription_message(ESC_STATUS_MSG_ID, "esc_status")
+    out += build_subscription_message(BATTERY_MSG_ID, "battery_status", multi_id=0)
+    out += build_subscription_message(ESC_STATUS_MSG_ID, "esc_status", multi_id=0)
+    out += build_subscription_message(BATTERY2_MSG_ID, "battery_status", multi_id=1)
 
     # 10 saniyelik, akımın yükselip alçaldığı basit bir uçuş profili.
     pack_currents = [5, 10, 15, 20, 25, 30, 25, 20, 15, 10]
@@ -83,7 +85,10 @@ def generate() -> bytes:
     motor_factors = [0.8, 0.95, 1.1, 1.25]
 
     for t, (volt, pack_curr) in enumerate(zip(voltages, pack_currents)):
-        out += build_battery_data_message(float(t), volt, float(pack_curr))
+        out += build_battery_data_message(BATTERY_MSG_ID, float(t), volt, float(pack_curr))
+        # İkinci batarya (multi_id=1): birden fazla batarya gruplamasını test
+        # etmek için, birincinden bilerek farklı (daha küçük) değerlerle.
+        out += build_battery_data_message(BATTERY2_MSG_ID, float(t), volt - 1.0, float(pack_curr) * 0.6)
         motor_currents = [pack_curr / MOTOR_COUNT * factor for factor in motor_factors]
         out += build_esc_status_data_message(float(t), motor_currents)
 

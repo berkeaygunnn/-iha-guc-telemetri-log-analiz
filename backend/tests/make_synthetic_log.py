@@ -46,9 +46,9 @@ def build_fmt_message(msg_type: int, name: str, fmt: str, labels: str) -> bytes:
     )
 
 
-def build_bat_message(time_s: float, volt: float, curr: float) -> bytes:
+def build_bat_message(time_s: float, instance: int, volt: float, curr: float) -> bytes:
     time_us = int(time_s * 1e6)
-    return bytes([HEAD1, HEAD2, BAT_TYPE]) + struct.pack("<QBff", time_us, 0, volt, curr)
+    return bytes([HEAD1, HEAD2, BAT_TYPE]) + struct.pack("<QBff", time_us, instance, volt, curr)
 
 
 def build_esc_message(time_s: float, instance: int, curr: float) -> bytes:
@@ -70,7 +70,10 @@ def generate() -> bytes:
     motor_factors = [0.8, 0.95, 1.1, 1.25]
 
     for t, (volt, pack_curr) in enumerate(zip(voltages, pack_currents)):
-        out += build_bat_message(float(t), volt, float(pack_curr))
+        out += build_bat_message(float(t), 0, volt, float(pack_curr))
+        # İkinci batarya (Inst=1): birden fazla batarya gruplamasını test etmek
+        # için, birincinden bilerek farklı (daha küçük) değerlerle.
+        out += build_bat_message(float(t), 1, volt - 1.0, float(pack_curr) * 0.6)
         for motor_id, factor in enumerate(motor_factors):
             motor_curr = pack_curr / len(motor_factors) * factor
             out += build_esc_message(float(t), motor_id, motor_curr)

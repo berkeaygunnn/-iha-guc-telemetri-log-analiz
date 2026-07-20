@@ -49,7 +49,7 @@ struct FormatDef {
     std::vector<std::string> labels;  // format karakterleriyle eşleşen alan adları
 };
 
-struct BatterySample {
+struct BatterySamplePoint {
     double time_s;
     double voltage_v;
     double current_a;
@@ -61,10 +61,12 @@ struct MotorSamplePoint {
 };
 
 // Batarya (BAT) ve motor (ESC) mesajlarından çıkarılan tüm veriler.
+// Her ikisi de anahtarı 1'den başlayan motor/batarya no olan bir map: birden
+// fazla batarya/motor varsa hepsi ayrı ayrı tutulur.
 struct ParsedLog {
     std::string format;  // "ardupilot" ya da "px4"
-    std::vector<BatterySample> battery;
-    std::map<int, std::vector<MotorSamplePoint>> motors;  // anahtar: 1'den başlayan motor no
+    std::map<int, std::vector<BatterySamplePoint>> batteries;
+    std::map<int, std::vector<MotorSamplePoint>> motors;
 };
 
 // Format karakterinin kapladığı byte sayısı (LogStructure.h'deki tablo).
@@ -149,11 +151,12 @@ FormatDef parseFormatMessage(const std::vector<uint8_t>& buffer, size_t pos) {
     return def;
 }
 
-// "BAT" mesajının payload'ından TimeUS/Volt/Curr alanlarını çıkarır.
-// Birden fazla batarya varsa sadece ilkini (Inst == 0) alır. Not: ArduPilot bu
-// alana BAT mesajında "Inst" adını veriyor (ESC mesajında ise "Instance").
+// "BAT" mesajının payload'ından TimeUS/Volt/Curr alanlarını çıkarır ve batarya
+// numarasına (Inst + 1) göre gruplar. Not: ArduPilot bu alana BAT mesajında
+// "Inst" adını veriyor (ESC mesajında ise "Instance"). "Inst" alanı yoksa
+// (çok eski loglar) tek batarya varsayılıp id=1'e yazılır.
 void extractBatterySample(const uint8_t* payload, const FormatDef& def,
-                           std::vector<BatterySample>& out) {
+                           std::map<int, std::vector<BatterySamplePoint>>& batteries) {
     FieldLocator timeField = locateField(def, "TimeUS");
     FieldLocator voltField = locateField(def, "Volt");
     FieldLocator currField = locateField(def, "Curr");
@@ -161,16 +164,17 @@ void extractBatterySample(const uint8_t* payload, const FormatDef& def,
 
     if (!timeField.found || !voltField.found || !currField.found) return;
 
+    int instance = 0;
     if (instField.found) {
-        double instance = readFieldAsDouble(payload + instField.byteOffset, instField.formatChar);
-        if (instance != 0.0) return;
+        instance = static_cast<int>(
+            readFieldAsDouble(payload + instField.byteOffset, instField.formatChar));
     }
 
     double timeUs = readFieldAsDouble(payload + timeField.byteOffset, timeField.formatChar);
     double volt = readFieldAsDouble(payload + voltField.byteOffset, voltField.formatChar);
     double curr = readFieldAsDouble(payload + currField.byteOffset, currField.formatChar);
 
-    out.push_back(BatterySample{timeUs / 1e6, volt, curr});
+    batteries[instance + 1].push_back(BatterySamplePoint{timeUs / 1e6, volt, curr});
 }
 
 // "ESC" mesajının payload'ından TimeUS/Instance/Curr alanlarını çıkarır ve
@@ -232,7 +236,7 @@ ParsedLog parseArduPilotBuffer(const std::vector<uint8_t>& buffer) {
         if (pos + def.length > buffer.size()) break;
 
         if (def.name == "BAT" || def.name == "CURR") {
-            extractBatterySample(buffer.data() + pos + 3, def, result.battery);
+            extractBatterySample(buffer.data() + pos + 3, def, result.batteries);
         } else if (def.name == "ESC") {
             extractEscSample(buffer.data() + pos + 3, def, result.motors);
         }
@@ -414,10 +418,10 @@ double readUlogFieldAsDouble(const uint8_t* data, const std::string& type) {
     return 0.0;
 }
 
-// "battery_status" verisinden timestamp/voltage_v/current_a çıkarır.
-// Birden fazla batarya varsa sadece ilkini (multi_id == 0) alır.
-void extractUlogBatterySample(const uint8_t* payload, const ULogFormatDef& def,
-                               std::vector<BatterySample>& out) {
+// "battery_status" verisinden timestamp/voltage_v/current_a çıkarır ve
+// batarya numarasına (multiId + 1) göre gruplar.
+void extractUlogBatterySample(const uint8_t* payload, const ULogFormatDef& def, int multiId,
+                               std::map<int, std::vector<BatterySamplePoint>>& batteries) {
     ULogFieldLocator timeField = locateUlogField(def, "timestamp");
     ULogFieldLocator voltField = locateUlogField(def, "voltage_v");
     ULogFieldLocator currField = locateUlogField(def, "current_a");
@@ -428,7 +432,7 @@ void extractUlogBatterySample(const uint8_t* payload, const ULogFormatDef& def,
     double volt = readUlogFieldAsDouble(payload + voltField.byteOffset, voltField.field->elementType);
     double curr = readUlogFieldAsDouble(payload + currField.byteOffset, currField.field->elementType);
 
-    out.push_back(BatterySample{timestamp / 1e6, volt, curr});
+    batteries[multiId + 1].push_back(BatterySamplePoint{timestamp / 1e6, volt, curr});
 }
 
 // "esc_status" mesajından, içindeki "esc_report" dizisinin her elemanı için
@@ -524,7 +528,7 @@ ParsedLog parseUlogBuffer(const std::vector<uint8_t>& buffer) {
                 uint16_t msgId;
                 std::memcpy(&msgId, payload, 2);
                 auto subIt = subscriptions.find(msgId);
-                if (subIt != subscriptions.end() && subIt->second.multiId == 0) {
+                if (subIt != subscriptions.end()) {
                     auto fmtIt = formats.find(subIt->second.messageName);
                     if (fmtIt != formats.end()) {
                         // Format tanımının beklediği boyut, mesajın gerçek boyutundan
@@ -535,8 +539,12 @@ ParsedLog parseUlogBuffer(const std::vector<uint8_t>& buffer) {
                         size_t actualSize = static_cast<size_t>(msgSize) - 2;
                         if (expectedSize > 0 && actualSize >= expectedSize) {
                             if (fmtIt->second.name == "battery_status") {
-                                extractUlogBatterySample(payload + 2, fmtIt->second, result.battery);
-                            } else if (fmtIt->second.name == "esc_status") {
+                                // Her batarya kendi multiId'siyle (0, 1, 2, ...) ayrı
+                                // subscription/msg_id alır; bu yüzden burada tüm
+                                // instance'lar kabul edilip numaralarına göre gruplanıyor.
+                                extractUlogBatterySample(payload + 2, fmtIt->second,
+                                                          subIt->second.multiId, result.batteries);
+                            } else if (fmtIt->second.name == "esc_status" && subIt->second.multiId == 0) {
                                 extractUlogEscSamples(payload + 2, fmtIt->second, formats, result.motors);
                             }
                         }
@@ -620,27 +628,47 @@ void writeMotors(std::ostream& out, const std::map<int, std::vector<MotorSampleP
     out << "  ]";
 }
 
-void writeBattery(std::ostream& out, const std::vector<BatterySample>& samples) {
-    std::vector<double> time_s, voltage_v, current_a;
-    for (const auto& sample : samples) {
-        time_s.push_back(sample.time_s);
-        voltage_v.push_back(sample.voltage_v);
-        current_a.push_back(sample.current_a);
-    }
+void writeBatteries(std::ostream& out, const std::map<int, std::vector<BatterySamplePoint>>& batteries) {
+    out << "  \"batteries\": [\n";
+    size_t written = 0;
+    for (const auto& entry : batteries) {
+        int id = entry.first;
+        const std::vector<BatterySamplePoint>& points = entry.second;
 
-    out << "  \"battery\": {\n    \"time_s\": ";
-    writeNumberArray(out, time_s);
-    out << ",\n    \"voltage_v\": ";
-    writeNumberArray(out, voltage_v);
-    out << ",\n    \"current_a\": ";
-    writeNumberArray(out, current_a);
-    out << "\n  }";
+        std::vector<double> time_s, voltage_v, current_a;
+        for (const auto& point : points) {
+            time_s.push_back(point.time_s);
+            voltage_v.push_back(point.voltage_v);
+            current_a.push_back(point.current_a);
+        }
+
+        out << "    {\n      \"id\": " << id << ",\n      \"time_s\": ";
+        writeNumberArray(out, time_s);
+        out << ",\n      \"voltage_v\": ";
+        writeNumberArray(out, voltage_v);
+        out << ",\n      \"current_a\": ";
+        writeNumberArray(out, current_a);
+        out << "\n    }";
+        if (++written < batteries.size()) out << ",";
+        out << "\n";
+    }
+    out << "  ]";
 }
 
-// Basarili olursa (en az bir batarya ornegi bulunduysa) true doner.
+// Tüm bataryalar arasında en son örneğin zamanını (uçuşun toplam süresi) bulur.
+double computeDuration(const std::map<int, std::vector<BatterySamplePoint>>& batteries) {
+    double duration = 0.0;
+    for (const auto& entry : batteries) {
+        if (entry.second.empty()) continue;
+        double lastTime = entry.second.back().time_s;
+        if (lastTime > duration) duration = lastTime;
+    }
+    return duration;
+}
+
+// Basarili olursa (en az bir batarya bulunduysa) true doner.
 bool writePowerLogJson(const std::string& inputLogPath, const std::string& outputPath) {
     ParsedLog parsed = parseLog(inputLogPath);
-    const std::vector<BatterySample>& samples = parsed.battery;
 
     std::ofstream out(toPath(outputPath));
     if (!out.is_open()) {
@@ -648,7 +676,7 @@ bool writePowerLogJson(const std::string& inputLogPath, const std::string& outpu
         return false;
     }
 
-    double duration_s = samples.empty() ? 0.0 : samples.back().time_s;
+    double duration_s = computeDuration(parsed.batteries);
 
     out << "{\n";
     out << "  \"meta\": {\n";
@@ -660,15 +688,15 @@ bool writePowerLogJson(const std::string& inputLogPath, const std::string& outpu
     out << ",\n";
     out << "    \"duration_s\": " << duration_s << "\n";
     out << "  },\n";
-    writeBattery(out, samples);
+    writeBatteries(out, parsed.batteries);
     out << ",\n";
     writeMotors(out, parsed.motors);
     out << "\n}\n";
 
-    std::cout << "JSON yazildi: " << outputPath << " (" << parsed.format << ", " << samples.size()
-              << " batarya ornegi, " << parsed.motors.size() << " motor)" << std::endl;
+    std::cout << "JSON yazildi: " << outputPath << " (" << parsed.format << ", " << parsed.batteries.size()
+              << " batarya, " << parsed.motors.size() << " motor)" << std::endl;
 
-    if (samples.empty()) {
+    if (parsed.batteries.empty()) {
         std::cerr << "Uyari: dosyada batarya verisi bulunamadi. Desteklenmeyen ya da bozuk "
                      "bir log dosyasi olabilir (ArduPilot .bin ya da PX4 .ulog bekleniyor)."
                   << std::endl;
