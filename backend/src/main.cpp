@@ -354,6 +354,14 @@ void resolveNestedSizes(std::map<std::string, ULogFormatDef>& formats) {
     }
 }
 
+// Bir formatın (resolveNestedSizes sonrası) toplam bayt boyutu. 0 dönerse
+// çözülemeyen bir alan var demektir.
+size_t formatTotalSize(const ULogFormatDef& def) {
+    size_t total = 0;
+    for (const ULogField& field : def.fields) total += field.size;
+    return total;
+}
+
 // "battery_status:uint64_t timestamp;float voltage_v;..." formatındaki bir
 // Format (F) mesajının payload'ını çözer.
 ULogFormatDef parseUlogFormatMessage(const uint8_t* payload, size_t length) {
@@ -519,10 +527,18 @@ ParsedLog parseUlogBuffer(const std::vector<uint8_t>& buffer) {
                 if (subIt != subscriptions.end() && subIt->second.multiId == 0) {
                     auto fmtIt = formats.find(subIt->second.messageName);
                     if (fmtIt != formats.end()) {
-                        if (fmtIt->second.name == "battery_status") {
-                            extractUlogBatterySample(payload + 2, fmtIt->second, result.battery);
-                        } else if (fmtIt->second.name == "esc_status") {
-                            extractUlogEscSamples(payload + 2, fmtIt->second, formats, result.motors);
+                        // Format tanımının beklediği boyut, mesajın gerçek boyutundan
+                        // büyükse (bozuk/yarım dosya, sürüm uyuşmazlığı vb.) alanları
+                        // okumaya çalışmak buffer'daki bir sonraki mesajın baytlarını
+                        // yanlışlıkla veri gibi yorumlar; bu yüzden önce doğrulanıyor.
+                        size_t expectedSize = formatTotalSize(fmtIt->second);
+                        size_t actualSize = static_cast<size_t>(msgSize) - 2;
+                        if (expectedSize > 0 && actualSize >= expectedSize) {
+                            if (fmtIt->second.name == "battery_status") {
+                                extractUlogBatterySample(payload + 2, fmtIt->second, result.battery);
+                            } else if (fmtIt->second.name == "esc_status") {
+                                extractUlogEscSamples(payload + 2, fmtIt->second, formats, result.motors);
+                            }
                         }
                     }
                 }

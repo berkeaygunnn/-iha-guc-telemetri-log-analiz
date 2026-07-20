@@ -31,5 +31,5 @@ MVP kapsamı: batarya voltaj/akımı ve motor bazlı akım çekimi (zaman serisi
 Kural: her `time_s` dizisiyle eşleştiği veri dizisi (`voltage_v`,
 `current_a`, ...) her zaman aynı uzunlukta olmalı.
 
-Örnek dosya: `power_log_example.json` (şimdilik backend'in ürettiği sahte
-veri de bu dosyayla aynı yapıda olacak).
+Örnek dosya: `power_log_example.json` — backend'in gerçek ArduPilot/PX4
+loglarından ürettiği JSON da bu yapıya uyar.
