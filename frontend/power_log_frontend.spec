@@ -29,11 +29,17 @@ if not os.path.exists(backend_exe):
 # Bunu atlarsak paketlenmiş uygulama ya temasız/hatalı görünür ya da açılışta patlar.
 customtkinter_datas = collect_data_files("customtkinter")
 
+# Pencere ikonu (frontend/main.py'deki _find_icon_path/ICON_PATH bunu ana .exe
+# ile aynı klasördeki "assets/" içinde arıyor - contents_directory="." sayesinde
+# datas girdileri de düz kök klasöre düşüyor).
+icon_ico = os.path.join(SPECPATH, "assets", "icon.ico")
+icon_datas = [(os.path.join(SPECPATH, "assets", "icon.png"), "assets")]
+
 a = Analysis(
     ["main.py"],
     pathex=[SPECPATH],
     binaries=[(backend_exe, ".")],
-    datas=customtkinter_datas,
+    datas=customtkinter_datas + icon_datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -54,6 +60,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,  # arayüz uygulaması; konsol penceresi açılmasın
+    icon=icon_ico,  # Windows'ta .exe dosyasının kendi simgesi (gezgin/görev çubuğu)
     # PyInstaller 6+ varsayılan olarak her şeyi gizli bir "_internal" alt
     # klasörüne koyar; backend.exe'yi ana .exe'yle aynı düz klasörde
     # bulmak istediğimiz için bu ayrımı kapatıyoruz.

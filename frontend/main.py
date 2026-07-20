@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import customtkinter as ctk
-from tkinter import filedialog
+from tkinter import filedialog, PhotoImage
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -40,8 +40,20 @@ def _find_backend_exe() -> Path:
     return build_dir / "power_log_backend.exe"  # bulunamadıysa hata mesajında gösterilecek varsayılan yol
 
 
+def _find_icon_path() -> Path:
+    """Pencere ikonu için PNG dosyasının yolu. `_find_backend_exe()` ile aynı
+    frozen/geliştirme ayrımı: paketlenmişken ana .exe'yle aynı klasördeki
+    `assets/`e, geliştirmede `frontend/assets/`e bakar."""
+    if getattr(sys, "frozen", False):
+        assets_dir = Path(sys.executable).resolve().parent / "assets"
+    else:
+        assets_dir = Path(__file__).resolve().parent / "assets"
+    return assets_dir / "icon.png"
+
+
 BACKEND_EXE = _find_backend_exe()
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+ICON_PATH = _find_icon_path()
 
 # Uygulama genelinde kullanılacak tema ayarları (koyu tema + mavi renk paleti)
 ctk.set_appearance_mode("dark")
@@ -75,7 +87,11 @@ class App(ctk.CTk):
         super().__init__()
         self.title("İHA Güç/Telemetri Log Analiz Aracı")
         self.geometry("1050x850")
+        self.minsize(700, 600)  # panel/toolbar düzeni bundan daha küçükte bozuluyor
         self.configure(fg_color=SURFACE)
+
+        if ICON_PATH.exists():
+            self.iconphoto(True, PhotoImage(file=str(ICON_PATH)))
 
         self.motor_view_mode = "line"  # "line" ya da "heatmap"
         self._motor_colorbar = None
@@ -115,10 +131,10 @@ class App(ctk.CTk):
         toolbar = ctk.CTkFrame(self, fg_color="transparent")
         toolbar.pack(side="top", fill="x", padx=16, pady=(16, 8))
 
-        load_button = ctk.CTkButton(
+        self.load_button = ctk.CTkButton(
             toolbar, text="Log Dosyası Yükle", command=self._on_load_file_click
         )
-        load_button.pack(side="left", padx=(0, 12))
+        self.load_button.pack(side="left", padx=(0, 12))
 
         self.file_label = ctk.CTkLabel(
             toolbar, text="Henüz dosya seçilmedi.", text_color=TEXT_SECONDARY
@@ -209,12 +225,18 @@ class App(ctk.CTk):
             return
 
         self.file_label.configure(text=file_path)
-        self.status_label.configure(text="")
+        self.status_label.configure(text="İşleniyor...", text_color=TEXT_SECONDARY)
+        self.load_button.configure(state="disabled")
+        self.update_idletasks()  # "İşleniyor..." metnini backend bitmeden ekrana yansıt
+
         try:
             data = self._run_backend(file_path)
             self._plot_power_data(data)
+            self.status_label.configure(text="")
         except Exception as error:
-            self.status_label.configure(text=f"⚠ Hata: {error}")
+            self.status_label.configure(text=f"⚠ Hata: {error}", text_color=COLOR_CRITICAL)
+        finally:
+            self.load_button.configure(state="normal")
 
     def _run_backend(self, input_path: str) -> dict:
         """Backend'i seçilen log dosyasıyla çalıştırıp ürettiği JSON'u okur."""
