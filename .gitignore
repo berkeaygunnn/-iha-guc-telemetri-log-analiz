@@ -1,0 +1,14 @@
+# Backend derleme çıktıları (CMake/Ninja)
+backend/build/
+
+# Python
+__pycache__/
+*.pyc
+
+# Editör/OS
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Claude Code kişisel/yerel ayarlar
+.claude/settings.local.json
