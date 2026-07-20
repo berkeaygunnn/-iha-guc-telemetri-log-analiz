@@ -55,6 +55,33 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
 4. Python tarafını gerçek C++ çıktısına bağlamak.
 5. Gerçek örnek loglarla test etmek, arayüzü ve hata yönetimini iyileştirmek.
 
+## Gelecek özellikler (şimdilik MVP kapsamı DIŞINDA — sıraya alındı)
+
+Bu maddeler şu an uygulanmayacak, MVP (gerçek log okuma + temel batarya/motor
+grafikleri) bittikten ve gerçek log verisiyle uçtan uca test edildikten sonra
+ele alınacak.
+
+- **Kural tabanlı otomatik yorumlama (öncelikli, MVP'ye yakın bir sonraki adım):**
+  Eşik değerlerine dayalı basit if/else mantığıyla ("bu voltaj düşümü normalden
+  yüksek", "bu motor diğerlerinden %X fazla akım çekiyor" gibi) otomatik uyarı/
+  yorum üretmek. Yapay zeka gerektirmez, JSON çıktısına bir "warnings"/"insights"
+  alanı eklenip frontend'de gösterilebilir. Görece düşük zorlukta.
+
+- **Yapay zeka / makine öğrenmesi entegrasyonu (uzun vadeli, MVP sonrası):**
+  Örn. motor arıza tahmini gibi bir ML modeli — bunun için çok sayıda gerçek
+  (etiketlenmiş) uçuş logu gerekir, şu an elimizde yok. Alternatif olarak bir
+  LLM'e (örn. Claude/GPT API) üretilen JSON'u gönderip doğal dilde özet/yorum
+  aldırmak teknik olarak daha erişilebilir, ama internet bağlantısı ve
+  ücretli bir API anahtarı gerektirir (offline çalışmaz). Bu ikisi MVP
+  kapsamına dahil edilmeyecek, ayrı bir "v2" hedefi olarak değerlendirilecek.
+
+- **Paketleme / dağıtım (MVP gerçek veriyle çalıştıktan sonra):**
+  Frontend'i PyInstaller ile tek bir çalıştırılabilir dosyaya (.exe) paketlemek,
+  kullanıcının seçtiği bir logo/ikon (.ico) eklemek, backend .exe'sini pakete
+  dahil etmek. Takıma dağıtım için düşünülüyor (Python kurulumu gerektirmeden
+  çift tıkla çalışsın diye). Bu adım, backend-frontend gerçek log dosyasıyla
+  uçtan uca doğrulanmadan başlatılmayacak.
+
 ## Kodlama tercihleri / notlar
 
 - Kullanıcı (proje sahibi) C++ ve Python'da öğrenme aşamasında. Kod üretirken
