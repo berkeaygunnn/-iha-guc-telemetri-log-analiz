@@ -178,6 +178,48 @@ class SmokeTests(unittest.TestCase):
         self.assertTrue(self.app.landing_frame.winfo_ismapped())
         self.assertFalse(self.app.analysis_frame.winfo_ismapped())
 
+    def test_heatmap_toggle_does_not_shift_plot_position(self):
+        """Isı haritası colorbar'ı eskiden ana ekseni ax=... ile kucultuyordu,
+        bu da cizgi/isi haritasi arasinda gecince panelin sag/sola kaymis
+        gibi gorunmesine yol aciyordu. Artik colorbar sabit, ayri bir
+        eksene (cax=...) ciziliyor; ana eksenin figur icindeki konumu
+        (get_position) degismemeli."""
+        self._load_and_plot("px4_hexarotor_flight.ulg")
+        current_pos_before = self.app.ax_current.get_position()
+        motors_pos_before = self.app.ax_motors.get_position()
+
+        self.app.battery_view_toggle.set("Isı Haritası")
+        self.app._on_battery_view_change("Isı Haritası")
+        self.app.motor_view_toggle.set("Isı Haritası")
+        self.app._on_motor_view_change("Isı Haritası")
+
+        self.assertEqual(self.app.ax_current.get_position().bounds, current_pos_before.bounds)
+        self.assertEqual(self.app.ax_motors.get_position().bounds, motors_pos_before.bounds)
+
+        self.app.battery_view_toggle.set("Çizgi Grafiği")
+        self.app._on_battery_view_change("Çizgi Grafiği")
+        self.app.motor_view_toggle.set("Çizgi Grafiği")
+        self.app._on_motor_view_change("Çizgi Grafiği")
+
+        self.assertEqual(self.app.ax_current.get_position().bounds, current_pos_before.bounds)
+        self.assertEqual(self.app.ax_motors.get_position().bounds, motors_pos_before.bounds)
+
+    def test_panel_labels_stay_consistent_across_view_modes(self):
+        """'Toplam Akım (A)'/'Motor Akımı (A)' etiketleri ısı haritasına
+        geçince farklı bir metne ("Busbar"/"Motor") değişiyordu; artık
+        iki görünümde de aynı kalmalı."""
+        self._load_and_plot("px4_hexarotor_flight.ulg")
+        self.assertEqual(self.app.ax_current.get_ylabel(), "Toplam Akım (A)")
+        self.assertEqual(self.app.ax_motors.get_ylabel(), "Motor Akımı (A)")
+
+        self.app.battery_view_toggle.set("Isı Haritası")
+        self.app._on_battery_view_change("Isı Haritası")
+        self.app.motor_view_toggle.set("Isı Haritası")
+        self.app._on_motor_view_change("Isı Haritası")
+
+        self.assertEqual(self.app.ax_current.get_ylabel(), "Toplam Akım (A)")
+        self.assertEqual(self.app.ax_motors.get_ylabel(), "Motor Akımı (A)")
+
 
 if __name__ == "__main__":
     unittest.main()

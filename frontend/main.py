@@ -177,31 +177,42 @@ class App(ctk.CTk):
         center = ctk.CTkFrame(self.landing_frame, fg_color="transparent")
         center.pack(side="left", fill="both", expand=True)
 
+        # İçerik "center"ın tam ortasına place() ile konumlandırılıyor (sabit
+        # pady değerleriyle üste yaslamak yerine); pencere büyüdükçe altta
+        # boş kalan alan da orantılı dağılıyor, tek bir yerde birikmiyor.
+        content_block = ctk.CTkFrame(center, fg_color="transparent")
+        content_block.place(relx=0.5, rely=0.45, anchor="center")
+
         ctk.CTkLabel(
-            center, text="İHA Güç/Telemetri Analiz", text_color=LANDING_TEXT,
+            content_block, text="İHA Güç/Telemetri Analiz", text_color=LANDING_TEXT,
             font=ctk.CTkFont(size=32, weight="bold"),
-        ).pack(pady=(90, 8))
+        ).pack(pady=(0, 8))
         ctk.CTkLabel(
-            center, text="Uçuş logunu yükleyip güç/telemetri analizine başla",
+            content_block, text="Uçuş logunu yükleyip güç/telemetri analizine başla",
             text_color=LANDING_ACCENT_BRIGHT, font=ctk.CTkFont(size=14),
         ).pack(pady=(0, 32))
 
-        icon_canvas = Canvas(center, width=220, height=170, bg=LANDING_BG, highlightthickness=0)
+        icon_canvas = Canvas(content_block, width=220, height=170, bg=LANDING_BG, highlightthickness=0)
         icon_canvas.pack(pady=(0, 24))
         self._draw_drone_icon(icon_canvas)
 
         ctk.CTkLabel(
-            center,
+            content_block,
             text="ArduPilot (.bin) veya PX4 (.ulog/.ulg) log dosyanızı yükleyin;\n"
                  "voltaj, akım ve motor verilerini görün.",
             text_color=TEXT_MUTED, font=ctk.CTkFont(size=12), justify="center",
         ).pack(pady=(0, 20))
 
         ctk.CTkButton(
-            center, text="Dosya Yükle (Ctrl+O)", command=self._on_load_file_click,
+            content_block, text="Dosya Yükle (Ctrl+O)", command=self._on_load_file_click,
             fg_color=LANDING_ACCENT_BRIGHT, text_color=LANDING_BG, hover_color=LANDING_ACCENT,
             font=ctk.CTkFont(size=16, weight="bold"), width=240, height=48, corner_radius=10,
         ).pack()
+
+        ctk.CTkLabel(
+            self.landing_frame, text="İHA Güç/Telemetri Log Analiz Aracı · MIT Lisansı ile açık kaynak",
+            text_color="#3a5a78", font=ctk.CTkFont(size=11),
+        ).pack(side="bottom", pady=12)
 
     def _build_recent_sidebar(self):
         """Giriş ekranının sol tarafındaki 'Geçmiş Dosyalar' paneli."""
@@ -314,7 +325,6 @@ class App(ctk.CTk):
         self.battery_view_mode = "heatmap" if value == "Isı Haritası" else "line"
         if self._last_batteries is not None:
             self._plot_battery_currents(self._last_batteries)
-            self.figure.tight_layout()
             self.canvas.draw()
 
     def _build_motor_view_toggle(self):
@@ -337,7 +347,6 @@ class App(ctk.CTk):
         self.motor_view_mode = "heatmap" if value == "Isı Haritası" else "line"
         if self._last_motors is not None:
             self._plot_motor_currents(self._last_motors)
-            self.figure.tight_layout()
             self.canvas.draw()
 
     def _build_toolbar(self):
@@ -503,14 +512,37 @@ class App(ctk.CTk):
         figure = Figure(figsize=(5, 6), dpi=100)
         figure.set_facecolor(SURFACE)
 
-        self.ax_voltage = figure.add_subplot(311)
-        self.ax_current = figure.add_subplot(312, sharex=self.ax_voltage)
-        self.ax_motors = figure.add_subplot(313, sharex=self.ax_voltage)
+        # 2 sütunlu grid: sol sütun asıl grafikler, sağ (dar) sütun ısı
+        # haritası modunda kullanılan colorbar için HER ZAMAN ayrılmış sabit
+        # bir alan. Kenar boşlukları (left/right/top/bottom/hspace) burada
+        # ELLE, SABİT olarak veriliyor ve bir daha hiç değiştirilmiyor —
+        # tight_layout()/constrained_layout gibi "otomatik" yerleşim
+        # motorları, her çizimde o anki içeriğin (ör. ısı haritasındaki
+        # 'Batarya 1' gibi metin tick etiketlerinin sayısal etiketlerden
+        # daha geniş olması) genişliğine göre kenar boşluklarını yeniden
+        # hesaplıyor; bu da tam olarak kullanıcının şikayet ettiği "grafik
+        # sağa/sola kayıyor" görünümüne yol açıyordu. Sabit kenar boşluğu,
+        # görünüm (çizgi/ısı haritası) ne olursa olsun panelin konumunu
+        # değiştirmez.
+        gs = figure.add_gridspec(
+            3, 2, width_ratios=[40, 1],
+            left=0.11, right=0.90, top=0.97, bottom=0.08, hspace=0.35, wspace=0.05,
+        )
+        self._current_gs_cell = gs[1, 0]
+        self._motors_gs_cell = gs[2, 0]
+
+        self.ax_voltage = figure.add_subplot(gs[0, 0])
+        self.ax_current = figure.add_subplot(self._current_gs_cell, sharex=self.ax_voltage)
+        self.ax_motors = figure.add_subplot(self._motors_gs_cell, sharex=self.ax_voltage)
         self._style_axes(self.ax_voltage, "Voltaj (V)")
         self._style_axes(self.ax_current, "Toplam Akım (A)")
         self._style_axes(self.ax_motors, "Motor Akımı (A)")
         self.ax_motors.set_xlabel("Zaman (s)", color=TEXT_SECONDARY)
-        figure.tight_layout()
+
+        self._current_cax = figure.add_subplot(gs[1, 1])
+        self._current_cax.axis("off")
+        self._motors_cax = figure.add_subplot(gs[2, 1])
+        self._motors_cax.axis("off")
 
         self.figure = figure
         self.canvas = FigureCanvasTkAgg(figure, master=self.analysis_frame)
@@ -602,7 +634,6 @@ class App(ctk.CTk):
         self._plot_battery_currents([])
         self._plot_motor_currents([])
 
-        self.figure.tight_layout()
         self.canvas.draw()
 
     def _run_backend(self, input_path: str) -> dict:
@@ -656,15 +687,18 @@ class App(ctk.CTk):
         self._last_motors = data.get("motors", [])
         self._plot_motor_currents(self._last_motors)
 
-        self.figure.tight_layout()
         self.canvas.draw()
 
     def _plot_battery_currents(self, batteries: list):
         """Toplam akım (busbar yüklenmesi) panelini seçili görünüme (çizgi/ısı
-        haritası) göre çizer. Motor paneliyle aynı sebeple (colorbar grid
-        yerleşimini kalıcı değiştiriyor) eksen sıfırdan yeniden oluşturulur."""
+        haritası) göre çizer. Ana eksen sıfırdan yeniden oluşturulur (grid/
+        yticks gibi ayarların temiz kalması için); colorbar için ayrılan sabit
+        eksen (_current_cax) ise SİLİNMEZ, sadece temizlenip gizlenir — bu
+        sayede ana grafik alanının genişliği iki görünüm arasında değişmez."""
         self.figure.delaxes(self.ax_current)
-        self.ax_current = self.figure.add_subplot(312, sharex=self.ax_voltage)
+        self.ax_current = self.figure.add_subplot(self._current_gs_cell, sharex=self.ax_voltage)
+        self._current_cax.clear()
+        self._current_cax.axis("off")
         self._battery_colorbar = None
 
         if self.battery_view_mode == "heatmap":
@@ -696,7 +730,9 @@ class App(ctk.CTk):
         ne zaman daha fazla yüklendiğini karşılaştırmak için kullanışlı; tek
         bataryalı loglarda tek satırlık bir şerit olarak görünür.
         """
-        self._style_axes(self.ax_current, "Busbar")
+        # Panel başlığı çizgi grafiğiyle AYNI ("Toplam Akım (A)") kalır; ısı
+        # haritasında farklı bir metne ("Busbar") değişmesi kafa karıştırıcıydı.
+        self._style_axes(self.ax_current, "Toplam Akım (A)")
         self.ax_current.grid(False)  # ısı haritasında gridline gürültü yapar
 
         if not batteries:
@@ -716,20 +752,21 @@ class App(ctk.CTk):
         self.ax_current.set_yticks(range(1, len(batteries) + 1))
         self.ax_current.set_yticklabels([f"Batarya {battery['id']}" for battery in batteries])
 
-        self._battery_colorbar = self.figure.colorbar(image, ax=self.ax_current, pad=0.01)
+        self._current_cax.axis("on")
+        self._battery_colorbar = self.figure.colorbar(image, cax=self._current_cax)
         self._battery_colorbar.set_label("Akım (A)", color=TEXT_SECONDARY)
         self._battery_colorbar.ax.tick_params(colors=TEXT_MUTED)
 
     def _plot_motor_currents(self, motors: list):
         """Motor panelini seçili görünüme (çizgi/ısı haritası) göre çizer.
-
-        Isı haritası bir colorbar eksen ekliyor ve bu, panelin grid
-        yerleşimini kalıcı değiştiriyor; bir sonraki çizimde (özellikle
-        çizgi grafiğine dönüşte) eskisini silmeye çalışmak yerine ekseni
-        sıfırdan yeniden oluşturmak matplotlib'de daha güvenilir.
-        """
+        Ana eksen sıfırdan yeniden oluşturulur (grid/yticks temiz kalsın
+        diye); colorbar için ayrılan sabit eksen (_motors_cax) SİLİNMEZ,
+        sadece temizlenip gizlenir — ana grafik alanının genişliği iki
+        görünüm arasında değişmesin diye."""
         self.figure.delaxes(self.ax_motors)
-        self.ax_motors = self.figure.add_subplot(313, sharex=self.ax_voltage)
+        self.ax_motors = self.figure.add_subplot(self._motors_gs_cell, sharex=self.ax_voltage)
+        self._motors_cax.clear()
+        self._motors_cax.axis("off")
         self._motor_colorbar = None
 
         if self.motor_view_mode == "heatmap":
@@ -762,7 +799,9 @@ class App(ctk.CTk):
         bir zaman eksenine (tüm motorların zamanlarının birleşimi) interpolate
         edilir.
         """
-        self._style_axes(self.ax_motors, "Motor")
+        # Panel başlığı çizgi grafiğiyle AYNI ("Motor Akımı (A)") kalır; ısı
+        # haritasında farklı bir metne ("Motor") değişmesi kafa karıştırıcıydı.
+        self._style_axes(self.ax_motors, "Motor Akımı (A)")
         self.ax_motors.set_xlabel("Zaman (s)", color=TEXT_SECONDARY)
         self.ax_motors.grid(False)  # ısı haritasında gridline gürültü yapar
 
@@ -783,7 +822,8 @@ class App(ctk.CTk):
         self.ax_motors.set_yticks(range(1, len(motors) + 1))
         self.ax_motors.set_yticklabels([f"Motor {motor['id']}" for motor in motors])
 
-        self._motor_colorbar = self.figure.colorbar(image, ax=self.ax_motors, pad=0.01)
+        self._motors_cax.axis("on")
+        self._motor_colorbar = self.figure.colorbar(image, cax=self._motors_cax)
         self._motor_colorbar.set_label("Akım (A)", color=TEXT_SECONDARY)
         self._motor_colorbar.ax.tick_params(colors=TEXT_MUTED)
 
