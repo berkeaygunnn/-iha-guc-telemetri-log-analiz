@@ -680,6 +680,15 @@ double computeDuration(const std::map<int, std::vector<BatterySamplePoint>>& bat
 constexpr double VOLTAGE_SAG_WARNING_THRESHOLD = 0.15;          // ilk voltaja göre %15 düşüş
 constexpr double MOTOR_CURRENT_IMBALANCE_THRESHOLD = 0.20;      // motorlar arası genel ortalamadan %20 sapma
 
+// Gerçek loglarla ilk kalibrasyon denemesinde şu görüldü: çok kısa (ör. arm
+// öncesi/idle, birkaç saniyelik) kayıtlarda akım/voltaj örnekleri anlamlı bir
+// uçuş dinamiği yansıtmıyor ve kurallar yanlış alarm üretebiliyor (ör. 9
+// örneklik, ~1.6 saniyelik bir idle logda motorlar arasında %59 "dengesizlik"
+// uyarısı çıkmıştı — gerçekte uçuş bile yoktu). Bu yüzden bir batarya/motor
+// grubunun ilk ve son örneği arasındaki süre bu eşiğin altındaysa o grup için
+// kural hiç değerlendirilmiyor.
+constexpr double MIN_DURATION_FOR_WARNINGS_S = 5.0;
+
 // Yüzdeyi tam sayıya yuvarlar (ekstra <cmath> bağımlılığı almamak için elle).
 int roundToPercent(double ratio) {
     return static_cast<int>(ratio * 100.0 + 0.5);
@@ -695,6 +704,7 @@ std::vector<std::string> computeWarnings(const ParsedLog& log) {
     for (const auto& entry : log.batteries) {
         const std::vector<BatterySamplePoint>& points = entry.second;
         if (points.empty()) continue;
+        if (points.back().time_s - points.front().time_s < MIN_DURATION_FOR_WARNINGS_S) continue;
 
         double first = points.front().voltage_v;
         double minVoltage = first;
@@ -717,6 +727,7 @@ std::vector<std::string> computeWarnings(const ParsedLog& log) {
         for (const auto& entry : log.motors) {
             const std::vector<MotorSamplePoint>& points = entry.second;
             if (points.empty()) continue;
+            if (points.back().time_s - points.front().time_s < MIN_DURATION_FOR_WARNINGS_S) continue;
             double sum = 0.0;
             for (const auto& point : points) sum += point.current_a;
             motorAverages[entry.first] = sum / static_cast<double>(points.size());

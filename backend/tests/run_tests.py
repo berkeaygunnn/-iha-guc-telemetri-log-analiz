@@ -121,7 +121,11 @@ class WarningRuleTests(unittest.TestCase):
     make_synthetic_log.generate()'in ana profili (motor dengesizliği testinde
     kullanılıyor) kasten değiştirilmiyor; bunun yerine aynı dosyanın export
     ettiği alt düzey yapı taşları (build_fmt_message/build_bat_message) ile
-    tek amaçlı, minimal bir buffer kuruluyor."""
+    tek amaçlı, minimal bir buffer kuruluyor.
+
+    Not: main.cpp'deki MIN_DURATION_FOR_WARNINGS_S (5s) eşiği yüzünden, bu
+    fixture'daki örnekler en az 5 saniye arayla olmalı, yoksa "çok kısa/idle
+    veri" olarak muaf tutulup uyarı hiç üretilmez."""
 
     def _generate_voltage_sag_log(self) -> bytes:
         out = bytearray()
@@ -129,7 +133,19 @@ class WarningRuleTests(unittest.TestCase):
             make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
         )
         out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 10.0)
-        out += make_synthetic_log.build_bat_message(1.0, 0, 12.0, 10.0)  # ~%29 düşüş (eşik %15)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 12.0, 10.0)  # ~%29 düşüş (eşik %15), 6s aralık (eşik 5s)
+        return bytes(out)
+
+    def _generate_short_but_large_sag_log(self) -> bytes:
+        """Aynı büyük voltaj düşümü ama süre eşiğinin (5s) altında — gerçek bir
+        idle/arm-öncesi ArduPilot logunda (9 örnek, ~1.6s) yanlışlıkla motor
+        dengesizliği uyarısı üretilmesiyle keşfedilen sorunun regresyon testi."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 10.0)
+        out += make_synthetic_log.build_bat_message(2.0, 0, 12.0, 10.0)  # ~%29 düşüş ama sadece 2s arayla
         return bytes(out)
 
     def test_voltage_sag_warning_triggers(self):
@@ -142,6 +158,16 @@ class WarningRuleTests(unittest.TestCase):
             warnings = data["warnings"]
             self.assertEqual(len(warnings), 1)
             self.assertIn("Batarya 1", warnings[0])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_short_duration_does_not_trigger_warning(self):
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(self._generate_short_but_large_sag_log())
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            self.assertEqual(data["warnings"], [])
         finally:
             path.unlink(missing_ok=True)
 
@@ -162,7 +188,10 @@ class RealLogRegressionTests(unittest.TestCase):
         self.assertEqual(data["meta"]["format"], "ardupilot")
         self.assertEqual(len(data["batteries"]), 1)
         self.assertEqual(len(data["batteries"][0]["time_s"]), 9)
-        self.assertIsInstance(data["warnings"], list)
+        # Bu log sadece ~1.6 saniyelik arm-öncesi/idle veri içeriyor; kalibrasyon
+        # sırasında motorlar arasında (anlamsız) %59 dengesizlik uyarısı ürettiği
+        # görüldü. MIN_DURATION_FOR_WARNINGS_S eklenmesinin regresyon testi.
+        self.assertEqual(data["warnings"], [])
 
     def test_px4_real_multi_battery(self):
         data = run_backend(DATA_DIR / "px4_sample_log_small.ulg")
