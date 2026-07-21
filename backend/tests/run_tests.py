@@ -259,6 +259,31 @@ class RealPx4LogParsingBugTests(unittest.TestCase):
         finally:
             path.unlink(missing_ok=True)
 
+    def test_system_power_only_gives_specific_error(self):
+        """Bazı Rover yapılandırmaları hiç 'battery_status' loglamıyor, sadece
+        dahili güç hatlarını raporlayan 'system_power'ı kullanıyor (gerçek bir
+        PX4 flight review logunda bulundu). system_power'daki alanlar ana
+        batarya voltajı DEĞİL; bu yüzden veri olarak kullanmıyoruz ama en
+        azından kullanıcıya "desteklenmeyen/bozuk log" yerine daha isabetli bir
+        hata mesajı veriyoruz."""
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "system_power:uint64_t timestamp;float voltage5v_v;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "system_power", multi_id=0)
+
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                run_backend(path)
+            self.assertIn("system_power", str(ctx.exception))
+        finally:
+            path.unlink(missing_ok=True)
+
 
 class RealLogRegressionTests(unittest.TestCase):
     """Gerçek örnek loglarla önceden doğrulanmış değerlere karşı regresyon çapası."""

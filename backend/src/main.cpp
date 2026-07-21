@@ -67,6 +67,13 @@ struct ParsedLog {
     std::string format;  // "ardupilot" ya da "px4"
     std::map<int, std::vector<BatterySamplePoint>> batteries;
     std::map<int, std::vector<MotorSamplePoint>> motors;
+    // PX4'te bazı araçlar (ör. bazı Rover yapılandırmaları) hiç "battery_status"
+    // yayınlamıyor, sadece dahili güç hatlarını raporlayan "system_power"ı
+    // kullanıyor. Bu, ana batarya voltajı/akımı DEĞİL (5V/payload hattı gibi
+    // dahili rayların voltajı); bu yüzden veri olarak kullanılmıyor, sadece
+    // "batarya verisi yok" durumunda kullanıcıya daha isabetli bir hata mesajı
+    // verebilmek için bu konunun görülüp görülmediği izleniyor.
+    bool hasSystemPowerTopic = false;
 };
 
 // Format karakterinin kapladığı byte sayısı (LogStructure.h'deki tablo).
@@ -554,6 +561,7 @@ ParsedLog parseUlogBuffer(const std::vector<uint8_t>& buffer) {
                 uint16_t msgId;
                 std::memcpy(&msgId, payload + 1, 2);
                 std::string name(reinterpret_cast<const char*>(payload + 3), msgSize - 3);
+                if (name == "system_power") result.hasSystemPowerTopic = true;
                 subscriptions[msgId] = ULogSubscription{name, multiId};
             }
         } else if (msgType == 'D') {
@@ -824,9 +832,19 @@ bool writePowerLogJson(const std::string& inputLogPath, const std::string& outpu
               << " batarya, " << parsed.motors.size() << " motor, " << warnings.size() << " uyari)" << std::endl;
 
     if (parsed.batteries.empty()) {
-        std::cerr << "Uyari: dosyada batarya verisi bulunamadi. Desteklenmeyen ya da bozuk "
-                     "bir log dosyasi olabilir (ArduPilot .bin ya da PX4 .ulog bekleniyor)."
-                  << std::endl;
+        if (parsed.hasSystemPowerTopic) {
+            // Ozellikle bazi Rover yapilandirmalarinda goruldu: bu arac ana
+            // batarya (battery_status) yerine sadece dahili guc hatlarini
+            // (system_power - 5V/payload rayi, ana batarya degil) logluyor.
+            std::cerr << "Uyari: bu log dosyasinda ana batarya (battery_status) verisi yok, "
+                         "sadece dahili guc hatti (system_power) verisi bulundu. Bu arac/"
+                         "yapilandirma su an desteklenmiyor."
+                      << std::endl;
+        } else {
+            std::cerr << "Uyari: dosyada batarya verisi bulunamadi. Desteklenmeyen ya da bozuk "
+                         "bir log dosyasi olabilir (ArduPilot .bin ya da PX4 .ulog bekleniyor)."
+                      << std::endl;
+        }
         return false;
     }
     return true;
