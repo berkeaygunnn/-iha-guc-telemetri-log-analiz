@@ -130,13 +130,21 @@ struct FieldLocator {
     char formatChar = ' ';
 };
 
-FieldLocator locateField(const FormatDef& def, const std::string& fieldName) {
+// payloadSize: bu mesaj örneğinin gerçekte kaç bayt veri taşıdığı (header
+// haric, def.length - 3). FMT tanımının "format" alanı bozuk bir dosyada
+// (bit hatası, yarım yazılmış FMT mesajı vb.) "length" ile tutarsız olabilir;
+// bu durumda hesaplanan offset payload'ın dışına taşabilir. Böyle bir alan
+// bulunamamış gibi (found=false) sayılır, aksi halde buffer sınırları dışında
+// okuma (heap-buffer-overflow) riski oluşur.
+FieldLocator locateField(const FormatDef& def, const std::string& fieldName, size_t payloadSize) {
     size_t offset = 0;
     for (size_t i = 0; i < def.labels.size() && i < def.format.size(); ++i) {
+        size_t fieldSize = fieldByteSize(def.format[i]);
         if (def.labels[i] == fieldName) {
+            if (offset + fieldSize > payloadSize) return FieldLocator{};
             return FieldLocator{true, offset, def.format[i]};
         }
-        offset += fieldByteSize(def.format[i]);
+        offset += fieldSize;
     }
     return FieldLocator{};
 }
@@ -162,12 +170,12 @@ FormatDef parseFormatMessage(const std::vector<uint8_t>& buffer, size_t pos) {
 // numarasına (Inst + 1) göre gruplar. Not: ArduPilot bu alana BAT mesajında
 // "Inst" adını veriyor (ESC mesajında ise "Instance"). "Inst" alanı yoksa
 // (çok eski loglar) tek batarya varsayılıp id=1'e yazılır.
-void extractBatterySample(const uint8_t* payload, const FormatDef& def,
+void extractBatterySample(const uint8_t* payload, const FormatDef& def, size_t payloadSize,
                            std::map<int, std::vector<BatterySamplePoint>>& batteries) {
-    FieldLocator timeField = locateField(def, "TimeUS");
-    FieldLocator voltField = locateField(def, "Volt");
-    FieldLocator currField = locateField(def, "Curr");
-    FieldLocator instField = locateField(def, "Inst");
+    FieldLocator timeField = locateField(def, "TimeUS", payloadSize);
+    FieldLocator voltField = locateField(def, "Volt", payloadSize);
+    FieldLocator currField = locateField(def, "Curr", payloadSize);
+    FieldLocator instField = locateField(def, "Inst", payloadSize);
 
     if (!timeField.found || !voltField.found || !currField.found) return;
 
@@ -186,11 +194,11 @@ void extractBatterySample(const uint8_t* payload, const FormatDef& def,
 
 // "ESC" mesajının payload'ından TimeUS/Instance/Curr alanlarını çıkarır ve
 // motor numarasına (Instance + 1) göre gruplar.
-void extractEscSample(const uint8_t* payload, const FormatDef& def,
+void extractEscSample(const uint8_t* payload, const FormatDef& def, size_t payloadSize,
                        std::map<int, std::vector<MotorSamplePoint>>& motors) {
-    FieldLocator timeField = locateField(def, "TimeUS");
-    FieldLocator instField = locateField(def, "Instance");
-    FieldLocator currField = locateField(def, "Curr");
+    FieldLocator timeField = locateField(def, "TimeUS", payloadSize);
+    FieldLocator instField = locateField(def, "Instance", payloadSize);
+    FieldLocator currField = locateField(def, "Curr", payloadSize);
 
     if (!timeField.found || !instField.found || !currField.found) return;
 
@@ -242,10 +250,11 @@ ParsedLog parseArduPilotBuffer(const std::vector<uint8_t>& buffer) {
         }
         if (pos + def.length > buffer.size()) break;
 
+        size_t payloadSize = static_cast<size_t>(def.length) - 3;
         if (def.name == "BAT" || def.name == "CURR") {
-            extractBatterySample(buffer.data() + pos + 3, def, result.batteries);
+            extractBatterySample(buffer.data() + pos + 3, def, payloadSize, result.batteries);
         } else if (def.name == "ESC") {
-            extractEscSample(buffer.data() + pos + 3, def, result.motors);
+            extractEscSample(buffer.data() + pos + 3, def, payloadSize, result.motors);
         }
 
         pos += def.length;
