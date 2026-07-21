@@ -74,8 +74,25 @@ COLOR_WARNING = "#d9a334"   # durum paleti: uyarı (backend'in kural tabanlı yo
 # Birden fazla batarya/motor olduğunda her birine sabit sırada, kategorik bir
 # renk atamak için (kategori kimliği). Bir bataryanın voltaj ve akım çizgisi
 # iki farklı panelde de AYNI rengi taşır ki paneller arasında göz takibiyle
-# eşleştirilebilsin. Sayı 4'ü geçerse (hexa/octo, çoklu batarya) baştan sarılır.
-SERIES_COLORS = ["#3987e5", "#008300", "#d55181", "#c98500"]
+# eşleştirilebilsin. 8 renk hexa/octokopterin tüm motorlarını (6/8) tek
+# döngüde ayrı renkte tutmaya yetiyor; bunun ötesine geçilirse (nadir) renk
+# döngüsü _series_style()'daki çizgi stiliyle birlikte tekrar başa sarılır.
+SERIES_COLORS = [
+    "#3987e5", "#008300", "#d55181", "#c98500",
+    "#8a5fd1", "#1fada4", "#e0574a", "#b8b83c",
+]
+# Renk paleti tükenip (>8 seri) baştan sarıldığında ikinci "tur"un çizgi
+# stilini değiştirerek (ör. motor 1 ve motor 9 aynı renkte ama biri düz,
+# diğeri kesikli çizgi) yine de ayırt edilebilir kalmasını sağlar.
+SERIES_LINESTYLES = ["-", "--", ":", "-."]
+
+
+def _series_style(index: int) -> tuple:
+    """index'e göre (renk, çizgi_stili) döner; SERIES_COLORS tükenirse
+    çizgi stili değişerek seriler yine ayırt edilebilir kalır."""
+    color = SERIES_COLORS[index % len(SERIES_COLORS)]
+    linestyle = SERIES_LINESTYLES[(index // len(SERIES_COLORS)) % len(SERIES_LINESTYLES)]
+    return color, linestyle
 
 # Isı haritası için ardışık (sequential) renk skalası: koyu yüzeyden başlayıp
 # markaya ait maviden geçip açık bir tona çıkar (düşük değer yüzeyde erir,
@@ -217,7 +234,11 @@ class App(ctk.CTk):
 
     def _build_status_label(self):
         """Hata mesajları için ayrı bir durum satırı (dosya etiketiyle karışmasın diye)."""
-        self.status_label = ctk.CTkLabel(self, text="", text_color=COLOR_CRITICAL)
+        # wraplength: uzun backend hata mesajları (ör. system_power mesajı
+        # birkaç cümle) pencere genişliğinde kesilmesin, alt satıra sarsın.
+        self.status_label = ctk.CTkLabel(
+            self, text="", text_color=COLOR_CRITICAL, justify="left", anchor="w", wraplength=1000
+        )
         self.status_label.pack(side="top", fill="x", padx=16, pady=(0, 4))
 
     def _build_plot_area(self):
@@ -320,9 +341,12 @@ class App(ctk.CTk):
         self._style_axes(self.ax_voltage, "Voltaj (V)")
 
         for i, battery in enumerate(batteries):
-            color = SERIES_COLORS[i % len(SERIES_COLORS)]
+            color, linestyle = _series_style(i)
             label = f"Batarya {battery['id']}"
-            self.ax_voltage.plot(battery["time_s"], battery["voltage_v"], color=color, linewidth=2, label=label)
+            self.ax_voltage.plot(
+                battery["time_s"], battery["voltage_v"], color=color, linestyle=linestyle,
+                linewidth=2, label=label,
+            )
 
         if len(batteries) > 1:
             self.ax_voltage.legend(
@@ -357,10 +381,10 @@ class App(ctk.CTk):
         self._style_axes(self.ax_current, "Toplam Akım (A)")
 
         for i, battery in enumerate(batteries):
-            color = SERIES_COLORS[i % len(SERIES_COLORS)]
+            color, linestyle = _series_style(i)
             self.ax_current.plot(
-                battery["time_s"], battery["current_a"], color=color, linewidth=2,
-                label=f"Batarya {battery['id']}",
+                battery["time_s"], battery["current_a"], color=color, linestyle=linestyle,
+                linewidth=2, label=f"Batarya {battery['id']}",
             )
 
         if len(batteries) > 1:
@@ -423,10 +447,10 @@ class App(ctk.CTk):
         self.ax_motors.set_xlabel("Zaman (s)", color=TEXT_SECONDARY)
 
         for i, motor in enumerate(motors):
-            color = SERIES_COLORS[i % len(SERIES_COLORS)]
+            color, linestyle = _series_style(i)
             self.ax_motors.plot(
-                motor["time_s"], motor["current_a"], color=color, linewidth=2,
-                label=f"Motor {motor['id']}",
+                motor["time_s"], motor["current_a"], color=color, linestyle=linestyle,
+                linewidth=2, label=f"Motor {motor['id']}",
             )
 
         if motors:

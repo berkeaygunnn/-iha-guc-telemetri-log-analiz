@@ -17,12 +17,12 @@ jobs:
           cmake -S backend -B backend/build -G Ninja
           cmake --build backend/build
 
-      - name: Backend testleri
-        run: python3 backend/tests/run_tests.py
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Backend testleri
+        run: python3 backend/tests/run_tests.py
 
       - name: Frontend bağımlılıkları
         run: pip install -r frontend/requirements.txt

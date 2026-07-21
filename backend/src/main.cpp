@@ -8,6 +8,7 @@
 //
 // Kaynak: https://github.com/ArduPilot/ardupilot/blob/master/libraries/AP_Logger/LogStructure.h
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -189,6 +190,12 @@ void extractBatterySample(const uint8_t* payload, const FormatDef& def, size_t p
     double volt = readFieldAsDouble(payload + voltField.byteOffset, voltField.formatChar);
     double curr = readFieldAsDouble(payload + currField.byteOffset, currField.formatChar);
 
+    // Bozuk bir dosyada okunan bayt bir NaN/Infinity'ye denk gelebilir; bu
+    // JSON'a yazilamaz (gecerli JSON'da NaN/Infinity yok). Boyle bir ornegi
+    // sessizce atlamak, locateField'in payload-sinirini asan alani atlamasiyla
+    // ayni felsefe: bozuk tek bir ornegi at, veriyi kirletme.
+    if (!std::isfinite(timeUs) || !std::isfinite(volt) || !std::isfinite(curr)) return;
+
     batteries[instance + 1].push_back(BatterySamplePoint{timeUs / 1e6, volt, curr});
 }
 
@@ -206,6 +213,8 @@ void extractEscSample(const uint8_t* payload, const FormatDef& def, size_t paylo
     int instance = static_cast<int>(
         readFieldAsDouble(payload + instField.byteOffset, instField.formatChar));
     double curr = readFieldAsDouble(payload + currField.byteOffset, currField.formatChar);
+
+    if (!std::isfinite(timeUs) || !std::isfinite(curr)) return;
 
     motors[instance + 1].push_back(MotorSamplePoint{timeUs / 1e6, curr});
 }
@@ -424,10 +433,17 @@ struct ULogFieldLocator {
     const ULogField* field = nullptr;
 };
 
-ULogFieldLocator locateUlogField(const ULogFormatDef& def, const std::string& fieldName) {
+// payloadSize: bu tanımın alanlarının gerçekte hangi buffer bölgesinden
+// okunduğu (üst düzey bir mesaj için mesajın kendi payload boyutu, iç içe bir
+// dizi elemanı için o elemanın sabit boyutu). ArduPilot tarafındaki
+// locateField ile aynı sebep: bozuk bir dosyada 'format' tanımı ile mesajın
+// gerçek boyutu tutarsız olabilir, bu kontrol olmadan buffer sınırları
+// dışında okuma riski oluşurdu.
+ULogFieldLocator locateUlogField(const ULogFormatDef& def, const std::string& fieldName, size_t payloadSize) {
     size_t offset = 0;
     for (const ULogField& field : def.fields) {
         if (field.name == fieldName) {
+            if (offset + field.size > payloadSize) return ULogFieldLocator{};
             return ULogFieldLocator{true, offset, &field};
         }
         if (field.size == 0) break;  // bilinmeyen boyut; sonraki offsetler güvenilir değil
@@ -452,11 +468,11 @@ double readUlogFieldAsDouble(const uint8_t* data, const std::string& type) {
 
 // "battery_status" verisinden timestamp/voltage_v/current_a çıkarır ve
 // batarya numarasına (multiId + 1) göre gruplar.
-void extractUlogBatterySample(const uint8_t* payload, const ULogFormatDef& def, int multiId,
-                               std::map<int, std::vector<BatterySamplePoint>>& batteries) {
-    ULogFieldLocator timeField = locateUlogField(def, "timestamp");
-    ULogFieldLocator voltField = locateUlogField(def, "voltage_v");
-    ULogFieldLocator currField = locateUlogField(def, "current_a");
+void extractUlogBatterySample(const uint8_t* payload, const ULogFormatDef& def, size_t payloadSize,
+                               int multiId, std::map<int, std::vector<BatterySamplePoint>>& batteries) {
+    ULogFieldLocator timeField = locateUlogField(def, "timestamp", payloadSize);
+    ULogFieldLocator voltField = locateUlogField(def, "voltage_v", payloadSize);
+    ULogFieldLocator currField = locateUlogField(def, "current_a", payloadSize);
 
     if (!timeField.found || !voltField.found || !currField.found) return;
 
@@ -464,18 +480,20 @@ void extractUlogBatterySample(const uint8_t* payload, const ULogFormatDef& def, 
     double volt = readUlogFieldAsDouble(payload + voltField.byteOffset, voltField.field->elementType);
     double curr = readUlogFieldAsDouble(payload + currField.byteOffset, currField.field->elementType);
 
+    if (!std::isfinite(timestamp) || !std::isfinite(volt) || !std::isfinite(curr)) return;
+
     batteries[multiId + 1].push_back(BatterySamplePoint{timestamp / 1e6, volt, curr});
 }
 
 // "esc_status" mesajından, içindeki "esc_report" dizisinin her elemanı için
 // akım değerini çıkarır (motor numarası = dizi indeksi + 1).
-void extractUlogEscSamples(const uint8_t* payload, const ULogFormatDef& escStatusDef,
+void extractUlogEscSamples(const uint8_t* payload, const ULogFormatDef& escStatusDef, size_t payloadSize,
                             const std::map<std::string, ULogFormatDef>& formats,
                             std::map<int, std::vector<MotorSamplePoint>>& motors) {
-    ULogFieldLocator timeField = locateUlogField(escStatusDef, "timestamp");
-    ULogFieldLocator escCountField = locateUlogField(escStatusDef, "esc_count");
-    ULogFieldLocator onlineField = locateUlogField(escStatusDef, "esc_online_flags");
-    ULogFieldLocator escArrayField = locateUlogField(escStatusDef, "esc");
+    ULogFieldLocator timeField = locateUlogField(escStatusDef, "timestamp", payloadSize);
+    ULogFieldLocator escCountField = locateUlogField(escStatusDef, "esc_count", payloadSize);
+    ULogFieldLocator onlineField = locateUlogField(escStatusDef, "esc_online_flags", payloadSize);
+    ULogFieldLocator escArrayField = locateUlogField(escStatusDef, "esc", payloadSize);
 
     if (!timeField.found || !escArrayField.found || escArrayField.field->arrayLength == 0) return;
 
@@ -483,10 +501,16 @@ void extractUlogEscSamples(const uint8_t* payload, const ULogFormatDef& escStatu
     if (nestedIt == formats.end()) return;
     const ULogFormatDef& escReportDef = nestedIt->second;
 
-    ULogFieldLocator currField = locateUlogField(escReportDef, "esc_current");
+    // "esc_current" alanı, esc_report'un TEK bir dizi elemanının kendi sabit
+    // boyutu (elementSize) içinde aranıyor — üst düzey mesajın toplam
+    // payloadSize'ı değil, çünkü diziyi elemanlarına bölecek olan sabit
+    // stride budur.
+    size_t elementSize = escArrayField.field->size / static_cast<size_t>(escArrayField.field->arrayLength);
+    ULogFieldLocator currField = locateUlogField(escReportDef, "esc_current", elementSize);
     if (!currField.found) return;
 
     double timestamp = readUlogFieldAsDouble(payload + timeField.byteOffset, timeField.field->elementType);
+    if (!std::isfinite(timestamp)) return;
 
     // Hangi dizi elemanlarının gerçekten bağlı bir ESC'ye ait olduğunu bulmak
     // için önce "esc_online_flags" bitmask'ine bakılıyor. Gerçek loglarla
@@ -510,11 +534,11 @@ void extractUlogEscSamples(const uint8_t* payload, const ULogFormatDef& escStatu
         if (reported > 0 && reported < escCount) escCount = reported;
     }
 
-    size_t elementSize = escArrayField.field->size / static_cast<size_t>(escArrayField.field->arrayLength);
     for (int i = 0; i < escCount; ++i) {
         if (haveOnlineMask && !((onlineMask >> i) & 1u)) continue;  // bu dizi elemanında bağlı ESC yok
         const uint8_t* elementPtr = payload + escArrayField.byteOffset + static_cast<size_t>(i) * elementSize;
         double curr = readUlogFieldAsDouble(elementPtr + currField.byteOffset, currField.field->elementType);
+        if (!std::isfinite(curr)) continue;
         motors[i + 1].push_back(MotorSamplePoint{timestamp / 1e6, curr});
     }
 }
@@ -592,10 +616,10 @@ ParsedLog parseUlogBuffer(const std::vector<uint8_t>& buffer) {
                                 // Her batarya kendi multiId'siyle (0, 1, 2, ...) ayrı
                                 // subscription/msg_id alır; bu yüzden burada tüm
                                 // instance'lar kabul edilip numaralarına göre gruplanıyor.
-                                extractUlogBatterySample(payload + 2, fmtIt->second,
+                                extractUlogBatterySample(payload + 2, fmtIt->second, actualSize,
                                                           subIt->second.multiId, result.batteries);
                             } else if (fmtIt->second.name == "esc_status" && subIt->second.multiId == 0) {
-                                extractUlogEscSamples(payload + 2, fmtIt->second, formats, result.motors);
+                                extractUlogEscSamples(payload + 2, fmtIt->second, actualSize, formats, result.motors);
                             }
                         }
                     }
