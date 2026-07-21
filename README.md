@@ -1,8 +1,9 @@
 # İHA Güç/Telemetri Log Analiz Aracı
 
-ArduPilot (`.bin`) veya PX4 (`.ulog`) uçuş kontrolcülerinden alınan uçuş sonrası
-log dosyalarını okuyup; batarya voltaj düşümünü (voltage sag) ve motor/ESC akım
-çekimini grafiklere dönüştüren bir masaüstü uygulaması.
+ArduPilot (`.bin`) veya PX4 (`.ulog`/`.ulg` — PX4 araçları genelde `.ulg`
+uzantısıyla üretir, ikisi de aynı ULog formatıdır) uçuş kontrolcülerinden alınan
+uçuş sonrası log dosyalarını okuyup; batarya voltaj düşümünü (voltage sag) ve
+motor/ESC akım çekimini grafiklere dönüştüren bir masaüstü uygulaması.
 
 ## Özellikler
 
@@ -63,7 +64,7 @@ python main.py
 ```
 
 Açılan pencerede **Log Dosyası Yükle** ile `data/` klasöründeki örnek
-loglardan birini (ya da kendi `.bin`/`.ulog` dosyanı) seç.
+loglardan birini (ya da kendi `.bin`/`.ulog`/`.ulg` dosyanı) seç.
 
 ## Dağıtım (paketleme)
 
@@ -81,7 +82,7 @@ olduğu gibi zip'leyip paylaşabilirsin; kullanıcı sadece içindeki
 klasörde bulunduğu için ayrıca CMake/Ninja kurmasına gerek yoktur).
 
 Not: paket örnek `data/` log dosyalarını içermez — küçük kalması için;
-kullanıcı kendi `.bin`/`.ulog` dosyasını yükler.
+kullanıcı kendi `.bin`/`.ulog`/`.ulg` dosyasını yükler.
 
 ## Proje durumu
 
