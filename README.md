@@ -36,7 +36,7 @@ log dosyalarını okuyup; batarya voltaj düşümünü (voltage sag) ve motor/ES
 | `backend/` | C++ (CMake). Log dosyasını parse edip `shared/` şemasına uygun JSON üretir. |
 | `frontend/` | Python + CustomTkinter + Matplotlib. Dosya seçimi, backend'i çalıştırma, grafik çizimi. |
 | `shared/` | Backend ↔ frontend arasındaki JSON veri sözleşmesi (şema + örnek). |
-| `data/` | Test için örnek/sentetik uçuş logları. |
+| `data/` | Test için örnek/sentetik uçuş logları (ArduCopter, PX4 quadrotor/hexarotor/rover/sabit kanat). |
 
 Backend ve frontend bağımsız çalışır; aralarında doğrudan bir çağrı yoktur,
 sadece dosya üzerinden JSON alışverişi vardır.
