@@ -50,5 +50,11 @@ kurallar (bkz. `backend/src/main.cpp` içindeki `computeWarnings`):
 Uyarı yoksa dizi boş (`[]`) döner. Eşikler `main.cpp`'de adlandırılmış sabitler;
 gerçek uçuş verisiyle kalibre edilene kadar başlangıç değerleridir.
 
+Ayrıca: bir batarya/motorun ilk ve son örneği arasındaki süre 5 saniyeden
+kısaysa (`MIN_DURATION_FOR_WARNINGS_S`) o grup için kural hiç değerlendirilmez.
+Bu, gerçek loglarla ilk kalibrasyon denemesinde bulundu: çok kısa (arm-öncesi/
+idle) kayıtlarda örnekler gerçek uçuş dinamiği yansıtmadığı için yanlış alarma
+yol açabiliyordu.
+
 Örnek dosya: `power_log_example.json` — backend'in gerçek ArduPilot/PX4
 loglarından ürettiği JSON da bu yapıya uyar.
