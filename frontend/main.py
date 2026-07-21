@@ -187,8 +187,15 @@ class App(ctk.CTk):
         ).pack(pady=(0, 32))
 
         icon_canvas = Canvas(center, width=220, height=170, bg=LANDING_BG, highlightthickness=0)
-        icon_canvas.pack(pady=(0, 32))
+        icon_canvas.pack(pady=(0, 24))
         self._draw_drone_icon(icon_canvas)
+
+        ctk.CTkLabel(
+            center,
+            text="ArduPilot (.bin) veya PX4 (.ulog/.ulg) log dosyanızı yükleyin;\n"
+                 "voltaj, akım ve motor verilerini görün.",
+            text_color=TEXT_MUTED, font=ctk.CTkFont(size=12), justify="center",
+        ).pack(pady=(0, 20))
 
         ctk.CTkButton(
             center, text="Dosya Yükle (Ctrl+O)", command=self._on_load_file_click,
