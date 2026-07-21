@@ -25,12 +25,16 @@ DATA_DIR = BACKEND_DIR.parent / "data"
 
 
 def find_backend_exe() -> Path:
-    """Windows'ta .exe uzantılı, Linux CI'da uzantısız olabileceği için ikisini de dener."""
+    """Windows'ta .exe uzantılı, Linux CI'da uzantısız olabileceği için ikisini de dener.
+    CMake'in Windows'ta varsayılan ürettiği Visual Studio (MSVC, multi-config)
+    generator'ı çıktıyı build/ kökü yerine build/Release/ (ya da build/Debug/)
+    altına koyar; bu yüzden üç klasör de sırayla denenir."""
     build_dir = BACKEND_DIR / "build"
-    for name in ("power_log_backend.exe", "power_log_backend"):
-        candidate = build_dir / name
-        if candidate.exists():
-            return candidate
+    for directory in (build_dir, build_dir / "Release", build_dir / "Debug"):
+        for name in ("power_log_backend.exe", "power_log_backend"):
+            candidate = directory / name
+            if candidate.exists():
+                return candidate
     raise FileNotFoundError(
         f"Backend derlenmemiş: {build_dir} altında power_log_backend bulunamadı. "
         "Önce 'cmake --build build' ile derleyin."

@@ -1,5 +1,7 @@
 # İHA Güç/Telemetri Log Analiz Aracı
 
+[![Tests](https://github.com/berkeaygunnn/-iha-guc-telemetri-log-analiz/actions/workflows/tests.yml/badge.svg)](https://github.com/berkeaygunnn/-iha-guc-telemetri-log-analiz/actions/workflows/tests.yml)
+
 ArduPilot (`.bin`) veya PX4 (`.ulog`/`.ulg` — PX4 araçları genelde `.ulg`
 uzantısıyla üretir, ikisi de aynı ULog formatıdır) uçuş kontrolcülerinden alınan
 uçuş sonrası log dosyalarını okuyup; batarya voltaj düşümünü (voltage sag) ve

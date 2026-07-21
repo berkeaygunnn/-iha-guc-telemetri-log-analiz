@@ -32,3 +32,24 @@ jobs:
 
       - name: Frontend duman testi
         run: xvfb-run -a python3 frontend/tests/test_smoke.py
+
+  test-windows:
+    # Windows'a özgü kod yollarını (main.cpp'deki _WIN32 blokları: UTF-8
+    # argv çevirisi, fs::u8path) hiç çalıştırmayan tek CI job'ıydı; sadece
+    # backend derleme+test burada, frontend/GUI testi kapsam dışı (Tkinter
+    # için Windows runner'da display kurulumu ayrı bir efor).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Backend'i derle
+        run: |
+          cmake -S backend -B backend/build
+          cmake --build backend/build --config Release
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Backend testleri
+        run: python backend/tests/run_tests.py
