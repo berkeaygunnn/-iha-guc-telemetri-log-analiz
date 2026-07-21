@@ -178,10 +178,12 @@ class App(ctk.CTk):
         center.pack(side="left", fill="both", expand=True)
 
         # İçerik "center"ın tam ortasına place() ile konumlandırılıyor (sabit
-        # pady değerleriyle üste yaslamak yerine); pencere büyüdükçe altta
-        # boş kalan alan da orantılı dağılıyor, tek bir yerde birikmiyor.
+        # pady değerleriyle üste yaslamak yerine). place, relx/rely oranlarını
+        # kullandığı için pencere büyütülüp küçültüldükçe (ör. IDE'nin yanında
+        # daraltılmış bir pencerede) içerik her zaman "center" alanının tam
+        # ortasında kalacak şekilde otomatik yeniden hesaplanır.
         content_block = ctk.CTkFrame(center, fg_color="transparent")
-        content_block.place(relx=0.5, rely=0.45, anchor="center")
+        content_block.place(relx=0.5, rely=0.5, anchor="center")
 
         ctk.CTkLabel(
             content_block, text="İHA Güç/Telemetri Analiz", text_color=LANDING_TEXT,
