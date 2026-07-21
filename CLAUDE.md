@@ -64,15 +64,17 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
 - **Paketleme / dağıtım:** `scripts/build_release.ps1` ile PyInstaller onedir
   paketi, uygulama ikonu ve backend .exe'sinin pakete dahil edilmesi tamamlandı.
 
-## Gelecek özellikler (şimdilik MVP kapsamı DIŞINDA — sıraya alındı)
+## Kapsam dışı bırakılan fikirler
 
-- **Yapay zeka / makine öğrenmesi entegrasyonu (uzun vadeli):**
-  Örn. motor arıza tahmini gibi bir ML modeli — bunun için çok sayıda gerçek
-  (etiketlenmiş) uçuş logu gerekir, şu an elimizde yok. Alternatif olarak bir
-  LLM'e (örn. Claude/GPT API) üretilen JSON'u gönderip doğal dilde özet/yorum
-  aldırmak teknik olarak daha erişilebilir, ama internet bağlantısı ve
-  ücretli bir API anahtarı gerektirir (offline çalışmaz). Bu madde ayrı bir
-  "v2" hedefi olarak değerlendirilecek; şu an başlatılmayacak.
+- **Yapay zeka / makine öğrenmesi entegrasyonu:** Değerlendirildi, KESİN
+  OLARAK YAPILMAYACAK. ML modeli (ör. motor arıza tahmini) için gereken
+  etiketlenmiş gerçek uçuş logu verisi yok. LLM tabanlı özet/yorum (Claude/
+  GPT API) alternatifi de ücretli API anahtarı ve internet bağlantısı
+  gerektirdiği için (offline çalışmaz, proje sahibi ücret ödemek istemiyor)
+  elendi. Yerel/açık kaynak bir model çalıştırmak da paketi birkaç GB'a
+  şişirip dağıtımı karmaşıklaştıracağından tercih edilmedi — zaten mevcut
+  kural tabanlı uyarı sistemi aynı pratik değeri sıfır maliyetle sağlıyor.
+  Bu konu kapanmıştır, tekrar gündeme getirilmeyecek.
 
 ## Kodlama tercihleri / notlar
 
