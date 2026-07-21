@@ -79,8 +79,10 @@ SERIES_COLORS = ["#3987e5", "#008300", "#d55181", "#c98500"]
 
 # Isı haritası için ardışık (sequential) renk skalası: koyu yüzeyden başlayıp
 # markaya ait maviden geçip açık bir tona çıkar (düşük değer yüzeyde erir,
-# yüksek değer parlar) — koyu temada okunaklı olması için bu yönde.
-MOTOR_HEATMAP_COLORS = ["#141a22", SERIES_COLORS[0], "#cde2fb"]
+# yüksek değer parlar) — koyu temada okunaklı olması için bu yönde. Hem motor
+# hem batarya/busbar ısı haritası aynı skalayı kullanıyor (ikisi de "akım
+# yoğunluğu" anlamında aynı şeyi gösteriyor, aynı anda ekranda olmuyorlar).
+HEATMAP_COLORS = ["#141a22", SERIES_COLORS[0], "#cde2fb"]
 
 
 class App(ctk.CTk):
@@ -98,12 +100,43 @@ class App(ctk.CTk):
         self._motor_colorbar = None
         self._last_motors = None
 
+        self.battery_view_mode = "line"  # "line" ya da "heatmap" (busbar yüklenmesi)
+        self._battery_colorbar = None
+        self._last_batteries = None
+
         self._build_toolbar()
         self._build_stats_row()
         self._build_warnings_area()
         self._build_status_label()
+        self._build_battery_view_toggle()
         self._build_motor_view_toggle()
         self._build_plot_area()
+
+    def _build_battery_view_toggle(self):
+        """Toplam akım (busbar yüklenmesi) panelini çizgi grafiği/ısı haritası
+        arasında değiştiren seçici. Birden fazla batarya (ör. yedekli güç
+        hattı) olduğunda hangi busbar'ın ne zaman daha yüklü olduğunu
+        karşılaştırmak için kullanışlı."""
+        toggle_row = ctk.CTkFrame(self, fg_color="transparent")
+        toggle_row.pack(side="top", fill="x", padx=16, pady=(0, 8))
+
+        ctk.CTkLabel(
+            toggle_row, text="Busbar Görünümü:", text_color=TEXT_MUTED, font=ctk.CTkFont(size=11)
+        ).pack(side="left", padx=(0, 8))
+
+        self.battery_view_toggle = ctk.CTkSegmentedButton(
+            toggle_row, values=["Çizgi Grafiği", "Isı Haritası"],
+            command=self._on_battery_view_change,
+        )
+        self.battery_view_toggle.set("Çizgi Grafiği")
+        self.battery_view_toggle.pack(side="left")
+
+    def _on_battery_view_change(self, value: str):
+        self.battery_view_mode = "heatmap" if value == "Isı Haritası" else "line"
+        if self._last_batteries is not None:
+            self._plot_battery_currents(self._last_batteries)
+            self.figure.tight_layout()
+            self.canvas.draw()
 
     def _build_motor_view_toggle(self):
         """Motor panelini çizgi grafiği/ısı haritası arasında değiştiren seçici."""
@@ -285,26 +318,87 @@ class App(ctk.CTk):
 
         self.ax_voltage.clear()
         self._style_axes(self.ax_voltage, "Voltaj (V)")
-        self.ax_current.clear()
-        self._style_axes(self.ax_current, "Toplam Akım (A)")
 
         for i, battery in enumerate(batteries):
             color = SERIES_COLORS[i % len(SERIES_COLORS)]
             label = f"Batarya {battery['id']}"
             self.ax_voltage.plot(battery["time_s"], battery["voltage_v"], color=color, linewidth=2, label=label)
-            self.ax_current.plot(battery["time_s"], battery["current_a"], color=color, linewidth=2, label=label)
 
         if len(batteries) > 1:
-            legend_kwargs = dict(loc="upper right", facecolor=SURFACE, edgecolor=AXIS_LINE,
-                                  labelcolor=TEXT_SECONDARY, fontsize=9)
-            self.ax_voltage.legend(**legend_kwargs)
-            self.ax_current.legend(**legend_kwargs)
+            self.ax_voltage.legend(
+                loc="upper right", facecolor=SURFACE, edgecolor=AXIS_LINE,
+                labelcolor=TEXT_SECONDARY, fontsize=9,
+            )
+
+        self._last_batteries = batteries
+        self._plot_battery_currents(batteries)
 
         self._last_motors = data.get("motors", [])
         self._plot_motor_currents(self._last_motors)
 
         self.figure.tight_layout()
         self.canvas.draw()
+
+    def _plot_battery_currents(self, batteries: list):
+        """Toplam akım (busbar yüklenmesi) panelini seçili görünüme (çizgi/ısı
+        haritası) göre çizer. Motor paneliyle aynı sebeple (colorbar grid
+        yerleşimini kalıcı değiştiriyor) eksen sıfırdan yeniden oluşturulur."""
+        self.figure.delaxes(self.ax_current)
+        self.ax_current = self.figure.add_subplot(312, sharex=self.ax_voltage)
+        self._battery_colorbar = None
+
+        if self.battery_view_mode == "heatmap":
+            self._plot_battery_heatmap(batteries)
+        else:
+            self._plot_battery_lines(batteries)
+
+    def _plot_battery_lines(self, batteries: list):
+        """Her bataryanın (busbar'ın) toplam akımını kendi renginde çizer."""
+        self._style_axes(self.ax_current, "Toplam Akım (A)")
+
+        for i, battery in enumerate(batteries):
+            color = SERIES_COLORS[i % len(SERIES_COLORS)]
+            self.ax_current.plot(
+                battery["time_s"], battery["current_a"], color=color, linewidth=2,
+                label=f"Batarya {battery['id']}",
+            )
+
+        if len(batteries) > 1:
+            self.ax_current.legend(
+                loc="upper right", facecolor=SURFACE, edgecolor=AXIS_LINE,
+                labelcolor=TEXT_SECONDARY, fontsize=9,
+            )
+
+    def _plot_battery_heatmap(self, batteries: list):
+        """Batarya/busbar x zaman ısı haritası: renk = o andaki toplam akım.
+
+        Birden fazla batarya (ör. yedekli güç hattı) olduğunda hangi busbar'ın
+        ne zaman daha fazla yüklendiğini karşılaştırmak için kullanışlı; tek
+        bataryalı loglarda tek satırlık bir şerit olarak görünür.
+        """
+        self._style_axes(self.ax_current, "Busbar")
+        self.ax_current.grid(False)  # ısı haritasında gridline gürültü yapar
+
+        if not batteries:
+            return
+
+        all_times = sorted({t for battery in batteries for t in battery["time_s"]})
+        grid = np.array([
+            np.interp(all_times, battery["time_s"], battery["current_a"])
+            for battery in batteries
+        ])
+
+        cmap = LinearSegmentedColormap.from_list("battery_heat", HEATMAP_COLORS)
+        extent = [all_times[0], all_times[-1], 0.5, len(batteries) + 0.5]
+        image = self.ax_current.imshow(
+            grid, aspect="auto", origin="lower", extent=extent, cmap=cmap,
+        )
+        self.ax_current.set_yticks(range(1, len(batteries) + 1))
+        self.ax_current.set_yticklabels([f"Batarya {battery['id']}" for battery in batteries])
+
+        self._battery_colorbar = self.figure.colorbar(image, ax=self.ax_current, pad=0.01)
+        self._battery_colorbar.set_label("Akım (A)", color=TEXT_SECONDARY)
+        self._battery_colorbar.ax.tick_params(colors=TEXT_MUTED)
 
     def _plot_motor_currents(self, motors: list):
         """Motor panelini seçili görünüme (çizgi/ısı haritası) göre çizer.
@@ -361,7 +455,7 @@ class App(ctk.CTk):
             for motor in motors
         ])
 
-        cmap = LinearSegmentedColormap.from_list("motor_heat", MOTOR_HEATMAP_COLORS)
+        cmap = LinearSegmentedColormap.from_list("motor_heat", HEATMAP_COLORS)
         extent = [all_times[0], all_times[-1], 0.5, len(motors) + 0.5]
         image = self.ax_motors.imshow(
             grid, aspect="auto", origin="lower", extent=extent, cmap=cmap,
