@@ -16,8 +16,16 @@ log dosyalarını okuyup; batarya voltaj düşümünü (voltage sag) ve motor/ES
   (ortak zaman eksenini paylaşarak) çizilir.
 - Motor paneli, çizgi grafiği ile motor × zaman ısı haritası arasında tek
   tıkla geçiş yapabiliyor.
+- Toplam akım (busbar yüklenmesi) paneli de aynı şekilde çizgi grafiği ↔
+  batarya × zaman ısı haritası arasında geçiş yapabiliyor; birden fazla
+  batarya (yedekli güç hattı) olduğunda hangisinin ne zaman daha yüklü
+  olduğunu karşılaştırmak için kullanışlı.
 - Birden fazla batarya (ör. ana + yedek güç kaynağı) ayrı ayrı, tutarlı
   renklerle voltaj/akım panellerinde gösterilir.
+- Kural tabanlı otomatik uyarılar: aşırı voltaj düşümü (%15+) ve motorlar
+  arası akım dengesizliği (%20+) gerçek loglarla kalibre edilmiş eşiklerle
+  otomatik tespit edilip arayüzde gösterilir (bkz.
+  `shared/power_log_schema.md`'deki `warnings` alanı).
 
 ## Mimari
 
@@ -83,6 +91,7 @@ kullanıcı kendi `.bin`/`.ulog` dosyasını yükler.
 - [x] Gerçek ve sentetik loglarla uçtan uca test
 - [x] Güç dağıtım (busbar) ısı haritası
 - [x] Birden fazla batarya desteği
+- [x] Kural tabanlı otomatik uyarı sistemi (voltaj düşümü + motor dengesizliği)
 - [x] PyInstaller ile paketleme (tek klasörlük dağıtım)
 
 ## Lisans
