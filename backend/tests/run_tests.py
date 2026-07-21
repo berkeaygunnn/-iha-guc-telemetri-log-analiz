@@ -173,6 +173,79 @@ class WarningRuleTests(unittest.TestCase):
             path.unlink(missing_ok=True)
 
 
+class ArduPilotRobustnessTests(unittest.TestCase):
+    """Bozuk/tutarsiz ArduPilot .bin dosyalari icin savunma testleri.
+
+    Gercek bir SD karti bozulmasi/yarim yazilmis dosya, bir FMT mesajinin
+    'length' baytiyla 'format' string'ini (bit hatasi yuzunden) tutarsiz
+    birakabilir: format Volt/Curr gibi alanlar oldugunu soylerken, length o
+    alanlara yer olmadigini soyleyebilir. locateField bu durumda hesapladigi
+    byte offset'in mesajin gercek payload boyutunu astigini kontrol etmezse,
+    buffer sinirlari disinda (heap-buffer-overflow) okuma riski oluşurdu."""
+
+    def test_inconsistent_fmt_length_sample_is_skipped_not_crashed(self):
+        fmt_msg = bytearray(make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        ))
+        fmt_msg[4] = 3 + 8 + 1  # length bayti: sadece TimeUS+Inst'e yetiyor (Volt/Curr icin yer yok)
+
+        out = bytearray()
+        out += bytes(fmt_msg)
+        out += bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, make_synthetic_log.BAT_TYPE])
+        out += struct.pack("<QB", int(1.0 * 1e6), 0)  # bozuk FMT'ye uyan, kisa (Volt/Curr'suz) ornek
+
+        # FMT duzeltiliyor ve ardindan gecerli, tam bir ornek geliyor; parser'in
+        # bozuk ornekten sonra da senkronize kalip dogru calismaya devam ettigini
+        # (crash olmadigini, sadece bozuk orneği atladigini) kanitlamak icin.
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(2.0, 0, 16.8, 12.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            self.assertEqual(len(data["batteries"]), 1)
+            battery = data["batteries"][0]
+            self.assertEqual(len(battery["time_s"]), 1)  # sadece bozuk-olmayan ornek sayildi
+            self.assertAlmostEqual(battery["voltage_v"][0], 16.8, places=3)
+            self.assertAlmostEqual(battery["current_a"][0], 12.0, places=3)
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class MalformedInputFileTests(unittest.TestCase):
+    """Log olmayan/bozuk dosyalarda backend'in cokmeden, net bir hatayla
+    (RuntimeError -> hatali cikis kodu) basarisiz oldugunu dogrular."""
+
+    def test_nonexistent_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            missing_path = Path(tmp_dir) / "olmayan_dosya.bin"
+            with self.assertRaises(RuntimeError):
+                run_backend(missing_path)
+
+    def test_empty_file(self):
+        with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
+            path = Path(f.name)
+        try:
+            with self.assertRaises(RuntimeError):
+                run_backend(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_random_garbage_file(self):
+        with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
+            f.write(bytes((i * 37 + 11) % 256 for i in range(500)))
+            path = Path(f.name)
+        try:
+            with self.assertRaises(RuntimeError):
+                run_backend(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+
 class RealPx4LogParsingBugTests(unittest.TestCase):
     """PX4'ün herkese açık flight review veritabanından indirilen gerçek (60-100MB'lık,
     bu yüzden repoya eklenmeyen) uçuş loglarıyla kalibrasyon denenirken bulunan iki
