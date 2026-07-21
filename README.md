@@ -9,6 +9,10 @@ motor/ESC akım çekimini grafiklere dönüştüren bir masaüstü uygulaması.
 
 ## Özellikler
 
+- Uygulama açılışında canlı renkli bir **karşılama ekranı** karşılıyor:
+  solda geçmiş dosyalar listesi, ortada orijinal bir drone ikonu ve
+  "Dosya Yükle" butonu; dosya seçilince (ya da geçmişten tıklanınca)
+  analiz ekranına geçiliyor.
 - **ArduPilot `.bin` desteği** — kendini tanımlayan (FMT mesajlı) ikili format,
   batarya (`BAT`) ve motor (`ESC`) mesajlarını doğrudan çözer.
 - **PX4 `.ulog` desteği** — Format/Subscription/Data mesaj yapısını çözer,

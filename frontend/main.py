@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import customtkinter as ctk
-from tkinter import filedialog, PhotoImage
+from tkinter import Canvas, filedialog, PhotoImage
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -76,6 +76,15 @@ AXIS_LINE = "#383835"
 COLOR_CRITICAL = "#d03b3b"  # durum paleti: kritik/hata (backend hatası)
 COLOR_WARNING = "#d9a334"   # durum paleti: uyarı (backend'in kural tabanlı yorumları)
 
+# Giriş (splash) ekranı için ayrı, "dikkat çekici" bir palet — sadece landing
+# ekranında kullanılır, analiz ekranının sakin koyu teması (SURFACE vb.)
+# bundan etkilenmez. Ana mavi (SERIES_COLORS[0]) ile aynı aile, ama daha
+# doygun/parlak.
+LANDING_BG = "#07131f"              # koyu lacivert taban
+LANDING_ACCENT = "#3987e5"          # mevcut ana mavi ile tutarlılık
+LANDING_ACCENT_BRIGHT = "#5fd4ff"   # parlak camgöbeği, ikon/vurgu için
+LANDING_TEXT = "#eaf4ff"
+
 # Birden fazla batarya/motor olduğunda her birine sabit sırada, kategorik bir
 # renk atamak için (kategori kimliği). Bir bataryanın voltaj ve akım çizgisi
 # iki farklı panelde de AYNI rengi taşır ki paneller arasında göz takibiyle
@@ -126,6 +135,16 @@ class App(ctk.CTk):
         self._battery_colorbar = None
         self._last_batteries = None
 
+        # Uygulama iki "ekran" (frame) arasında geçiş yapıyor: açılışta
+        # gösterilen giriş ekranı ve dosya yüklendikten sonra gösterilen
+        # analiz ekranı. İkisi de aynı pencerenin (self) çocuğu; ayrı bir
+        # Toplevel pencere DEĞİL, sadece pack/pack_forget ile görünürlük
+        # değiştiriliyor.
+        self.landing_frame = ctk.CTkFrame(self, fg_color=LANDING_BG)
+        self.analysis_frame = ctk.CTkFrame(self, fg_color=SURFACE)
+
+        self._build_landing_screen()
+
         self._build_toolbar()
         self._build_stats_row()
         self._build_warnings_area()
@@ -138,12 +157,111 @@ class App(ctk.CTk):
         self.bind("<Control-o>", lambda event: self._on_load_file_click())
         self.bind("<Control-s>", lambda event: self._on_export_png_click())
 
+        self._show_landing()
+
+    def _show_landing(self):
+        self.analysis_frame.pack_forget()
+        self.landing_frame.pack(fill="both", expand=True)
+
+    def _show_analysis(self):
+        self.landing_frame.pack_forget()
+        self.analysis_frame.pack(fill="both", expand=True)
+
+    def _build_landing_screen(self):
+        """Uygulama ilk açıldığında gösterilen karşılama ekranı: solda
+        geçmiş dosyalar listesi, ortada bir drone ikonu ve büyük bir
+        'Dosya Yükle' butonu. Analiz ekranından ayrı, daha canlı bir
+        renk paleti kullanır (bkz. LANDING_* sabitleri)."""
+        self._build_recent_sidebar()
+
+        center = ctk.CTkFrame(self.landing_frame, fg_color="transparent")
+        center.pack(side="left", fill="both", expand=True)
+
+        ctk.CTkLabel(
+            center, text="İHA Güç/Telemetri Analiz", text_color=LANDING_TEXT,
+            font=ctk.CTkFont(size=32, weight="bold"),
+        ).pack(pady=(90, 8))
+        ctk.CTkLabel(
+            center, text="Uçuş logunu yükleyip güç/telemetri analizine başla",
+            text_color=LANDING_ACCENT_BRIGHT, font=ctk.CTkFont(size=14),
+        ).pack(pady=(0, 32))
+
+        icon_canvas = Canvas(center, width=180, height=140, bg=LANDING_BG, highlightthickness=0)
+        icon_canvas.pack(pady=(0, 32))
+        self._draw_drone_icon(icon_canvas)
+
+        ctk.CTkButton(
+            center, text="Dosya Yükle (Ctrl+O)", command=self._on_load_file_click,
+            fg_color=LANDING_ACCENT_BRIGHT, text_color=LANDING_BG, hover_color=LANDING_ACCENT,
+            font=ctk.CTkFont(size=16, weight="bold"), width=240, height=48, corner_radius=10,
+        ).pack()
+
+    def _build_recent_sidebar(self):
+        """Giriş ekranının sol tarafındaki 'Geçmiş Dosyalar' paneli."""
+        sidebar = ctk.CTkFrame(self.landing_frame, fg_color="#0c1e30", corner_radius=0, width=260)
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+
+        ctk.CTkLabel(
+            sidebar, text="Geçmiş Dosyalar", text_color=LANDING_TEXT,
+            font=ctk.CTkFont(size=15, weight="bold"), anchor="w",
+        ).pack(fill="x", padx=16, pady=(24, 12))
+
+        self._recent_sidebar_list = ctk.CTkScrollableFrame(sidebar, fg_color="transparent")
+        self._recent_sidebar_list.pack(fill="both", expand=True, padx=8, pady=(0, 16))
+
+        self._refresh_recent_sidebar(self._load_recent_files())
+
+    def _refresh_recent_sidebar(self, paths: list):
+        """Giriş ekranındaki geçmiş dosyalar listesini yeniden çizer. Liste
+        en fazla MAX_RECENT_FILES (5) öğe olduğu için her seferinde
+        temizleyip yeniden oluşturmanın maliyeti önemsiz."""
+        for child in self._recent_sidebar_list.winfo_children():
+            child.destroy()
+
+        if not paths:
+            ctk.CTkLabel(
+                self._recent_sidebar_list, text="Henüz geçmiş yok.",
+                text_color=TEXT_MUTED, font=ctk.CTkFont(size=12),
+            ).pack(pady=8)
+            return
+
+        for path_str in paths:
+            path_obj = Path(path_str)
+            ctk.CTkButton(
+                self._recent_sidebar_list, text=path_obj.name, anchor="w",
+                fg_color="transparent", hover_color=LANDING_ACCENT,
+                text_color=LANDING_TEXT, font=ctk.CTkFont(size=12),
+                command=lambda p=path_str: self._load_file(p),
+            ).pack(fill="x", pady=2)
+
+    def _draw_drone_icon(self, canvas: Canvas):
+        """Orijinal, sade bir çeyrek-kanat (quadcopter) ikonu çizer: Canvas
+        ilkelleriyle (çizgi + daire) oluşturulmuş vektörel bir siluet, bir
+        fotoğraf DEĞİL — telif riski yok, her boyutta net görünür."""
+        cx, cy = 90, 65
+        arm_len = 55
+        rotor_r = 17
+
+        for dx, dy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            end_x, end_y = cx + dx * arm_len, cy + dy * arm_len * 0.55
+            canvas.create_line(cx, cy, end_x, end_y, fill=LANDING_ACCENT_BRIGHT, width=4)
+            canvas.create_oval(
+                end_x - rotor_r, end_y - rotor_r, end_x + rotor_r, end_y + rotor_r,
+                outline=LANDING_ACCENT_BRIGHT, width=3,
+            )
+
+        canvas.create_oval(
+            cx - 24, cy - 15, cx + 24, cy + 15,
+            fill=LANDING_ACCENT, outline=LANDING_ACCENT_BRIGHT, width=2,
+        )
+
     def _build_battery_view_toggle(self):
         """Toplam akım (busbar yüklenmesi) panelini çizgi grafiği/ısı haritası
         arasında değiştiren seçici. Birden fazla batarya (ör. yedekli güç
         hattı) olduğunda hangi busbar'ın ne zaman daha yüklü olduğunu
         karşılaştırmak için kullanışlı."""
-        toggle_row = ctk.CTkFrame(self, fg_color="transparent")
+        toggle_row = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
         toggle_row.pack(side="top", fill="x", padx=16, pady=(0, 8))
 
         ctk.CTkLabel(
@@ -166,7 +284,7 @@ class App(ctk.CTk):
 
     def _build_motor_view_toggle(self):
         """Motor panelini çizgi grafiği/ısı haritası arasında değiştiren seçici."""
-        toggle_row = ctk.CTkFrame(self, fg_color="transparent")
+        toggle_row = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
         toggle_row.pack(side="top", fill="x", padx=16, pady=(0, 8))
 
         ctk.CTkLabel(
@@ -190,7 +308,7 @@ class App(ctk.CTk):
     def _build_toolbar(self):
         """Üst kısımdaki dosya yükleme/dışa aktarma/temizle butonları, son
         kullanılan dosyalar açılır listesi ve seçilen dosya etiketi."""
-        toolbar = ctk.CTkFrame(self, fg_color="transparent")
+        toolbar = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
         toolbar.pack(side="top", fill="x", padx=16, pady=(16, 8))
 
         self.load_button = ctk.CTkButton(
@@ -246,6 +364,7 @@ class App(ctk.CTk):
         paths = paths[:MAX_RECENT_FILES]
         self._save_recent_files(paths)
         self._refresh_recent_menu(paths)
+        self._refresh_recent_sidebar(paths)
 
     def _refresh_recent_menu(self, paths: list):
         """Açılır listenin gösterdiği etiketleri günceller. Aynı dosya adı
@@ -283,7 +402,7 @@ class App(ctk.CTk):
 
     def _build_stats_row(self):
         """Dosya yüklendikten sonra süre/örnek sayısı/aralık gibi özet değerleri gösteren satır."""
-        self.stats_row = ctk.CTkFrame(self, fg_color="transparent")
+        self.stats_row = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
         self.stats_row.pack(side="top", fill="x", padx=16, pady=(0, 8))
 
         self.stat_labels = {}
@@ -296,13 +415,16 @@ class App(ctk.CTk):
             tile = ctk.CTkFrame(self.stats_row, fg_color=GRIDLINE, corner_radius=8)
             tile.pack(side="left", padx=(0, 8), ipadx=12, ipady=8)
 
+            # fill="x" + anchor="center": metin kutunun tam soluna değil,
+            # ortasına doğru kayar (tile genişliği en uzun değere göre
+            # otomatik ayarlanır, metin o genişlik içinde ortalanır).
             ctk.CTkLabel(
                 tile, text=title, text_color=TEXT_MUTED, font=ctk.CTkFont(size=11)
-            ).pack(anchor="w")
+            ).pack(fill="x", anchor="center")
             value_label = ctk.CTkLabel(
                 tile, text="—", text_color=TEXT_PRIMARY, font=ctk.CTkFont(size=15, weight="bold")
             )
-            value_label.pack(anchor="w")
+            value_label.pack(fill="x", anchor="center")
             self.stat_labels[key] = value_label
 
     def _build_warnings_area(self):
@@ -310,7 +432,7 @@ class App(ctk.CTk):
         motor akım dengesizliği) gösteren satır. Uyarı yoksa boş kalır, ekstra
         yer kaplamaz."""
         self.warnings_label = ctk.CTkLabel(
-            self, text="", text_color=COLOR_WARNING, justify="left", anchor="w"
+            self.analysis_frame, text="", text_color=COLOR_WARNING, justify="left", anchor="w"
         )
         self.warnings_label.pack(side="top", fill="x", padx=16, pady=(0, 4))
 
@@ -325,7 +447,8 @@ class App(ctk.CTk):
         # wraplength: uzun backend hata mesajları (ör. system_power mesajı
         # birkaç cümle) pencere genişliğinde kesilmesin, alt satıra sarsın.
         self.status_label = ctk.CTkLabel(
-            self, text="", text_color=COLOR_CRITICAL, justify="left", anchor="w", wraplength=1000
+            self.analysis_frame, text="", text_color=COLOR_CRITICAL, justify="left", anchor="w",
+            wraplength=1000,
         )
         self.status_label.pack(side="top", fill="x", padx=16, pady=(0, 4))
 
@@ -349,7 +472,7 @@ class App(ctk.CTk):
         figure.tight_layout()
 
         self.figure = figure
-        self.canvas = FigureCanvasTkAgg(figure, master=self)
+        self.canvas = FigureCanvasTkAgg(figure, master=self.analysis_frame)
         self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True, padx=16, pady=(0, 16))
 
     def _style_axes(self, ax, ylabel: str):
@@ -385,8 +508,11 @@ class App(ctk.CTk):
         self._load_file(file_path)
 
     def _load_file(self, file_path: str):
-        """Verilen log dosyasını backend'e verip sonucu çizer. Hem dosya seçme
-        penceresinden hem de 'son kullanılanlar' listesinden çağrılıyor."""
+        """Verilen log dosyasını backend'e verip sonucu çizer. Giriş
+        ekranındaki 'Dosya Yükle' butonundan, geçmiş dosyalar listesinden
+        (giriş ekranı ya da analiz ekranındaki dropdown) çağrılabilir;
+        hangisinden çağrılırsa çağrılsın analiz ekranına geçer."""
+        self._show_analysis()
         self.file_label.configure(text=file_path)
         self.status_label.configure(text="İşleniyor...", text_color=TEXT_SECONDARY)
         self.load_button.configure(state="disabled")
