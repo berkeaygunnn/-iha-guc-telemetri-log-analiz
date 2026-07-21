@@ -186,7 +186,7 @@ class App(ctk.CTk):
             text_color=LANDING_ACCENT_BRIGHT, font=ctk.CTkFont(size=14),
         ).pack(pady=(0, 32))
 
-        icon_canvas = Canvas(center, width=180, height=140, bg=LANDING_BG, highlightthickness=0)
+        icon_canvas = Canvas(center, width=220, height=170, bg=LANDING_BG, highlightthickness=0)
         icon_canvas.pack(pady=(0, 32))
         self._draw_drone_icon(icon_canvas)
 
@@ -238,22 +238,50 @@ class App(ctk.CTk):
     def _draw_drone_icon(self, canvas: Canvas):
         """Orijinal, sade bir çeyrek-kanat (quadcopter) ikonu çizer: Canvas
         ilkelleriyle (çizgi + daire) oluşturulmuş vektörel bir siluet, bir
-        fotoğraf DEĞİL — telif riski yok, her boyutta net görünür."""
-        cx, cy = 90, 65
-        arm_len = 55
-        rotor_r = 17
+        fotoğraf DEĞİL — telif riski yok, her boyutta net görünür.
+
+        Önceki sürüme göre daha net okunsun diye: kalın, yuvarlak uçlu kollar,
+        pervane detayını belirtmek için rotor dairelerinin içinde çapraz
+        kanatçıklar, gövdenin altında iki iniş ayağı eklendi."""
+        cx, cy = 110, 85
+        arm_len = 68
+        rotor_r = 22
+
+        # İniş ayakları (gövdenin arkasında kalsın diye kollardan/gövdeden önce çizilir).
+        for dx in (-1, 1):
+            canvas.create_line(
+                cx + dx * 14, cy + 10, cx + dx * 20, cy + 34,
+                fill=LANDING_ACCENT_BRIGHT, width=3, capstyle="round",
+            )
 
         for dx, dy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
             end_x, end_y = cx + dx * arm_len, cy + dy * arm_len * 0.55
-            canvas.create_line(cx, cy, end_x, end_y, fill=LANDING_ACCENT_BRIGHT, width=4)
+            canvas.create_line(
+                cx, cy, end_x, end_y, fill=LANDING_ACCENT_BRIGHT, width=6, capstyle="round",
+            )
             canvas.create_oval(
                 end_x - rotor_r, end_y - rotor_r, end_x + rotor_r, end_y + rotor_r,
                 outline=LANDING_ACCENT_BRIGHT, width=3,
             )
+            # Pervane kanatçıkları: rotor dairesinin içinde çapraz iki çizgi.
+            canvas.create_line(
+                end_x - rotor_r + 4, end_y, end_x + rotor_r - 4, end_y,
+                fill=LANDING_ACCENT_BRIGHT, width=2, capstyle="round",
+            )
+            canvas.create_line(
+                end_x, end_y - rotor_r + 4, end_x, end_y + rotor_r - 4,
+                fill=LANDING_ACCENT_BRIGHT, width=2, capstyle="round",
+            )
 
+        # Gövde (kollardan sonra çizilir ki kolların gövdeye giriş noktaları temiz görünsün).
         canvas.create_oval(
-            cx - 24, cy - 15, cx + 24, cy + 15,
+            cx - 30, cy - 18, cx + 30, cy + 18,
             fill=LANDING_ACCENT, outline=LANDING_ACCENT_BRIGHT, width=2,
+        )
+        # Ön sensör/kamera noktası — gövdeye küçük bir karakter/detay katar.
+        canvas.create_oval(
+            cx - 6, cy - 6, cx + 6, cy + 6,
+            fill=LANDING_BG, outline=LANDING_ACCENT_BRIGHT, width=2,
         )
 
     def _build_battery_view_toggle(self):
@@ -310,6 +338,12 @@ class App(ctk.CTk):
         kullanılan dosyalar açılır listesi ve seçilen dosya etiketi."""
         toolbar = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
         toolbar.pack(side="top", fill="x", padx=16, pady=(16, 8))
+
+        self.home_button = ctk.CTkButton(
+            toolbar, text="← Ana Sayfa", fg_color="transparent", border_width=1,
+            border_color=AXIS_LINE, text_color=TEXT_SECONDARY, command=self._show_landing,
+        )
+        self.home_button.pack(side="left", padx=(0, 12))
 
         self.load_button = ctk.CTkButton(
             toolbar, text="Log Dosyası Yükle (Ctrl+O)", command=self._on_load_file_click
@@ -513,7 +547,10 @@ class App(ctk.CTk):
         (giriş ekranı ya da analiz ekranındaki dropdown) çağrılabilir;
         hangisinden çağrılırsa çağrılsın analiz ekranına geçer."""
         self._show_analysis()
-        self.file_label.configure(text=file_path)
+        # Tam yol yerine sadece dosya adı gösterilir: uzun mutlak yollar
+        # toolbar'daki diğer butonları (ör. "Grafiği Kaydet") ekran dışına
+        # itip kesilmelerine yol açıyordu.
+        self.file_label.configure(text=Path(file_path).name)
         self.status_label.configure(text="İşleniyor...", text_color=TEXT_SECONDARY)
         self.load_button.configure(state="disabled")
         self.update_idletasks()  # "İşleniyor..." metnini backend bitmeden ekrana yansıt

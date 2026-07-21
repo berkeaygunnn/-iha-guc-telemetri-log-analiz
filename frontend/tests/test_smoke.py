@@ -160,6 +160,24 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(len(sidebar_buttons), 1)
         self.assertEqual(sidebar_buttons[0].cget("text"), Path(file_path).name)
 
+    def test_file_label_shows_only_filename_not_full_path(self):
+        """Tam mutlak yol, toolbar'daki diğer butonların (ör. 'Grafiği
+        Kaydet') ekran dışına itilip kesilmesine yol açıyordu; artık sadece
+        dosya adı gösteriliyor."""
+        file_path = str(DATA_DIR / "synthetic_test_log.BIN")
+        self.app._load_file(file_path)
+        self.assertEqual(self.app.file_label.cget("text"), "synthetic_test_log.BIN")
+
+    def test_home_button_returns_to_landing_screen(self):
+        self.app._load_file(str(DATA_DIR / "synthetic_test_log.BIN"))
+        self.app.update()
+        self.assertTrue(self.app.analysis_frame.winfo_ismapped())
+
+        self.app.home_button.invoke()
+        self.app.update()
+        self.assertTrue(self.app.landing_frame.winfo_ismapped())
+        self.assertFalse(self.app.analysis_frame.winfo_ismapped())
+
 
 if __name__ == "__main__":
     unittest.main()
