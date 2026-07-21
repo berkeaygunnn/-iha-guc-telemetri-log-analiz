@@ -264,9 +264,9 @@ class App(ctk.CTk):
         file_path = filedialog.askopenfilename(
             title="Log Dosyası Seç",
             filetypes=[
-                ("Uçuş logları", "*.bin *.ulog"),
+                ("Uçuş logları", "*.bin *.ulog *.ulg"),
                 ("ArduPilot log (.bin)", "*.bin"),
-                ("PX4 log (.ulog)", "*.ulog"),
+                ("PX4 log (.ulog/.ulg)", "*.ulog *.ulg"),
                 ("Tüm dosyalar", "*.*"),
             ],
             **dialog_kwargs,
