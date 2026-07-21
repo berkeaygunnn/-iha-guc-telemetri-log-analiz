@@ -8,6 +8,7 @@ Kullanım: python run_tests.py  (backend/tests/ içinden ya da repo kökünden)
 """
 
 import json
+import struct
 import subprocess
 import sys
 import tempfile
@@ -168,6 +169,93 @@ class WarningRuleTests(unittest.TestCase):
         try:
             data = run_backend(path)
             self.assertEqual(data["warnings"], [])
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class RealPx4LogParsingBugTests(unittest.TestCase):
+    """PX4'ün herkese açık flight review veritabanından indirilen gerçek (60-100MB'lık,
+    bu yüzden repoya eklenmeyen) uçuş loglarıyla kalibrasyon denenirken bulunan iki
+    gerçek ayrıştırma hatasının regresyon testleri. İkisi de düşük seviyeli
+    make_synthetic_ulog yapı taşlarıyla kurulan minimal, tekrar üretilebilir fixture'lar.
+    """
+
+    def test_trailing_padding_field_not_counted_in_message_size(self):
+        """Gerçek loglarda PX4'ün ULog logger'ı, bir mesajın SON alanı salt
+        hizalama için eklenmiş bir "_padding..." alanıysa bu baytları diske hiç
+        yazmıyor (battery_status'ta 168 bayt hesaplanırken gerçek veri 167 bayttı).
+        Bunu bilmeyen bir formatTotalSize(), boyut doğrulamasını her zaman
+        başarısız sayıp veriyi hiç okumuyordu."""
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float voltage_v;float current_a;uint8_t _padding0;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+
+        # D mesajının gerçek verisi, "_padding0" alanı hiç yazılmamış gibi 1 bayt
+        # kısa: msg_id(2) + timestamp(8) + voltage_v(4) + current_a(4) = 18 bayt,
+        # naif alan toplamı (padding dahil) 19 bayt olurdu.
+        timestamp_us = int(2.0 * 1e6)
+        payload = struct.pack("<H", 1) + struct.pack("<Qff", timestamp_us, 16.5, 12.0)
+        out += make_synthetic_ulog.build_message(make_synthetic_ulog.MSG_DATA, payload)
+
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            self.assertEqual(len(data["batteries"]), 1)
+            battery = data["batteries"][0]
+            self.assertAlmostEqual(battery["voltage_v"][0], 16.5, places=3)
+            self.assertAlmostEqual(battery["current_a"][0], 12.0, places=3)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_esc_online_flags_used_when_esc_count_is_zero(self):
+        """Gerçek loglarda bazı araçlar "esc_count" alanını hiç kullanmıyor (hep 0
+        bırakıyor), gerçekte bağlı ESC'leri "esc_online_flags" bitmask'inde
+        işaretliyor. Eskiden sadece esc_count'a güvenilmesi, dolu bir ESC dizisini
+        "0 motor" olarak yorumlatıyordu. Burada esc_count=0 ama esc_online_flags
+        sadece 0. ve 2. indeksleri (0b0101=5) işaretliyor; sadece o iki motorun
+        çıkması, 1. ve 3. indekslerin (bağlı değil) hiç görünmemesi bekleniyor."""
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        # Backend en az bir batarya örneği bulunmasını şart koşuyor (aksi halde
+        # hata döndürüyor); bu testin odağı olmadığı için minimal bir tane ekleniyor.
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float voltage_v;float current_a;"
+        )
+        out += make_synthetic_ulog.build_format_message(
+            "esc_status:uint64_t timestamp;uint8_t esc_count;uint8_t esc_online_flags;esc_report[4] esc;"
+        )
+        out += make_synthetic_ulog.build_format_message(
+            "esc_report:uint64_t timestamp;float esc_current;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += make_synthetic_ulog.build_subscription_message(2, "esc_status", multi_id=0)
+        out += make_synthetic_ulog.build_battery_data_message(1, 3.0, 16.5, 12.0)
+
+        timestamp_us = int(3.0 * 1e6)
+        currents = [10.0, 20.0, 30.0, 40.0]  # sadece indeks 0 (id=1) ve 2 (id=3) "bağlı"
+        payload = struct.pack("<H", 2) + struct.pack("<Q", timestamp_us)
+        payload += struct.pack("<B", 0)      # esc_count = 0 (bu araçta kullanılmıyor)
+        payload += struct.pack("<B", 0b0101)  # esc_online_flags: sadece bit0 ve bit2
+        for curr in currents:
+            payload += struct.pack("<Qf", timestamp_us, curr)
+        out += make_synthetic_ulog.build_message(make_synthetic_ulog.MSG_DATA, payload)
+
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            motor_ids = sorted(m["id"] for m in data["motors"])
+            self.assertEqual(motor_ids, [1, 3])
+            self.assertAlmostEqual(motor_by_id(data, 1)["current_a"][0], 10.0, places=3)
+            self.assertAlmostEqual(motor_by_id(data, 3)["current_a"][0], 30.0, places=3)
         finally:
             path.unlink(missing_ok=True)
 

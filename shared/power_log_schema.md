@@ -47,8 +47,16 @@ kurallar (bkz. `backend/src/main.cpp` içindeki `computeWarnings`):
 - **Motor akım dengesizliği**: bir motorun ortalama akımı, tüm motorların
   ortalamalarının genel ortalamasından %20 veya daha fazla saparsa uyarı üretilir.
 
-Uyarı yoksa dizi boş (`[]`) döner. Eşikler `main.cpp`'de adlandırılmış sabitler;
-gerçek uçuş verisiyle kalibre edilene kadar başlangıç değerleridir.
+Uyarı yoksa dizi boş (`[]`) döner. Eşikler `main.cpp`'de adlandırılmış sabitler.
+PX4'ün herkese açık flight review veritabanından indirilen gerçek, çeşitli
+uçuşlarla (30-45 dakikalık, gerçek donanımlı quadrotor uçuşları) test edildi:
+sağlıklı bir uçuşta motorlar arası en yüksek sapma ~%14 çıktı (eşiğin altında,
+uyarı üretmedi — beklenen), 45 dakikalık ve bataryası iyice boşalmış bir
+uçuşta voltaj düşümü ~%21 çıktı (eşiğin üstünde, uyarı üretti — fiziksel olarak
+anlamlı: 6S bir batarya dolu-den boşalmaya gitmiş). Bu, %15/%20 eşiklerinin
+makul bir aralıkta olduğunu destekliyor; kesin bir arıza örneğiyle (ör.
+bilinen bozuk bir motor) doğrulanmadı, o yüzden hâlâ kesin/nihai değerler
+olarak değil, gerçek veriyle desteklenmiş başlangıç değerleri olarak görülmeli.
 
 Ayrıca: bir batarya/motorun ilk ve son örneği arasındaki süre 5 saniyeden
 kısaysa (`MIN_DURATION_FOR_WARNINGS_S`) o grup için kural hiç değerlendirilmez.
