@@ -116,6 +116,80 @@ class SyntheticLogTests(unittest.TestCase):
             path.unlink(missing_ok=True)
 
 
+class UntestedCodePathTests(unittest.TestCase):
+    """Kod var olan ama şu ana kadar hiç test edilmemiş yollar: ArduPilot'ta
+    CURR-only (BAT mesajı hiç yok) loglar, hiç batarya içermeyen (sadece ESC)
+    loglar ve PX4'te tek bataryalı loglar. Üçü de mevcut sentetik yardımcı
+    fonksiyonlarla kuruluyor, yeni bir altyapı gerekmiyor."""
+
+    CURR_TYPE = 102
+
+    def test_ardupilot_curr_only_log(self):
+        """extractBatterySample hem 'BAT' hem 'CURR' adlı mesajları kabul
+        ediyor (main.cpp) ama şu ana kadar sadece BAT test edilmişti."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            self.CURR_TYPE, "CURR", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, self.CURR_TYPE])
+        out += struct.pack("<QBff", int(1.0 * 1e6), 0, 16.8, 12.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            self.assertEqual(len(data["batteries"]), 1)
+            self.assertAlmostEqual(data["batteries"][0]["voltage_v"][0], 16.8, places=3)
+            self.assertAlmostEqual(data["batteries"][0]["current_a"][0], 12.0, places=3)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_ardupilot_esc_only_no_battery_fails_with_clear_error(self):
+        """Sadece ESC mesajı içeren (hiç BAT/CURR yok) bir log, batarya
+        verisi olmadığı için net bir hatayla başarısız olmalı (main.cpp:843
+        yolunun regresyon testi — şu ana kadar hiç tetiklenmemişti)."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.ESC_TYPE, "ESC", "QBf", "TimeUS,Instance,Curr"
+        )
+        out += make_synthetic_log.build_esc_message(1.0, 0, 15.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            with self.assertRaises(RuntimeError):
+                run_backend(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_px4_single_battery_only(self):
+        """Şu ana kadarki PX4 testleri hep 2 bataryalı fixture'lar kullanıyordu
+        (gerçek log + sentetik profil); tek bataryalı en basit durum hiç
+        ayrıca test edilmemişti."""
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float voltage_v;float current_a;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += make_synthetic_ulog.build_battery_data_message(1, 1.0, 16.8, 10.0)
+        out += make_synthetic_ulog.build_battery_data_message(1, 2.0, 16.5, 11.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            self.assertEqual(len(data["batteries"]), 1)
+            self.assertEqual(data["batteries"][0]["id"], 1)
+            self.assertEqual(len(data["batteries"][0]["time_s"]), 2)
+        finally:
+            path.unlink(missing_ok=True)
+
+
 class WarningRuleTests(unittest.TestCase):
     """Kural tabanlı uyarı motorunun (computeWarnings) voltaj-düşümü kuralı
     için ayrı, bilerek büyük bir düşüş içeren küçük bir fixture ile testi.
@@ -210,6 +284,32 @@ class ArduPilotRobustnessTests(unittest.TestCase):
             self.assertEqual(len(data["batteries"]), 1)
             battery = data["batteries"][0]
             self.assertEqual(len(battery["time_s"]), 1)  # sadece bozuk-olmayan ornek sayildi
+            self.assertAlmostEqual(battery["voltage_v"][0], 16.8, places=3)
+            self.assertAlmostEqual(battery["current_a"][0], 12.0, places=3)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_nan_and_infinity_samples_are_skipped(self):
+        """Bozuk bir dosyada okunan baytlar bir NaN/Infinity float'a denk
+        gelebilir; bu JSON'a yazilamaz (gecerli JSON'da NaN/Infinity yok).
+        extractBatterySample boyle bir ornegi sessizce atlamali, geri kalan
+        gecerli ornekleri etkilememeli."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, float("nan"), 10.0)
+        out += make_synthetic_log.build_bat_message(1.0, 0, float("inf"), 10.0)
+        out += make_synthetic_log.build_bat_message(2.0, 0, 16.8, 12.0)  # gecerli
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            self.assertEqual(len(data["batteries"]), 1)
+            battery = data["batteries"][0]
+            self.assertEqual(len(battery["time_s"]), 1)
             self.assertAlmostEqual(battery["voltage_v"][0], 16.8, places=3)
             self.assertAlmostEqual(battery["current_a"][0], 12.0, places=3)
         finally:
@@ -332,6 +432,34 @@ class RealPx4LogParsingBugTests(unittest.TestCase):
         finally:
             path.unlink(missing_ok=True)
 
+    def test_nan_and_infinity_samples_are_skipped(self):
+        """ArduPilot tarafindakiyle ayni kural PX4 icin de gecerli: bozuk bir
+        dosyada NaN/Infinity'ye denk gelen bir ornek, JSON'a yazilamayacagi
+        icin sessizce atlanmali."""
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float voltage_v;float current_a;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += make_synthetic_ulog.build_battery_data_message(1, 0.0, float("nan"), 10.0)
+        out += make_synthetic_ulog.build_battery_data_message(1, 1.0, float("inf"), 10.0)
+        out += make_synthetic_ulog.build_battery_data_message(1, 2.0, 16.5, 12.0)  # gecerli
+
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            self.assertEqual(len(data["batteries"]), 1)
+            battery = data["batteries"][0]
+            self.assertEqual(len(battery["time_s"]), 1)
+            self.assertAlmostEqual(battery["voltage_v"][0], 16.5, places=3)
+            self.assertAlmostEqual(battery["current_a"][0], 12.0, places=3)
+        finally:
+            path.unlink(missing_ok=True)
+
     def test_system_power_only_gives_specific_error(self):
         """Bazı Rover yapılandırmaları hiç 'battery_status' loglamıyor, sadece
         dahili güç hatlarını raporlayan 'system_power'ı kullanıyor (gerçek bir
@@ -354,6 +482,39 @@ class RealPx4LogParsingBugTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 run_backend(path)
             self.assertIn("system_power", str(ctx.exception))
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class PX4RobustnessTests(unittest.TestCase):
+    """ArduPilotRobustnessTests'in PX4 karşılığı: bozuk/tutarsız bir Format (F)
+    mesajı karşısında parser'ın çökmeden, veri kirletmeden güvenli şekilde
+    davrandığını doğrular. locateUlogField, bir alanın adı yoksa ya da
+    kendisinden önceki bir alanın boyutu çözülemiyorsa (bit hatasıyla bozulmuş
+    bir alan tanımı gibi) o alanı 'bulunamadı' sayar; extractUlogBatterySample
+    bu durumda örneği sessizce atlamalı, buffer sınırları dışına taşmamalı."""
+
+    def test_malformed_field_spec_before_target_field_is_skipped_not_crashed(self):
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        # "bosluksuzalan" bosluk icermiyor (parseUlogField boyle bir spec'i
+        # tip/isim olarak ayiramaz), bu yuzden boyutu cozulemez (size=0) ve
+        # ondan SONRAKI alanlarin (voltage_v/current_a) offset'i guvenilmez
+        # sayilip bulunamadi olarak isaretlenir - bit hatasiyla bozulmus bir
+        # FMT metnini simule ediyor.
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;bosluksuzalan;float voltage_v;float current_a;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += make_synthetic_ulog.build_battery_data_message(1, 1.0, 16.5, 12.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            with self.assertRaises(RuntimeError):
+                run_backend(path)  # voltage_v/current_a bulunamadigi icin hic ornek cikarilamaz
         finally:
             path.unlink(missing_ok=True)
 

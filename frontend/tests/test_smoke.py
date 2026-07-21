@@ -75,6 +75,19 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("Motor 1", warnings_text)
         self.assertIn("Motor 4", warnings_text)
 
+    def test_hexarotor_six_motors_have_distinct_line_styles(self):
+        """SERIES_COLORS 8 renge çıkarılmadan önce 4'ten fazla seri (bu logda
+        6 motor) aynı renkte çiziliyordu (motor 1/5 ve 2/6 ayırt edilemezdi).
+        6 motor 8 renklik paleti aşmadığı için hepsi hem farklı renkte hem de
+        düz çizgi stilinde olmalı."""
+        data = self._load_and_plot("px4_hexarotor_flight.ulg")
+        self.assertEqual(len(data["motors"]), 6)
+        lines = self.app.ax_motors.get_lines()
+        self.assertEqual(len(lines), 6)
+        colors = [line.get_color() for line in lines]
+        self.assertEqual(len(set(colors)), 6)  # hepsi farklı renkte
+        self.assertTrue(all(line.get_linestyle() == "-" for line in lines))
+
 
 if __name__ == "__main__":
     unittest.main()
