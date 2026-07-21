@@ -138,6 +138,28 @@ class SmokeTests(unittest.TestCase):
             self.assertTrue(Path(out_path).exists())
             self.assertGreater(Path(out_path).stat().st_size, 0)
 
+    def test_app_starts_on_landing_screen(self):
+        self.app.update()
+        self.assertTrue(self.app.landing_frame.winfo_ismapped())
+        self.assertFalse(self.app.analysis_frame.winfo_ismapped())
+
+    def test_loading_file_switches_to_analysis_screen(self):
+        self.app._load_file(str(DATA_DIR / "synthetic_test_log.BIN"))
+        self.app.update()
+        self.assertFalse(self.app.landing_frame.winfo_ismapped())
+        self.assertTrue(self.app.analysis_frame.winfo_ismapped())
+
+    def test_recent_sidebar_updates_after_load(self):
+        file_path = str(DATA_DIR / "synthetic_test_log.BIN")
+        self.app._load_file(file_path)
+
+        sidebar_buttons = [
+            child for child in self.app._recent_sidebar_list.winfo_children()
+            if isinstance(child, frontend_main.ctk.CTkButton)
+        ]
+        self.assertEqual(len(sidebar_buttons), 1)
+        self.assertEqual(sidebar_buttons[0].cget("text"), Path(file_path).name)
+
 
 if __name__ == "__main__":
     unittest.main()
