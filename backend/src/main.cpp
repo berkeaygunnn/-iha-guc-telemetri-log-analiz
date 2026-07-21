@@ -360,9 +360,25 @@ void resolveNestedSizes(std::map<std::string, ULogFormatDef>& formats) {
 
 // Bir formatın (resolveNestedSizes sonrası) toplam bayt boyutu. 0 dönerse
 // çözülemeyen bir alan var demektir.
+//
+// Not: PX4'ün mesaj üretici aracı, hizalama için mesajın sonuna "_padding..."
+// adlı alanlar ekleyebiliyor; gerçek loglarla doğrulandı ki logger bu SADECE-
+// hizalama alanlarını (mesajın en son alanıysa) diske hiç yazmıyor — örneğin
+// "battery_status" için hesaplanan toplam 168 bayt ama diskteki gerçek veri
+// 167 bayttı, fark tam olarak sondaki 1 baytlık "_padding0" alanıydı. Bu
+// yüzden burada sondaki padding alan(lar)ı toplama katılmıyor. Bu, iç içe bir
+// tipin dizi elemanı olarak boyutunu hesaplayan resolveFormatSize()'ı
+// ETKİLEMEZ — orada tam boyut (padding dahil) doğru, çünkü dizi elemanlarının
+// sabit bir stride'ı olması gerekiyor (gerçek "esc_report[8]" verisiyle de
+// doğrulandı: o durumda hiç bayt eksilmiyor).
 size_t formatTotalSize(const ULogFormatDef& def) {
+    size_t lastRealField = def.fields.size();
+    while (lastRealField > 0 && def.fields[lastRealField - 1].name.rfind("_padding", 0) == 0) {
+        --lastRealField;
+    }
+
     size_t total = 0;
-    for (const ULogField& field : def.fields) total += field.size;
+    for (size_t i = 0; i < lastRealField; ++i) total += def.fields[i].size;
     return total;
 }
 
@@ -442,6 +458,7 @@ void extractUlogEscSamples(const uint8_t* payload, const ULogFormatDef& escStatu
                             std::map<int, std::vector<MotorSamplePoint>>& motors) {
     ULogFieldLocator timeField = locateUlogField(escStatusDef, "timestamp");
     ULogFieldLocator escCountField = locateUlogField(escStatusDef, "esc_count");
+    ULogFieldLocator onlineField = locateUlogField(escStatusDef, "esc_online_flags");
     ULogFieldLocator escArrayField = locateUlogField(escStatusDef, "esc");
 
     if (!timeField.found || !escArrayField.found || escArrayField.field->arrayLength == 0) return;
@@ -455,15 +472,31 @@ void extractUlogEscSamples(const uint8_t* payload, const ULogFormatDef& escStatu
 
     double timestamp = readUlogFieldAsDouble(payload + timeField.byteOffset, timeField.field->elementType);
 
+    // Hangi dizi elemanlarının gerçekten bağlı bir ESC'ye ait olduğunu bulmak
+    // için önce "esc_online_flags" bitmask'ine bakılıyor. Gerçek loglarla
+    // denendiğinde "esc_count" alanının bazı firmware/sürümlerde hep 0 olarak
+    // bırakıldığı (kullanılmadığı) görüldü — buna körü körüne güvenmek gerçek
+    // uçuşlarda dolu bir ESC dizisini "0 motor" olarak yorumlatıyordu.
+    uint32_t onlineMask = 0;
+    bool haveOnlineMask = false;
+    if (onlineField.found) {
+        int online = static_cast<int>(readUlogFieldAsDouble(payload + onlineField.byteOffset, onlineField.field->elementType));
+        if (online > 0) {
+            onlineMask = static_cast<uint32_t>(online);
+            haveOnlineMask = true;
+        }
+    }
+
     int escCount = escArrayField.field->arrayLength;
-    if (escCountField.found) {
+    if (!haveOnlineMask && escCountField.found) {
         int reported = static_cast<int>(
             readUlogFieldAsDouble(payload + escCountField.byteOffset, escCountField.field->elementType));
-        if (reported >= 0 && reported < escCount) escCount = reported;
+        if (reported > 0 && reported < escCount) escCount = reported;
     }
 
     size_t elementSize = escArrayField.field->size / static_cast<size_t>(escArrayField.field->arrayLength);
     for (int i = 0; i < escCount; ++i) {
+        if (haveOnlineMask && !((onlineMask >> i) & 1u)) continue;  // bu dizi elemanında bağlı ESC yok
         const uint8_t* elementPtr = payload + escArrayField.byteOffset + static_cast<size_t>(i) * elementSize;
         double curr = readUlogFieldAsDouble(elementPtr + currField.byteOffset, currField.field->elementType);
         motors[i + 1].push_back(MotorSamplePoint{timestamp / 1e6, curr});
