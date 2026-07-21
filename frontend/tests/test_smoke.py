@@ -8,9 +8,12 @@ xvfb altında çalıştırılmalı (bkz. .github/workflows/tests.yml).
 Kullanım: python test_smoke.py  (frontend/tests/ içinden)
 """
 
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = FRONTEND_DIR.parent / "data"
@@ -21,10 +24,15 @@ import main as frontend_main
 
 class SmokeTests(unittest.TestCase):
     def setUp(self):
+        # Son kullanılanlar config'i gerçek kullanıcı home klasörü yerine
+        # geçici bir klasöre yazılsın diye (test izolasyonu).
+        self._tmp_config_dir = Path(tempfile.mkdtemp())
+        frontend_main.RECENT_FILES_PATH = self._tmp_config_dir / "recent_files.json"
         self.app = frontend_main.App()
 
     def tearDown(self):
         self.app.destroy()
+        shutil.rmtree(self._tmp_config_dir, ignore_errors=True)
 
     def _load_and_plot(self, filename: str) -> dict:
         data = self.app._run_backend(str(DATA_DIR / filename))
@@ -87,6 +95,48 @@ class SmokeTests(unittest.TestCase):
         colors = [line.get_color() for line in lines]
         self.assertEqual(len(set(colors)), 6)  # hepsi farklı renkte
         self.assertTrue(all(line.get_linestyle() == "-" for line in lines))
+
+    def test_load_file_adds_to_recent_menu(self):
+        file_path = str(DATA_DIR / "synthetic_test_log.BIN")
+        self.app._load_file(file_path)
+
+        self.assertEqual(self.app.recent_menu.cget("state"), "normal")
+        self.assertIn(file_path, self.app._recent_label_to_path.values())
+        # Diske de yazıldığını doğrula (uygulama kapanıp açılınca kalıcı olmalı).
+        recent = self.app._load_recent_files()
+        self.assertEqual(recent, [file_path])
+
+    def test_recent_file_selection_reloads_it(self):
+        file_path = str(DATA_DIR / "synthetic_test_log.BIN")
+        self.app._load_file(file_path)
+        self.app._on_clear_click()
+        self.assertEqual(len(self.app.ax_voltage.get_lines()), 0)
+
+        label = next(iter(self.app._recent_label_to_path))
+        self.app._on_recent_file_selected(label)
+        self.assertGreater(len(self.app.ax_voltage.get_lines()), 0)
+
+    def test_clear_button_resets_everything(self):
+        self._load_and_plot("synthetic_test_log.BIN")
+        self.assertGreater(len(self.app.ax_voltage.get_lines()), 0)
+
+        self.app._on_clear_click()
+
+        self.assertEqual(len(self.app.ax_voltage.get_lines()), 0)
+        self.assertEqual(len(self.app.ax_current.get_lines()), 0)
+        self.assertEqual(len(self.app.ax_motors.get_lines()), 0)
+        self.assertEqual(self.app.warnings_label.cget("text"), "")
+        self.assertEqual(self.app.file_label.cget("text"), "Henüz dosya seçilmedi.")
+        self.assertEqual(self.app.stat_labels["duration"].cget("text"), "—")
+
+    def test_export_png_creates_file(self):
+        self._load_and_plot("synthetic_test_log.BIN")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = str(Path(tmp_dir) / "grafik.png")
+            with patch("main.filedialog.asksaveasfilename", return_value=out_path):
+                self.app._on_export_png_click()
+            self.assertTrue(Path(out_path).exists())
+            self.assertGreater(Path(out_path).stat().st_size, 0)
 
 
 if __name__ == "__main__":

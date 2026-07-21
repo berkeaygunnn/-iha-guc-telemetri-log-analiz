@@ -29,6 +29,12 @@ motor/ESC akım çekimini grafiklere dönüştüren bir masaüstü uygulaması.
   arası akım dengesizliği (%20+) gerçek loglarla kalibre edilmiş eşiklerle
   otomatik tespit edilip arayüzde gösterilir (bkz.
   `shared/power_log_schema.md`'deki `warnings` alanı).
+- Grafiği tek tıkla (ya da Ctrl+S) PNG olarak dışa aktarma.
+- **Temizle** butonuyla ekranı sıfırlayıp temiz bir durumdan yeni bir dosya
+  yükleme.
+- Son kullanılan dosyalar (en fazla 5) açılır listeden tek tıkla tekrar
+  yüklenebilir; liste kalıcıdır (uygulama kapanıp açılınca korunur).
+- Klavye kısayolları: Ctrl+O (dosya yükle), Ctrl+S (grafiği PNG kaydet).
 
 ## Mimari
 
