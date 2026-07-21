@@ -49,6 +49,26 @@ class SmokeTests(unittest.TestCase):
         self.app.motor_view_toggle.set("Çizgi Grafiği")
         self.app._on_motor_view_change("Çizgi Grafiği")
 
+    def test_px4_multi_battery_busbar_heatmap_toggle(self):
+        """Busbar (toplam akım) panelinin ısı haritası görünümü, batarya
+        sayısı kadar satır (ytick) üretmeli ve çizgi görünümüne geri
+        dönüldüğünde eski çizgi sayısı korunmalı."""
+        data = self._load_and_plot("px4_sample_log_small.ulg")
+        self.assertEqual(len(data["batteries"]), 2)
+        self.assertEqual(len(self.app.ax_current.get_lines()), 2)
+
+        self.app.battery_view_toggle.set("Isı Haritası")
+        self.app._on_battery_view_change("Isı Haritası")
+        self.assertEqual(len(self.app.ax_current.get_images()), 1)
+        self.assertEqual(
+            [t.get_text() for t in self.app.ax_current.get_yticklabels()],
+            ["Batarya 1", "Batarya 2"],
+        )
+
+        self.app.battery_view_toggle.set("Çizgi Grafiği")
+        self.app._on_battery_view_change("Çizgi Grafiği")
+        self.assertEqual(len(self.app.ax_current.get_lines()), 2)
+
     def test_synthetic_bin_shows_motor_imbalance_warnings(self):
         self._load_and_plot("synthetic_test_log.BIN")
         warnings_text = self.app.warnings_label.cget("text")
