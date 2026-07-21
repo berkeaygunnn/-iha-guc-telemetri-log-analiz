@@ -54,6 +54,11 @@ def _find_icon_path() -> Path:
 BACKEND_EXE = _find_backend_exe()
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 ICON_PATH = _find_icon_path()
+# Son kullanılan dosyalar listesi kullanıcının home klasöründe tutulur (dev/
+# paketlenmiş ayrımından bağımsız, her zaman yazılabilir). Testler bu sabiti
+# monkeypatch'leyerek gerçek kullanıcı verisini etkilemeden test edebiliyor.
+RECENT_FILES_PATH = Path.home() / ".iha_guc_telemetri_analiz" / "recent_files.json"
+MAX_RECENT_FILES = 5
 
 # Uygulama genelinde kullanılacak tema ayarları (koyu tema + mavi renk paleti)
 ctk.set_appearance_mode("dark")
@@ -129,6 +134,10 @@ class App(ctk.CTk):
         self._build_motor_view_toggle()
         self._build_plot_area()
 
+        # Klavye kısayolları: Ctrl+O dosya seç, Ctrl+S grafiği PNG kaydet.
+        self.bind("<Control-o>", lambda event: self._on_load_file_click())
+        self.bind("<Control-s>", lambda event: self._on_export_png_click())
+
     def _build_battery_view_toggle(self):
         """Toplam akım (busbar yüklenmesi) panelini çizgi grafiği/ısı haritası
         arasında değiştiren seçici. Birden fazla batarya (ör. yedekli güç
@@ -179,19 +188,98 @@ class App(ctk.CTk):
             self.canvas.draw()
 
     def _build_toolbar(self):
-        """Üst kısımdaki dosya yükleme butonu ve seçilen dosya etiketi."""
+        """Üst kısımdaki dosya yükleme/dışa aktarma/temizle butonları, son
+        kullanılan dosyalar açılır listesi ve seçilen dosya etiketi."""
         toolbar = ctk.CTkFrame(self, fg_color="transparent")
         toolbar.pack(side="top", fill="x", padx=16, pady=(16, 8))
 
         self.load_button = ctk.CTkButton(
-            toolbar, text="Log Dosyası Yükle", command=self._on_load_file_click
+            toolbar, text="Log Dosyası Yükle (Ctrl+O)", command=self._on_load_file_click
         )
         self.load_button.pack(side="left", padx=(0, 12))
+
+        self._recent_label_to_path = {}
+        self.recent_menu = ctk.CTkOptionMenu(
+            toolbar, values=["(yok)"], command=self._on_recent_file_selected, width=200,
+        )
+        self.recent_menu.pack(side="left", padx=(0, 12))
+        self._refresh_recent_menu(self._load_recent_files())
 
         self.file_label = ctk.CTkLabel(
             toolbar, text="Henüz dosya seçilmedi.", text_color=TEXT_SECONDARY
         )
         self.file_label.pack(side="left")
+
+        self.export_button = ctk.CTkButton(
+            toolbar, text="Grafiği Kaydet (PNG) (Ctrl+S)", command=self._on_export_png_click
+        )
+        self.export_button.pack(side="right")
+
+        self.clear_button = ctk.CTkButton(
+            toolbar, text="Temizle", fg_color="transparent", border_width=1,
+            border_color=AXIS_LINE, text_color=TEXT_SECONDARY, command=self._on_clear_click,
+        )
+        self.clear_button.pack(side="right", padx=(0, 12))
+
+    def _load_recent_files(self) -> list:
+        """Kalıcı listeyi diskten okur; dosya yoksa/bozuksa boş liste döner
+        (bu, ilk çalıştırma ya da elle silinmiş bir config dosyası için
+        normal bir durum, hata sayılmaz)."""
+        if not RECENT_FILES_PATH.exists():
+            return []
+        try:
+            with open(RECENT_FILES_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return []
+
+    def _save_recent_files(self, paths: list):
+        RECENT_FILES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(RECENT_FILES_PATH, "w", encoding="utf-8") as f:
+            json.dump(paths, f, ensure_ascii=False, indent=2)
+
+    def _add_recent_file(self, file_path: str):
+        """Başarıyla yüklenen dosyayı listenin başına taşır (zaten varsa
+        eski konumundan çıkarıp), en fazla MAX_RECENT_FILES kadar tutar."""
+        paths = [p for p in self._load_recent_files() if p != file_path]
+        paths.insert(0, file_path)
+        paths = paths[:MAX_RECENT_FILES]
+        self._save_recent_files(paths)
+        self._refresh_recent_menu(paths)
+
+    def _refresh_recent_menu(self, paths: list):
+        """Açılır listenin gösterdiği etiketleri günceller. Aynı dosya adı
+        birden fazla klasörden geldiyse (nadir ama olası) üst klasör adıyla
+        ayırt edilir, aksi halde sadece dosya adı gösterilir."""
+        if not paths:
+            self._recent_label_to_path = {}
+            self.recent_menu.configure(values=["(yok)"], state="disabled")
+            self.recent_menu.set("Son Kullanılanlar")
+            return
+
+        name_counts = {}
+        for p in paths:
+            name = Path(p).name
+            name_counts[name] = name_counts.get(name, 0) + 1
+
+        label_to_path = {}
+        labels = []
+        for p in paths:
+            path_obj = Path(p)
+            label = path_obj.name
+            if name_counts[label] > 1:
+                label = f"{label} ({path_obj.parent.name})"
+            labels.append(label)
+            label_to_path[label] = p
+
+        self._recent_label_to_path = label_to_path
+        self.recent_menu.configure(values=labels, state="normal")
+        self.recent_menu.set("Son Kullanılanlar")
+
+    def _on_recent_file_selected(self, label: str):
+        file_path = self._recent_label_to_path.get(label)
+        if file_path:
+            self._load_file(file_path)
 
     def _build_stats_row(self):
         """Dosya yüklendikten sonra süre/örnek sayısı/aralık gibi özet değerleri gösteren satır."""
@@ -294,7 +382,11 @@ class App(ctk.CTk):
         )
         if not file_path:
             return
+        self._load_file(file_path)
 
+    def _load_file(self, file_path: str):
+        """Verilen log dosyasını backend'e verip sonucu çizer. Hem dosya seçme
+        penceresinden hem de 'son kullanılanlar' listesinden çağrılıyor."""
         self.file_label.configure(text=file_path)
         self.status_label.configure(text="İşleniyor...", text_color=TEXT_SECONDARY)
         self.load_button.configure(state="disabled")
@@ -304,10 +396,44 @@ class App(ctk.CTk):
             data = self._run_backend(file_path)
             self._plot_power_data(data)
             self.status_label.configure(text="")
+            self._add_recent_file(file_path)
         except Exception as error:
             self.status_label.configure(text=f"⚠ Hata: {error}", text_color=COLOR_CRITICAL)
         finally:
             self.load_button.configure(state="normal")
+
+    def _on_export_png_click(self):
+        """Mevcut grafiği kullanıcının seçtiği bir PNG dosyasına kaydeder."""
+        file_path = filedialog.asksaveasfilename(
+            title="Grafiği Kaydet",
+            defaultextension=".png",
+            filetypes=[("PNG görüntü", "*.png"), ("Tüm dosyalar", "*.*")],
+        )
+        if not file_path:
+            return
+        try:
+            self.figure.savefig(file_path, facecolor=SURFACE)
+            self.status_label.configure(text=f"Grafik kaydedildi: {file_path}", text_color=TEXT_SECONDARY)
+        except OSError as error:
+            self.status_label.configure(text=f"⚠ Grafik kaydedilemedi: {error}", text_color=COLOR_CRITICAL)
+
+    def _on_clear_click(self):
+        """Yüklü veriyi ve tüm panelleri başlangıç (boş) durumuna döndürür;
+        ikinci bir dosyayı temiz bir ekrandan yüklemek isteyenler için."""
+        self.file_label.configure(text="Henüz dosya seçilmedi.")
+        self.status_label.configure(text="")
+        self._update_warnings([])
+        self._update_stats([])
+        self._last_batteries = None
+        self._last_motors = None
+
+        self.ax_voltage.clear()
+        self._style_axes(self.ax_voltage, "Voltaj (V)")
+        self._plot_battery_currents([])
+        self._plot_motor_currents([])
+
+        self.figure.tight_layout()
+        self.canvas.draw()
 
     def _run_backend(self, input_path: str) -> dict:
         """Backend'i seçilen log dosyasıyla çalıştırıp ürettiği JSON'u okur."""
