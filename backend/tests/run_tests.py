@@ -41,13 +41,16 @@ def find_backend_exe() -> Path:
     )
 
 
-def run_backend(input_path: Path) -> dict:
-    """Backend'i verilen log dosyasıyla çalıştırıp ürettiği JSON'u döner."""
+def run_backend(input_path: Path, extra_args: list = None) -> dict:
+    """Backend'i verilen log dosyasıyla çalıştırıp ürettiği JSON'u döner.
+    extra_args, uyarı eşiklerini override eden --voltage-sag=... gibi
+    opsiyonel CLI flag'leri geçirmek için (bkz. CapacityAndRemainingTests'e
+    paralel eşik override testleri)."""
     backend_exe = find_backend_exe()
     with tempfile.TemporaryDirectory() as tmp_dir:
         output_path = Path(tmp_dir) / "output.json"
         result = subprocess.run(
-            [str(backend_exe), str(input_path), str(output_path)],
+            [str(backend_exe), str(input_path), str(output_path), *(extra_args or [])],
             capture_output=True, text=True,
         )
         if result.returncode != 0:
@@ -92,12 +95,17 @@ class SyntheticLogTests(unittest.TestCase):
         # motor_factors = [0.8, 0.95, 1.1, 1.25] -> genel ortalama 1.025.
         # motor1 (%-22) ve motor4 (%+22) dengesizlik eşiğini (%20) aşıyor,
         # motor2/motor3 (%±7) aşmıyor. Her iki batarya da sadece ~%9 voltaj
-        # düşümü içeriyor (eşik %15), yani voltaj uyarısı beklenmiyor.
+        # düşümü içeriyor (eşik %15), yani voltaj uyarısı beklenmiyor. Ama
+        # batarya2'nin akımı batarya1'in sabit %60'ı olduğu için (bkz.
+        # generate()) ortalama akımları da genel ortalamadan %25 sapıyor —
+        # batarya-batarya dengesizlik kuralı (motor kuralının eşleniği) bunu
+        # da yakalamalı.
         warnings = data["warnings"]
-        self.assertEqual(len(warnings), 2)
+        self.assertEqual(len(warnings), 4)
         self.assertTrue(any("Motor 1" in w for w in warnings))
         self.assertTrue(any("Motor 4" in w for w in warnings))
-        self.assertFalse(any("Batarya" in w for w in warnings))
+        self.assertTrue(any("Batarya 1" in w for w in warnings))
+        self.assertTrue(any("Batarya 2" in w for w in warnings))
 
     def test_ardupilot_synthetic(self):
         with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
@@ -247,6 +255,316 @@ class WarningRuleTests(unittest.TestCase):
         try:
             data = run_backend(path)
             self.assertEqual(data["warnings"], [])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_negative_current_data_quality_warning_triggers(self):
+        """Fiziksel olarak batarya/ESC akımı negatif olmaz; belirgin şekilde
+        negatif bir örnek (ör. -0.7A) 'veri kalitesi' uyarısı üretmeli. Voltaj
+        sabit tutuluyor (sag uyarısı karışmasın diye), tek batarya var
+        (dengesizlik kuralı devreye girmesin diye)."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 10.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 16.8, -0.7)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            warnings = data["warnings"]
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("Batarya 1", warnings[0])
+            self.assertIn("-0.7", warnings[0])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_small_negative_current_noise_does_not_trigger(self):
+        """Eşiğin (-0.1A) hemen üstünde kalan ufak bir negatif değer (-0.05A)
+        saf sensör gürültüsü sayılıp uyarı üretmemeli."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 10.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 16.8, -0.05)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            self.assertEqual(data["warnings"], [])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_battery_current_imbalance_warning_triggers(self):
+        """Motor akım dengesizliği kuralının batarya karşılığı: iki bataryanın
+        ortalama akımı genel ortalamadan %20+ sapıyorsa ikisi için de ayrı
+        uyarı üretilmeli. Voltaj sabit tutuluyor ki sag uyarısı karışmasın."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        # Batarya 1 ortalama 20A, batarya 2 ortalama 5A -> genel ortalama
+        # 12.5A; her ikisi de bu ortalamadan %60 sapıyor (eşik %20).
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 20.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 16.8, 20.0)
+        out += make_synthetic_log.build_bat_message(0.0, 1, 16.8, 5.0)
+        out += make_synthetic_log.build_bat_message(6.0, 1, 16.8, 5.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            warnings = data["warnings"]
+            self.assertEqual(len(warnings), 2)
+            self.assertTrue(any("Batarya 1" in w for w in warnings))
+            self.assertTrue(any("Batarya 2" in w for w in warnings))
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class WarningThresholdOverrideTests(unittest.TestCase):
+    """Kullanıcının Ayarlar penceresinden değiştirebileceği --voltage-sag=/
+    --current-imbalance=/--negative-current= CLI argümanlarının (main.cpp
+    main()) computeWarnings'e doğru ulaştığını doğrular: aynı fixture,
+    override VERİLMEDEN uyarı üretmemeli, override ile (varsayılandan daha
+    sıkı bir eşikle) üretmeli."""
+
+    def test_custom_voltage_sag_threshold_overrides_default(self):
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 10.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 15.5, 10.0)  # ~%7.7 düşüş: varsayılan %15 eşiğin altında
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            self.assertEqual(run_backend(path)["warnings"], [])  # varsayılanla (%15) tetiklenmemeli
+            overridden = run_backend(path, ["--voltage-sag=0.05"])["warnings"]
+            self.assertEqual(len(overridden), 1)
+            self.assertIn("Batarya 1", overridden[0])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_custom_current_imbalance_threshold_overrides_default(self):
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        # Batarya 1 ortalama 11A, batarya 2 ortalama 9A -> genel ortalama 10A;
+        # her ikisi de ortalamadan sadece %10 sapıyor (varsayılan eşik %20).
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 11.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 16.8, 11.0)
+        out += make_synthetic_log.build_bat_message(0.0, 1, 16.8, 9.0)
+        out += make_synthetic_log.build_bat_message(6.0, 1, 16.8, 9.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            self.assertEqual(run_backend(path)["warnings"], [])
+            overridden = run_backend(path, ["--current-imbalance=0.05"])["warnings"]
+            self.assertEqual(len(overridden), 2)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_custom_negative_current_threshold_overrides_default(self):
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 10.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 16.8, -0.05)  # varsayılan eşiğin (-0.1A) ÜSTÜNDE kalır
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            self.assertEqual(run_backend(path)["warnings"], [])
+            overridden = run_backend(path, ["--negative-current=-0.01"])["warnings"]
+            self.assertEqual(len(overridden), 1)
+            self.assertIn("Batarya 1", overridden[0])
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class CapacityAndRemainingTests(unittest.TestCase):
+    """CurrTot/RemPct (ArduPilot) ve discharged_mah/remaining (PX4) opsiyonel
+    kapasite/kalan-yüzde alanlarının doğru parse edildiğini, bu alanlar logda
+    yoksa (eski BAT/battery_status tanımı) null döndüğünü doğrular."""
+
+    def test_ardupilot_capacity_and_remaining_parsed_when_present(self):
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBfffB", "TimeUS,Inst,Volt,Curr,CurrTot,RemPct"
+        )
+        header = bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, make_synthetic_log.BAT_TYPE])
+        out += header + struct.pack("<QBfffB", int(0.0 * 1e6), 0, 16.8, 10.0, 100.0, 90)
+        out += header + struct.pack("<QBfffB", int(6.0 * 1e6), 0, 16.5, 10.0, 250.0, 75)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            battery = battery_by_id(data, 1)
+            # Son örnekte görülen değerler kalmalı (kümülatif tüketim/kalan yüzde).
+            self.assertEqual(battery["capacity_used_mah"], 250.0)
+            self.assertEqual(battery["remaining_pct"], 75)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_ardupilot_capacity_fields_null_when_absent(self):
+        """CurrTot/RemPct alanı olmayan (eski) bir BAT tanımında bu iki alan
+        JSON'da null olmalı — regresyon testi, mevcut davranış bozulmasın."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 10.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 16.5, 10.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            battery = battery_by_id(data, 1)
+            self.assertIsNone(battery["capacity_used_mah"])
+            self.assertIsNone(battery["remaining_pct"])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_px4_capacity_and_remaining_parsed_when_present(self):
+        def build_sample(msg_id, t, volt, curr, discharged, remaining):
+            timestamp_us = int(t * 1e6)
+            payload = struct.pack("<H", msg_id) + struct.pack(
+                "<Qffff", timestamp_us, volt, curr, discharged, remaining
+            )
+            return make_synthetic_ulog.build_message(make_synthetic_ulog.MSG_DATA, payload)
+
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float voltage_v;float current_a;"
+            "float discharged_mah;float remaining;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += build_sample(1, 0.0, 16.8, 10.0, 100.0, 0.9)
+        out += build_sample(1, 6.0, 16.5, 10.0, 250.0, 0.75)
+
+        with tempfile.NamedTemporaryFile(suffix=".ulg", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            battery = battery_by_id(data, 1)
+            self.assertEqual(battery["capacity_used_mah"], 250.0)
+            self.assertAlmostEqual(battery["remaining_pct"], 75.0)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_px4_capacity_fields_null_when_absent(self):
+        """discharged_mah/remaining alanı olmayan (eski) bir battery_status
+        tanımında bu iki alan JSON'da null olmalı."""
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(make_synthetic_ulog.generate())
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            battery = battery_by_id(data, 1)
+            self.assertIsNone(battery["capacity_used_mah"])
+            self.assertIsNone(battery["remaining_pct"])
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class BatteryTemperatureTests(unittest.TestCase):
+    """ArduPilot BAT'ın 'Temp' (int16, santi-derece) ve PX4 battery_status'ün
+    'temperature' (float, °C) alanlarının doğru parse edildiğini, bu alanlar
+    logda yoksa boş dizi döndüğünü doğrular (bkz. shared/power_log_schema.md
+    temperature_c)."""
+
+    def test_ardupilot_temperature_parsed_when_present(self):
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBffc", "TimeUS,Inst,Volt,Curr,Temp"
+        )
+        header = bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, make_synthetic_log.BAT_TYPE])
+        out += header + struct.pack("<QBffh", int(0.0 * 1e6), 0, 16.8, 10.0, 2550)  # 25.50 C
+        out += header + struct.pack("<QBffh", int(6.0 * 1e6), 0, 16.5, 10.0, 2600)  # 26.00 C
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            battery = battery_by_id(run_backend(path), 1)
+            self.assertEqual(len(battery["temperature_c"]), 2)
+            self.assertAlmostEqual(battery["temperature_c"][0], 25.5, places=3)
+            self.assertAlmostEqual(battery["temperature_c"][1], 26.0, places=3)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_ardupilot_temperature_empty_when_absent(self):
+        """Temp alanı olmayan (eski) bir BAT tanımında temperature_c boş
+        dizi olmalı — regresyon testi, mevcut davranış bozulmasın."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 10.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 16.5, 10.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            self.assertEqual(battery_by_id(run_backend(path), 1)["temperature_c"], [])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_px4_temperature_parsed_when_present(self):
+        def build_sample(msg_id, t, volt, curr, temp):
+            timestamp_us = int(t * 1e6)
+            payload = struct.pack("<H", msg_id) + struct.pack("<Qfff", timestamp_us, volt, curr, temp)
+            return make_synthetic_ulog.build_message(make_synthetic_ulog.MSG_DATA, payload)
+
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float voltage_v;float current_a;float temperature;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += build_sample(1, 0.0, 16.8, 10.0, 37.2)
+        out += build_sample(1, 6.0, 16.5, 10.0, 37.5)
+
+        with tempfile.NamedTemporaryFile(suffix=".ulg", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            battery = battery_by_id(run_backend(path), 1)
+            self.assertEqual(len(battery["temperature_c"]), 2)
+            self.assertAlmostEqual(battery["temperature_c"][0], 37.2, places=3)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_px4_temperature_empty_when_absent(self):
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(make_synthetic_ulog.generate())
+            path = Path(f.name)
+        try:
+            self.assertEqual(battery_by_id(run_backend(path), 1)["temperature_c"], [])
         finally:
             path.unlink(missing_ok=True)
 
