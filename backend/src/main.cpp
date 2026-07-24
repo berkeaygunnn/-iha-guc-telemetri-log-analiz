@@ -75,6 +75,19 @@ struct ParsedLog {
     // "batarya verisi yok" durumunda kullanıcıya daha isabetli bir hata mesajı
     // verebilmek için bu konunun görülüp görülmediği izleniyor.
     bool hasSystemPowerTopic = false;
+    // Kümülatif tüketilen kapasite (mAh) ve kalan yüzde (0-100) — batarya
+    // zaman serisinin tamamı değil, o bataryada en son görülen tek değer
+    // (ArduPilot'ta "CurrTot"/"RemPct", PX4'te "discharged_mah"/"remaining").
+    // Bu alanlar tüm loglarda bulunmayabilir (opsiyonel); yoksa harita hiç
+    // doldurulmaz, JSON'a "null" olarak yazılır.
+    std::map<int, double> capacityUsedMah;
+    std::map<int, double> remainingPct;
+    // Batarya sıcaklığı (°C) — CurrTot/RemPct'in aksine bu bir ZAMAN SERİSİ
+    // (ArduPilot "Temp", PX4 "temperature"). Bir bataryanın örneklerinde bu
+    // alan bulunduysa batteries[id] ile birebir aynı uzunlukta doldurulur
+    // (ikisi aynı döngüde, aynı koşulda push edildiği için); alan hiç yoksa
+    // harita o id için hiç doldurulmaz, JSON'a boş dizi yazılır.
+    std::map<int, std::vector<double>> temperaturesC;
 };
 
 // Format karakterinin kapladığı byte sayısı (LogStructure.h'deki tablo).
@@ -171,12 +184,20 @@ FormatDef parseFormatMessage(const std::vector<uint8_t>& buffer, size_t pos) {
 // numarasına (Inst + 1) göre gruplar. Not: ArduPilot bu alana BAT mesajında
 // "Inst" adını veriyor (ESC mesajında ise "Instance"). "Inst" alanı yoksa
 // (çok eski loglar) tek batarya varsayılıp id=1'e yazılır.
+//
+// "CurrTot" (kümülatif tüketilen kapasite, mAh) ve "RemPct" (kalan yüzde)
+// opsiyoneldir — tüm ArduPilot sürümlerinde/batarya izleyici
+// yapılandırmalarında yok. Bulunursa her örnekte üzerine yazılır, tarama
+// bitince map'te doğal olarak SON (en güncel) değer kalır.
 void extractBatterySample(const uint8_t* payload, const FormatDef& def, size_t payloadSize,
-                           std::map<int, std::vector<BatterySamplePoint>>& batteries) {
+                           ParsedLog& result) {
     FieldLocator timeField = locateField(def, "TimeUS", payloadSize);
     FieldLocator voltField = locateField(def, "Volt", payloadSize);
     FieldLocator currField = locateField(def, "Curr", payloadSize);
     FieldLocator instField = locateField(def, "Inst", payloadSize);
+    FieldLocator currTotField = locateField(def, "CurrTot", payloadSize);
+    FieldLocator remPctField = locateField(def, "RemPct", payloadSize);
+    FieldLocator tempField = locateField(def, "Temp", payloadSize);  // santi-derece int16 ('c'), opsiyonel
 
     if (!timeField.found || !voltField.found || !currField.found) return;
 
@@ -196,7 +217,25 @@ void extractBatterySample(const uint8_t* payload, const FormatDef& def, size_t p
     // ayni felsefe: bozuk tek bir ornegi at, veriyi kirletme.
     if (!std::isfinite(timeUs) || !std::isfinite(volt) || !std::isfinite(curr)) return;
 
-    batteries[instance + 1].push_back(BatterySamplePoint{timeUs / 1e6, volt, curr});
+    int batteryId = instance + 1;
+    result.batteries[batteryId].push_back(BatterySamplePoint{timeUs / 1e6, volt, curr});
+
+    if (currTotField.found) {
+        double currTot = readFieldAsDouble(payload + currTotField.byteOffset, currTotField.formatChar);
+        if (std::isfinite(currTot)) result.capacityUsedMah[batteryId] = currTot;
+    }
+    if (remPctField.found) {
+        double remPct = readFieldAsDouble(payload + remPctField.byteOffset, remPctField.formatChar);
+        if (std::isfinite(remPct)) result.remainingPct[batteryId] = remPct;
+    }
+    if (tempField.found) {
+        // temperaturesC[batteryId], batteries[batteryId] ile HER ZAMAN aynı
+        // uzunlukta kalmalı (frontend ikisini aynı indeksle eşleştiriyor);
+        // bu yüzden (capacityUsedMah/remainingPct'ten farklı olarak) tek bir
+        // bozuk örnek bile atlanmaz, 0.0 ile doldurulur.
+        double temp = readFieldAsDouble(payload + tempField.byteOffset, tempField.formatChar);
+        result.temperaturesC[batteryId].push_back(std::isfinite(temp) ? temp : 0.0);
+    }
 }
 
 // "ESC" mesajının payload'ından TimeUS/Instance/Curr alanlarını çıkarır ve
@@ -261,7 +300,7 @@ ParsedLog parseArduPilotBuffer(const std::vector<uint8_t>& buffer) {
 
         size_t payloadSize = static_cast<size_t>(def.length) - 3;
         if (def.name == "BAT" || def.name == "CURR") {
-            extractBatterySample(buffer.data() + pos + 3, def, payloadSize, result.batteries);
+            extractBatterySample(buffer.data() + pos + 3, def, payloadSize, result);
         } else if (def.name == "ESC") {
             extractEscSample(buffer.data() + pos + 3, def, payloadSize, result.motors);
         }
@@ -467,12 +506,18 @@ double readUlogFieldAsDouble(const uint8_t* data, const std::string& type) {
 }
 
 // "battery_status" verisinden timestamp/voltage_v/current_a çıkarır ve
-// batarya numarasına (multiId + 1) göre gruplar.
+// batarya numarasına (multiId + 1) göre gruplar. "discharged_mah" (kümülatif
+// tüketilen kapasite) ve "remaining" (0-1 kalan oran, ArduPilot'un RemPct'iyle
+// aynı birime getirmek için *100 ile yüzdeye çevrilir) opsiyoneldir — bazı
+// PX4 araçları bu alanları yayınlamaz.
 void extractUlogBatterySample(const uint8_t* payload, const ULogFormatDef& def, size_t payloadSize,
-                               int multiId, std::map<int, std::vector<BatterySamplePoint>>& batteries) {
+                               int multiId, ParsedLog& result) {
     ULogFieldLocator timeField = locateUlogField(def, "timestamp", payloadSize);
     ULogFieldLocator voltField = locateUlogField(def, "voltage_v", payloadSize);
     ULogFieldLocator currField = locateUlogField(def, "current_a", payloadSize);
+    ULogFieldLocator dischargedField = locateUlogField(def, "discharged_mah", payloadSize);
+    ULogFieldLocator remainingField = locateUlogField(def, "remaining", payloadSize);
+    ULogFieldLocator temperatureField = locateUlogField(def, "temperature", payloadSize);  // float, °C, opsiyonel
 
     if (!timeField.found || !voltField.found || !currField.found) return;
 
@@ -482,7 +527,23 @@ void extractUlogBatterySample(const uint8_t* payload, const ULogFormatDef& def, 
 
     if (!std::isfinite(timestamp) || !std::isfinite(volt) || !std::isfinite(curr)) return;
 
-    batteries[multiId + 1].push_back(BatterySamplePoint{timestamp / 1e6, volt, curr});
+    int batteryId = multiId + 1;
+    result.batteries[batteryId].push_back(BatterySamplePoint{timestamp / 1e6, volt, curr});
+
+    if (dischargedField.found) {
+        double discharged = readUlogFieldAsDouble(payload + dischargedField.byteOffset, dischargedField.field->elementType);
+        if (std::isfinite(discharged)) result.capacityUsedMah[batteryId] = discharged;
+    }
+    if (remainingField.found) {
+        double remaining = readUlogFieldAsDouble(payload + remainingField.byteOffset, remainingField.field->elementType);
+        if (std::isfinite(remaining)) result.remainingPct[batteryId] = remaining * 100.0;
+    }
+    if (temperatureField.found) {
+        // temperaturesC, batteries[batteryId] ile aynı uzunlukta kalmalı
+        // (bkz. ArduPilot tarafındaki aynı yorum) — bozuk tek örnek atlanmaz.
+        double temperature = readUlogFieldAsDouble(payload + temperatureField.byteOffset, temperatureField.field->elementType);
+        result.temperaturesC[batteryId].push_back(std::isfinite(temperature) ? temperature : 0.0);
+    }
 }
 
 // "esc_status" mesajından, içindeki "esc_report" dizisinin her elemanı için
@@ -617,7 +678,7 @@ ParsedLog parseUlogBuffer(const std::vector<uint8_t>& buffer) {
                                 // subscription/msg_id alır; bu yüzden burada tüm
                                 // instance'lar kabul edilip numaralarına göre gruplanıyor.
                                 extractUlogBatterySample(payload + 2, fmtIt->second, actualSize,
-                                                          subIt->second.multiId, result.batteries);
+                                                          subIt->second.multiId, result);
                             } else if (fmtIt->second.name == "esc_status" && subIt->second.multiId == 0) {
                                 extractUlogEscSamples(payload + 2, fmtIt->second, actualSize, formats, result.motors);
                             }
@@ -711,7 +772,11 @@ void writeMotors(std::ostream& out, const std::map<int, std::vector<MotorSampleP
     out << "  ]";
 }
 
-void writeBatteries(std::ostream& out, const std::map<int, std::vector<BatterySamplePoint>>& batteries) {
+// capacityUsedMah/remainingPct opsiyoneldir (bkz. ParsedLog) — bir batarya
+// id'si haritada yoksa şemaya göre "null" yazılır.
+void writeBatteries(std::ostream& out, const std::map<int, std::vector<BatterySamplePoint>>& batteries,
+                     const std::map<int, double>& capacityUsedMah, const std::map<int, double>& remainingPct,
+                     const std::map<int, std::vector<double>>& temperaturesC) {
     out << "  \"batteries\": [\n";
     size_t written = 0;
     for (const auto& entry : batteries) {
@@ -731,6 +796,20 @@ void writeBatteries(std::ostream& out, const std::map<int, std::vector<BatterySa
         writeNumberArray(out, voltage_v);
         out << ",\n      \"current_a\": ";
         writeNumberArray(out, current_a);
+
+        out << ",\n      \"capacity_used_mah\": ";
+        auto capacityIt = capacityUsedMah.find(id);
+        if (capacityIt != capacityUsedMah.end()) out << capacityIt->second; else out << "null";
+
+        out << ",\n      \"remaining_pct\": ";
+        auto remainingIt = remainingPct.find(id);
+        if (remainingIt != remainingPct.end()) out << remainingIt->second; else out << "null";
+
+        out << ",\n      \"temperature_c\": ";
+        auto temperatureIt = temperaturesC.find(id);
+        if (temperatureIt != temperaturesC.end()) writeNumberArray(out, temperatureIt->second);
+        else out << "[]";
+
         out << "\n    }";
         if (++written < batteries.size()) out << ",";
         out << "\n";
@@ -751,8 +830,19 @@ double computeDuration(const std::map<int, std::vector<BatterySamplePoint>>& bat
 
 // Kural tabanlı otomatik yorumlama eşikleri: gerçek loglarla kalibre edilene
 // kadar makul başlangıç değerleri (CLAUDE.md'deki "gelecek özellikler" notu).
-constexpr double VOLTAGE_SAG_WARNING_THRESHOLD = 0.15;          // ilk voltaja göre %15 düşüş
-constexpr double MOTOR_CURRENT_IMBALANCE_THRESHOLD = 0.20;      // motorlar arası genel ortalamadan %20 sapma
+// Kullanıcı bunları frontend'deki Ayarlar penceresinden değiştirebilir; --flag
+// verilmezse (bkz. main()) burada tanımlı varsayılanlar kullanılır.
+constexpr double DEFAULT_VOLTAGE_SAG_WARNING_THRESHOLD = 0.15;          // ilk voltaja göre %15 düşüş
+constexpr double DEFAULT_CURRENT_IMBALANCE_THRESHOLD = 0.20;            // motor/batarya arası genel ortalamadan %20 sapma
+constexpr double DEFAULT_NEGATIVE_CURRENT_WARNING_THRESHOLD_A = -0.1;   // bu değerin altı saf sensör gürültüsünden öte, anlamlı negatif sayılır
+
+// Üç eşik hep birlikte taşındığı için (computeWarnings ve iki yardımcısına)
+// tek tek parametre yerine tek bir struct olarak geçiliyor.
+struct WarningThresholds {
+    double voltageSag = DEFAULT_VOLTAGE_SAG_WARNING_THRESHOLD;
+    double currentImbalance = DEFAULT_CURRENT_IMBALANCE_THRESHOLD;
+    double negativeCurrent = DEFAULT_NEGATIVE_CURRENT_WARNING_THRESHOLD_A;
+};
 
 // Gerçek loglarla ilk kalibrasyon denemesinde şu görüldü: çok kısa (ör. arm
 // öncesi/idle, birkaç saniyelik) kayıtlarda akım/voltaj örnekleri anlamlı bir
@@ -768,11 +858,63 @@ int roundToPercent(double ratio) {
     return static_cast<int>(ratio * 100.0 + 0.5);
 }
 
-// Batarya voltaj düşümü ve motor akım dengesizliği için basit, eşik tabanlı
-// kurallar uygulayıp insan-okunur uyarı metinleri üretir. Yapay zeka/ML
-// gerektirmez; ileride bu fonksiyonun yerini alacak bir model gelirse burası
-// değiştirilir (bkz. CLAUDE.md "Gelecek özellikler").
-std::vector<std::string> computeWarnings(const ParsedLog& log) {
+// Bir grubun (motor ya da batarya) her elemanının ortalama akımını genel
+// ortalamayla karşılaştırıp eşik aşıldığında uyarı ekler. Motor ve batarya
+// dengesizlik kuralları birebir aynı mantığı kullandığı için ortak bu
+// yardımcıya çıkarıldı (computeWarnings içinde iki kullanım noktası).
+void appendImbalanceWarnings(const std::map<int, double>& averages, const std::string& labelPrefix,
+                              std::vector<std::string>& warnings, double currentImbalanceThreshold) {
+    if (averages.empty()) return;
+
+    double overallMean = 0.0;
+    for (const auto& entry : averages) overallMean += entry.second;
+    overallMean /= static_cast<double>(averages.size());
+    if (overallMean <= 0.0) return;
+
+    for (const auto& entry : averages) {
+        double deviation = (entry.second - overallMean) / overallMean;
+        if (deviation >= currentImbalanceThreshold || deviation <= -currentImbalanceThreshold) {
+            std::ostringstream msg;
+            msg << labelPrefix << " " << entry.first << ": ortalama akımı diğerlerinden %"
+                << roundToPercent(deviation < 0 ? -deviation : deviation)
+                << (deviation > 0 ? " daha fazla" : " daha az");
+            warnings.push_back(msg.str());
+        }
+    }
+}
+
+// Her batarya/motor için akım örneklerinin en küçüğünü bulup eşik altına
+// düşenler için ayrı bir "veri kalitesi" uyarısı üretir. Fiziksel olarak ESC/
+// batarya akımı negatif olmaz; ufak negatif değerler genelde sensör
+// gürültüsü/kalibrasyon sapmasıdır, gerçek bir arıza değildir — bu yüzden
+// dengesizlik uyarılarından farklı, daha yumuşak bir dille işaretleniyor.
+template <typename SamplePoint>
+void appendNegativeCurrentWarnings(const std::map<int, std::vector<SamplePoint>>& groups,
+                                    const std::string& labelPrefix,
+                                    std::vector<std::string>& warnings, double negativeCurrentThreshold) {
+    for (const auto& entry : groups) {
+        const auto& points = entry.second;
+        if (points.empty()) continue;
+        if (points.back().time_s - points.front().time_s < MIN_DURATION_FOR_WARNINGS_S) continue;
+
+        double minCurrent = points.front().current_a;
+        for (const auto& point : points) {
+            if (point.current_a < minCurrent) minCurrent = point.current_a;
+        }
+        if (minCurrent < negativeCurrentThreshold) {
+            std::ostringstream msg;
+            msg << labelPrefix << " " << entry.first << ": akım verisinde negatif değer görüldü ("
+                << minCurrent << " A) — muhtemelen sensör gürültüsü, gerçek bir arıza olmayabilir";
+            warnings.push_back(msg.str());
+        }
+    }
+}
+
+// Batarya voltaj düşümü, motor/batarya akım dengesizliği ve negatif akım veri
+// kalitesi kontrolü için basit, eşik tabanlı kurallar uygulayıp insan-okunur
+// uyarı metinleri üretir. Yapay zeka/ML gerektirmez (bkz. CLAUDE.md "Kapsam
+// dışı bırakılan fikirler").
+std::vector<std::string> computeWarnings(const ParsedLog& log, const WarningThresholds& thresholds = WarningThresholds{}) {
     std::vector<std::string> warnings;
 
     for (const auto& entry : log.batteries) {
@@ -788,7 +930,7 @@ std::vector<std::string> computeWarnings(const ParsedLog& log) {
         if (first <= 0.0) continue;  // bozuk/eksik veri; oran anlamsız olur
 
         double sagRatio = (first - minVoltage) / first;
-        if (sagRatio >= VOLTAGE_SAG_WARNING_THRESHOLD) {
+        if (sagRatio >= thresholds.voltageSag) {
             std::ostringstream msg;
             msg << "Batarya " << entry.first << ": voltaj %" << roundToPercent(sagRatio)
                 << " düştü (" << first << "V → " << minVoltage << "V)";
@@ -796,43 +938,37 @@ std::vector<std::string> computeWarnings(const ParsedLog& log) {
         }
     }
 
-    if (!log.motors.empty()) {
-        std::map<int, double> motorAverages;
-        for (const auto& entry : log.motors) {
-            const std::vector<MotorSamplePoint>& points = entry.second;
-            if (points.empty()) continue;
-            if (points.back().time_s - points.front().time_s < MIN_DURATION_FOR_WARNINGS_S) continue;
-            double sum = 0.0;
-            for (const auto& point : points) sum += point.current_a;
-            motorAverages[entry.first] = sum / static_cast<double>(points.size());
-        }
+    appendNegativeCurrentWarnings(log.batteries, "Batarya", warnings, thresholds.negativeCurrent);
+    appendNegativeCurrentWarnings(log.motors, "Motor", warnings, thresholds.negativeCurrent);
 
-        if (!motorAverages.empty()) {
-            double overallMean = 0.0;
-            for (const auto& entry : motorAverages) overallMean += entry.second;
-            overallMean /= static_cast<double>(motorAverages.size());
-
-            if (overallMean > 0.0) {
-                for (const auto& entry : motorAverages) {
-                    double deviation = (entry.second - overallMean) / overallMean;
-                    if (deviation >= MOTOR_CURRENT_IMBALANCE_THRESHOLD ||
-                        deviation <= -MOTOR_CURRENT_IMBALANCE_THRESHOLD) {
-                        std::ostringstream msg;
-                        msg << "Motor " << entry.first << ": ortalama akımı diğer motorlardan %"
-                            << roundToPercent(deviation < 0 ? -deviation : deviation)
-                            << (deviation > 0 ? " daha fazla" : " daha az");
-                        warnings.push_back(msg.str());
-                    }
-                }
-            }
-        }
+    std::map<int, double> batteryAverages;
+    for (const auto& entry : log.batteries) {
+        const std::vector<BatterySamplePoint>& points = entry.second;
+        if (points.empty()) continue;
+        if (points.back().time_s - points.front().time_s < MIN_DURATION_FOR_WARNINGS_S) continue;
+        double sum = 0.0;
+        for (const auto& point : points) sum += point.current_a;
+        batteryAverages[entry.first] = sum / static_cast<double>(points.size());
     }
+    appendImbalanceWarnings(batteryAverages, "Batarya", warnings, thresholds.currentImbalance);
+
+    std::map<int, double> motorAverages;
+    for (const auto& entry : log.motors) {
+        const std::vector<MotorSamplePoint>& points = entry.second;
+        if (points.empty()) continue;
+        if (points.back().time_s - points.front().time_s < MIN_DURATION_FOR_WARNINGS_S) continue;
+        double sum = 0.0;
+        for (const auto& point : points) sum += point.current_a;
+        motorAverages[entry.first] = sum / static_cast<double>(points.size());
+    }
+    appendImbalanceWarnings(motorAverages, "Motor", warnings, thresholds.currentImbalance);
 
     return warnings;
 }
 
 // Basarili olursa (en az bir batarya bulunduysa) true doner.
-bool writePowerLogJson(const std::string& inputLogPath, const std::string& outputPath) {
+bool writePowerLogJson(const std::string& inputLogPath, const std::string& outputPath,
+                       const WarningThresholds& thresholds) {
     ParsedLog parsed = parseLog(inputLogPath);
 
     std::ofstream out(toPath(outputPath));
@@ -842,7 +978,7 @@ bool writePowerLogJson(const std::string& inputLogPath, const std::string& outpu
     }
 
     double duration_s = computeDuration(parsed.batteries);
-    std::vector<std::string> warnings = computeWarnings(parsed);
+    std::vector<std::string> warnings = computeWarnings(parsed, thresholds);
 
     out << "{\n";
     out << "  \"meta\": {\n";
@@ -854,7 +990,7 @@ bool writePowerLogJson(const std::string& inputLogPath, const std::string& outpu
     out << ",\n";
     out << "    \"duration_s\": " << duration_s << "\n";
     out << "  },\n";
-    writeBatteries(out, parsed.batteries);
+    writeBatteries(out, parsed.batteries, parsed.capacityUsedMah, parsed.remainingPct, parsed.temperaturesC);
     out << ",\n";
     writeMotors(out, parsed.motors);
     out << ",\n  \"warnings\": ";
@@ -918,9 +1054,33 @@ int main(int argc, char** argv) {
 #endif
 
     if (args.size() < 3) {
-        std::cerr << "Kullanim: power_log_backend <girdi_log.bin> <cikti.json>" << std::endl;
+        std::cerr << "Kullanim: power_log_backend <girdi_log.bin> <cikti.json> "
+                     "[--voltage-sag=0.15] [--current-imbalance=0.20] [--negative-current=-0.1]"
+                  << std::endl;
         return 1;
     }
-    bool ok = writePowerLogJson(args[1], args[2]);
+
+    // Uyarı eşikleri için opsiyonel argümanlar (frontend'in Ayarlar
+    // penceresinden geçirilir). Verilmezse yukarıdaki DEFAULT_* değerleri
+    // kullanılır (WarningThresholds'un kendi varsayılanları). Tanınmayan/
+    // hatalı bir flag sessizce yok sayılır — bu, kullanıcının kendi ayarlar
+    // penceresinden girdiği sayılar için sıkı bir doğrulama gerektirmeyen,
+    // opsiyonel bir özellik.
+    WarningThresholds thresholds;
+    for (size_t i = 3; i < args.size(); ++i) {
+        try {
+            if (args[i].rfind("--voltage-sag=", 0) == 0) {
+                thresholds.voltageSag = std::stod(args[i].substr(14));
+            } else if (args[i].rfind("--current-imbalance=", 0) == 0) {
+                thresholds.currentImbalance = std::stod(args[i].substr(20));
+            } else if (args[i].rfind("--negative-current=", 0) == 0) {
+                thresholds.negativeCurrent = std::stod(args[i].substr(19));
+            }
+        } catch (const std::exception&) {
+            // Sayıya çevrilemeyen bir değer geldiyse o eşik varsayılanında kalır.
+        }
+    }
+
+    bool ok = writePowerLogJson(args[1], args[2], thresholds);
     return ok ? 0 : 2;
 }
