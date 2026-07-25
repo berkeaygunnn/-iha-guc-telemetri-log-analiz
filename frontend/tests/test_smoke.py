@@ -316,14 +316,29 @@ class SmokeTests(unittest.TestCase):
     def test_export_csv_creates_file_with_expected_rows(self):
         data = self._load_and_plot("synthetic_test_log.BIN")
         expected_rows = sum(len(b["time_s"]) for b in data["batteries"]) + \
-            sum(len(m["time_s"]) for m in data["motors"])
+            sum(len(m["time_s"]) for m in data["motors"]) + \
+            sum(len(p["time_s"]) for p in data["pwm_outputs"])
         with tempfile.TemporaryDirectory() as tmp_dir:
             out_path = str(Path(tmp_dir) / "veri.csv")
             with patch("main.filedialog.asksaveasfilename", return_value=out_path):
                 self.app._on_export_csv_click()
             lines = Path(out_path).read_text(encoding="utf-8").strip().splitlines()
-            self.assertEqual(lines[0], "tip,id,zaman_s,voltaj_v,akim_a")
+            self.assertEqual(lines[0], "tip,id,zaman_s,voltaj_v,akim_a,pwm_us")
             self.assertEqual(len(lines) - 1, expected_rows)
+
+    def test_export_csv_includes_pwm_rows(self):
+        """PWM kanalları CSV'ye "pwm" tipiyle ve id sütununda sayı yerine
+        kanal etiketiyle ("MAIN 2") yazılır."""
+        data = self._load_and_plot("px4_ground_rover_flight.ulg")
+        self.assertGreater(len(data["pwm_outputs"]), 0)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = str(Path(tmp_dir) / "veri.csv")
+            with patch("main.filedialog.asksaveasfilename", return_value=out_path):
+                self.app._on_export_csv_click()
+            lines = Path(out_path).read_text(encoding="utf-8").strip().splitlines()
+        pwm_lines = [line for line in lines if line.startswith("pwm,")]
+        self.assertGreater(len(pwm_lines), 0)
+        self.assertIn("MAIN", pwm_lines[0])
 
     def test_energy_and_power_stats_shown_for_real_flight(self):
         """Gerçek bir uçuş yüklendiğinde enerji/tepe güç/iç direnç
@@ -492,6 +507,285 @@ class SmokeTests(unittest.TestCase):
         data = self._load_and_plot("synthetic_test_log.BIN")
         has_band = len(self.app.ax_current.patches) >= 1
         self.assertEqual(has_band, len(data["batteries"]) >= 2)
+
+    # --- Akım sensörü olmayan araçlar (rover) ---------------------------------
+    #
+    # data/px4_ground_rover_flight.ulg gerçek bir PX4 rover logu: voltajı
+    # sağlıklı (11.01-12.10 V) ama akım sensörü hiç bağlı değil (452 örneğin
+    # hepsinde current_a = 0.00) ve esc_status konusu logda yok. Eskiden bu
+    # "ölçüm yok" durumu "ölçüm sıfır" gibi gösteriliyordu: düz sıfır çizgisi,
+    # 0.0 Wh enerji, 0 W tepe güç. Aşağıdaki testler bunun regresyonu.
+
+    def _rover_axis_texts(self, ax) -> str:
+        return " ".join(t.get_text() for t in ax.texts).lower()
+
+    def test_rover_log_shows_message_instead_of_zero_current_line(self):
+        data = self._load_and_plot("px4_ground_rover_flight.ulg")
+        self.assertFalse(data["batteries"][0]["has_current_data"])
+
+        self.assertEqual(len(self.app.ax_current.get_lines()), 0)
+        self.assertIn("akım sensörü verisi yok", self._rover_axis_texts(self.app.ax_current))
+
+    def test_rover_log_shows_message_in_motor_panel(self):
+        """Bu logda esc_status konusu hiç yok; motor paneli sessizce boş
+        kalmak yerine nedenini yazmalı."""
+        data = self._load_and_plot("px4_ground_rover_flight.ulg")
+        self.assertEqual(len(data["motors"]), 0)
+
+        self.assertEqual(len(self.app.ax_motors.get_lines()), 0)
+        self.assertIn("motor (esc) akım verisi yok", self._rover_axis_texts(self.app.ax_motors))
+
+    def test_rover_log_shows_message_in_heatmap_view_too(self):
+        """Isı haritası görünümünde ölçümsüz batarya tek renk bir şerit olarak
+        çıkıyordu ("hep aynı yük" gibi); orada da mesaj gösterilmeli."""
+        self._load_and_plot("px4_ground_rover_flight.ulg")
+
+        self.app.battery_view_toggle.set("Isı Haritası")
+        self.app._on_battery_view_change("Isı Haritası")
+        self.assertEqual(len(self.app.ax_current.get_images()), 0)
+        self.assertIn("akım sensörü verisi yok", self._rover_axis_texts(self.app.ax_current))
+
+        self.app.motor_view_toggle.set("Isı Haritası")
+        self.app._on_motor_view_change("Isı Haritası")
+        self.assertEqual(len(self.app.ax_motors.get_images()), 0)
+
+    def test_rover_log_current_based_stats_show_placeholder(self):
+        """Akıma dayanan kutucuklar 0 değil '—' göstermeli; voltaj/süre gibi
+        gerçekten ölçülmüş olanlar ise normal değerlerini korumalı."""
+        self._load_and_plot("px4_ground_rover_flight.ulg")
+
+        for key in ("current_range", "energy_wh", "peak_power_w", "resistance_est",
+                    "capacity_used", "remaining_time"):
+            self.assertEqual(self.app.stat_labels[key].cget("text"), "—", f"{key} '—' olmalıydı")
+
+        self.assertIn("V", self.app.stat_labels["voltage_range"].cget("text"))
+        self.assertIn("s", self.app.stat_labels["duration"].cget("text"))
+
+    def test_rover_log_produces_no_false_warnings(self):
+        data = self._load_and_plot("px4_ground_rover_flight.ulg")
+        self.assertEqual(data["warnings"], [])
+
+    def test_vehicle_type_label_appended_to_file_name(self):
+        """_load_and_plot yerine _load_file_and_wait kullanılıyor çünkü
+        etiket dosya adının yanına ekleniyor, o da _load_file'da atanıyor."""
+        self._load_file_and_wait(str(DATA_DIR / "px4_ground_rover_flight.ulg"))
+        self.assertEqual(
+            self.app.file_label.cget("text"), "px4_ground_rover_flight.ulg · Rover"
+        )
+
+    def test_vehicle_type_label_omitted_when_unknown(self):
+        """Sentetik logda araç tipi bilgisi yok ("unknown"); etiket
+        uydurulmamalı, sadece dosya adı kalmalı."""
+        self._load_file_and_wait(str(DATA_DIR / "synthetic_test_log.BIN"))
+        self.assertEqual(self.app.file_label.cget("text"), "synthetic_test_log.BIN")
+
+    # --- PWM çıkış görünümü ---------------------------------------------------
+
+    def test_pwm_view_plots_channels_for_rover(self):
+        """Rover'da motor akımı hiç yok ama iki hareketli PWM kanalı var;
+        "PWM Çıkışı" modu bunları çizmeli. (Hangisinin gaz hangisinin
+        direksiyon olduğu logda yazmıyor — bkz. şemadaki "kanal ≠ motor"
+        kuralı — o yüzden burada da eşleme varsayılmıyor.)"""
+        data = self._load_and_plot("px4_ground_rover_flight.ulg")
+        self.assertEqual(len(data["pwm_outputs"]), 2)
+
+        self.app.motor_view_toggle.set("PWM Çıkışı")
+        self.app._on_motor_view_change("PWM Çıkışı")
+
+        lines = self.app.ax_motors.get_lines()
+        self.assertEqual(len(lines), 2)
+        self.assertIn("µs", self.app.ax_motors.get_ylabel())
+        self.assertEqual([line.get_label() for line in lines], ["MAIN 2", "MAIN 4"])
+
+    def test_pwm_view_shows_six_motors_for_hexarotor(self):
+        """Hexarotor'un 6 motoru AUX grubunda; MAIN'deki iki hareketli kanal
+        da (servo/gimbal) ayrıca listelenir. Motor tahmini yapılmadığının,
+        kanalların oldukları gibi aktarıldığının kanıtı."""
+        self._load_and_plot("px4_hexarotor_flight.ulg")
+
+        self.app.motor_view_toggle.set("PWM Çıkışı")
+        self.app._on_motor_view_change("PWM Çıkışı")
+
+        labels = [line.get_label() for line in self.app.ax_motors.get_lines()]
+        for channel in range(1, 7):
+            self.assertIn(f"AUX {channel}", labels)
+
+    def test_pwm_view_shows_message_when_no_data(self):
+        """synthetic_test_log.BIN'de RCOU mesajı yok; panel sessizce boş
+        kalmak yerine durum mesajı göstermeli."""
+        data = self._load_and_plot("synthetic_test_log.BIN")
+        self.assertEqual(data["pwm_outputs"], [])
+
+        self.app.motor_view_toggle.set("PWM Çıkışı")
+        self.app._on_motor_view_change("PWM Çıkışı")
+
+        self.assertEqual(len(self.app.ax_motors.get_lines()), 0)
+        texts = [t.get_text().lower() for t in self.app.ax_motors.texts]
+        self.assertTrue(any("pwm çıkış verisi yok" in t for t in texts))
+
+    def test_switching_across_all_three_motor_views(self):
+        """Üç mod arasında ileri geri geçiş hata vermemeli ve her mod kendi
+        içeriğini göstermeli (ısı haritası görüntü, diğerleri çizgi)."""
+        self._load_and_plot("px4_hexarotor_flight.ulg")
+
+        for label, expect in (
+            ("Isı Haritası", "image"), ("PWM Çıkışı", "line"),
+            ("Çizgi Grafiği", "line"), ("PWM Çıkışı", "line"), ("Isı Haritası", "image"),
+        ):
+            self.app.motor_view_toggle.set(label)
+            self.app._on_motor_view_change(label)
+            if expect == "image":
+                self.assertEqual(len(self.app.ax_motors.get_images()), 1, label)
+            else:
+                self.assertGreater(len(self.app.ax_motors.get_lines()), 0, label)
+
+    def test_pwm_view_does_not_shift_panel_position(self):
+        """Isı haritası colorbar'ı için ayrılan sabit eksen sayesinde panel
+        konumu görünümler arasında değişmiyordu; PWM modu da bunu bozmamalı."""
+        self._load_and_plot("px4_hexarotor_flight.ulg")
+        position_before = self.app.ax_motors.get_position().bounds
+
+        self.app.motor_view_toggle.set("PWM Çıkışı")
+        self.app._on_motor_view_change("PWM Çıkışı")
+
+        self.assertEqual(self.app.ax_motors.get_position().bounds, position_before)
+
+    # --- Toolbar "Sıfırla" butonu ---------------------------------------------
+
+    def test_reset_button_exists_next_to_pan(self):
+        self.assertIn("Reset", self.app.nav_toolbar._buttons)
+
+    def test_reset_button_looks_like_other_tool_buttons(self):
+        """Buton metin değil ikon göstermeli ve diğer araç butonlarıyla aynı
+        ölçüde olmalı — metinli hali toolbar'da sırıtıyordu."""
+        reset = self.app.nav_toolbar._buttons["Reset"]
+        pan = self.app.nav_toolbar._buttons["Pan"]
+
+        self.assertEqual(reset.cget("text"), "")
+        self.assertNotEqual(str(reset.cget("image")), "")
+        self.assertEqual(reset.cget("width"), pan.cget("width"))
+        self.assertEqual(reset.cget("height"), pan.cget("height"))
+
+    def test_reset_button_has_hover_tooltip(self):
+        """İkon tek başına ne işe yaradığını anlatmadığı için ipucu balonu
+        şart. Regresyon değeri yüksek: ilk denemede matplotlib'in private
+        tooltip yardımcısı kullanılmıştı, o sürümde adı değiştiği için
+        tooltip sessizce hiç bağlanmamıştı."""
+        reset = self.app.nav_toolbar._buttons["Reset"]
+        self.assertIn("<Enter>", reset.bind())
+
+        # Balonu gerçekten aç: metni doğru mu ve ayrılırken kapanıyor mu?
+        # Fare olayları ancak widget ekranda haritalandıysa işleniyor, bu
+        # yüzden önce analiz ekranına geçiliyor (toolbar orada duruyor).
+        self.app._show_analysis()
+        self.app.update()
+        reset.event_generate("<Enter>")
+        self.app.update()
+        balloons = [
+            child for child in reset.winfo_children()
+            if isinstance(child, frontend_main.tk.Toplevel)
+        ]
+        self.assertEqual(len(balloons), 1)
+        texts = [w.cget("text") for w in balloons[0].winfo_children()]
+        self.assertTrue(any("Sıfırla" in t for t in texts), texts)
+
+        reset.event_generate("<Leave>")
+        self.app.update()
+        self.assertEqual(
+            [c for c in reset.winfo_children()
+             if isinstance(c, frontend_main.tk.Toplevel)],
+            [],
+        )
+
+    def test_reset_button_restores_original_view(self):
+        """Yakınlaştırma sonrası Sıfırla, grafiği ilk haline döndürmeli.
+        Not: paneller yeniden kurulurken nav_toolbar.update() navigasyon
+        yığınını temizliyor; _plot_power_data sonundaki push_current() bu
+        yüzden gerekli (o olmadan matplotlib'in home()'u sessizce hiçbir şey
+        yapmazdı)."""
+        self._load_and_plot("synthetic_test_log.BIN")
+        original_xlim = self.app.ax_voltage.get_xlim()
+
+        zoomed_xlim = (original_xlim[0] + 2, original_xlim[1] - 2)
+        self.app.ax_voltage.set_xlim(*zoomed_xlim)
+        self.assertEqual(self.app.ax_voltage.get_xlim(), zoomed_xlim)
+
+        self.app.nav_toolbar.reset_view()
+        self.assertEqual(self.app.ax_voltage.get_xlim(), original_xlim)
+
+    def test_reset_button_keeps_active_pan_tool_selected(self):
+        """Pan açıkken sıfırlamak aracı KAPATMAMALI. İlk sürüm kapatıyordu ve
+        kullanıcı incelemeye devam edebilmek için her sıfırlamadan sonra Pan'a
+        yeniden basmak zorunda kalıyordu."""
+        self._load_and_plot("synthetic_test_log.BIN")
+        toolbar = self.app.nav_toolbar
+        original_xlim = self.app.ax_voltage.get_xlim()
+
+        toolbar.pan()
+        self.assertEqual(toolbar.mode, frontend_main._Mode.PAN)
+        self.app.ax_voltage.set_xlim(original_xlim[0] + 5, original_xlim[1] + 5)
+
+        toolbar.reset_view()
+
+        self.assertEqual(toolbar.mode, frontend_main._Mode.PAN)  # araç seçili kaldı
+        self.assertEqual(self.app.ax_voltage.get_xlim(), original_xlim)  # görünüm sıfırlandı
+
+    def test_reset_while_panning_updates_pan_restore_point(self):
+        """Sıfırladıktan sonra başka bir araca geçilirse, Pan'a girmeden
+        önceki ESKİ kaydırmaya değil sıfırlanmış görünüme dönülmeli."""
+        self._load_and_plot("synthetic_test_log.BIN")
+        toolbar = self.app.nav_toolbar
+        original_xlim = self.app.ax_voltage.get_xlim()
+
+        self.app.ax_voltage.set_xlim(original_xlim[0] + 30, original_xlim[1] + 30)
+        toolbar.pan()  # kaydırılmış görünüm "geri dönülecek nokta" olarak kaydedilir
+        toolbar.reset_view()
+        toolbar.zoom()  # başka araca geçiş -> kaydedilen noktaya dönülür
+
+        self.assertEqual(self.app.ax_voltage.get_xlim(), original_xlim)
+
+    def test_home_button_removed_from_plot_toolbar(self):
+        """Ev simgesi kaldırıldı; görevini Sıfırla devraldı. Uygulamada zaten
+        giriş ekranına dönen ayrı bir "← Ana Sayfa" butonu var, iki ev
+        simgesi kafa karıştırıyordu."""
+        self.assertNotIn("Home", self.app.nav_toolbar._buttons)
+        self.assertIn("Reset", self.app.nav_toolbar._buttons)
+
+    def test_rover_log_exports_do_not_crash(self):
+        """Rover logu artık farklı bir çizim yolundan geçiyor (çizgi yerine
+        durum mesajı, boş motor listesi); PNG/PDF/CSV dışa aktarımı bundan
+        etkilenmemeli. PDF özet sayfası istatistikleri stat_labels'tan
+        okuduğu için '—' değerleri de rapora aynen yansımalı."""
+        self._load_and_plot("px4_ground_rover_flight.ulg")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for file_name, handler in (
+                ("grafik.png", self.app._on_export_png_click),
+                ("rapor.pdf", self.app._on_export_pdf_click),
+                ("veri.csv", self.app._on_export_csv_click),
+            ):
+                out_path = str(Path(tmp_dir) / file_name)
+                with patch("main.filedialog.asksaveasfilename", return_value=out_path):
+                    handler()
+                self.assertGreater(Path(out_path).stat().st_size, 0, file_name)
+
+        fig = self.app._build_report_summary_figure()
+        all_text = " ".join(t.get_text() for t in fig.texts)
+        self.assertIn("Enerji", all_text)
+        self.assertIn("—", all_text)
+
+    def test_measured_battery_still_plotted_when_another_has_no_sensor(self):
+        """Karışık durum: bir bataryanın sensörü var, diğerinin yok. Ölçümü
+        olan çizilmeye devam etmeli, olmayan sessizce atlanmalı — panel
+        tamamen mesaja düşmemeli."""
+        self.app._plot_battery_currents([
+            {"id": 1, "time_s": [0.0, 1.0], "voltage_v": [16.8, 16.5],
+             "current_a": [10.0, 12.0], "has_current_data": True},
+            {"id": 2, "time_s": [0.0, 1.0], "voltage_v": [16.8, 16.5],
+             "current_a": [0.0, 0.0], "has_current_data": False},
+        ])
+        self.assertEqual(len(self.app.ax_current.get_lines()), 1)
+        self.assertEqual(self.app.ax_current.get_lines()[0].get_label(), "Batarya 1")
+        self.assertEqual(len(self.app.ax_current.texts), 0)  # "veri yok" mesajı çıkmamalı
 
 
 if __name__ == "__main__":

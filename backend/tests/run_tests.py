@@ -841,6 +841,282 @@ class PX4RobustnessTests(unittest.TestCase):
             path.unlink(missing_ok=True)
 
 
+class VehicleTypeTests(unittest.TestCase):
+    """meta.vehicle_type alanı: PX4'te vehicle_status.vehicle_type sayısal
+    alanından, ArduPilot'ta ise açılışta yazılan "MSG" satırlarındaki firmware
+    adından ("ArduCopter V4.x") çıkarılır. Log bu bilgiyi hiç içermiyorsa
+    "unknown" kalır (bkz. shared/power_log_schema.md).
+
+    Bu alan SADECE bilgi amaçlıdır; hangi panellerin çizileceğini belirlemez
+    (o karar has_current_data'ya bakar) — çünkü aynı araç tipinin ESC
+    telemetrisi olan da olmayan da oluyor."""
+
+    def test_px4_rover_detected(self):
+        data = run_backend(DATA_DIR / "px4_ground_rover_flight.ulg")
+        self.assertEqual(data["meta"]["vehicle_type"], "rover")
+
+    def test_px4_fixed_wing_detected(self):
+        data = run_backend(DATA_DIR / "px4_fixed_wing_flight.ulg")
+        self.assertEqual(data["meta"]["vehicle_type"], "fixed_wing")
+
+    def test_px4_multirotor_detected(self):
+        data = run_backend(DATA_DIR / "px4_hexarotor_flight.ulg")
+        self.assertEqual(data["meta"]["vehicle_type"], "multirotor")
+
+    def test_px4_vtol_takes_precedence_over_rotary_wing(self):
+        """VTOL araçlar uçuş fazına göre vehicle_type'ı rotary_wing ile
+        fixed_wing arasında değiştirir; ayrı "is_vtol" bayrağı olduğu için
+        etiket sabit "vtol" olmalı (bu log is_vtol=1, vehicle_type=1 taşıyor)."""
+        data = run_backend(DATA_DIR / "px4_sample_log_small.ulg")
+        self.assertEqual(data["meta"]["vehicle_type"], "vtol")
+
+    def test_ardupilot_multirotor_from_firmware_message(self):
+        data = run_backend(DATA_DIR / "ArduCopter-MaxAltFence-00000067.BIN")
+        self.assertEqual(data["meta"]["vehicle_type"], "multirotor")
+
+    def test_unknown_when_log_has_no_vehicle_info(self):
+        """Sentetik test dosyalarında ne MSG ne vehicle_status var; alan
+        uydurulmamalı, "unknown" kalmalı."""
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(make_synthetic_log.generate())
+            path = Path(f.name)
+        try:
+            self.assertEqual(run_backend(path)["meta"]["vehicle_type"], "unknown")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_ardupilot_rover_firmware_name_recognized(self):
+        """Repoda gerçek bir ArduRover .bin örneği yok; firmware adından tip
+        çıkarma mantığı sentetik bir MSG mesajıyla test ediliyor. 'Z' formatı
+        char[64] olduğu için metin 64 bayta yastıklanır."""
+        MSG_TYPE = 103
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(MSG_TYPE, "MSG", "QZ", "TimeUS,Message")
+        out += bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, MSG_TYPE])
+        out += struct.pack("<Q", int(0.5 * 1e6)) + b"ArduRover V4.4.0".ljust(64, b"\x00")
+        # Backend en az bir batarya örneği bulunmasını şart koşuyor.
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(1.0, 0, 12.6, 5.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            self.assertEqual(run_backend(path)["meta"]["vehicle_type"], "rover")
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class HasCurrentDataTests(unittest.TestCase):
+    """has_current_data bayrağı: akım sensörü bağlı değilken ArduPilot/PX4 bu
+    alanı boş bırakmaz, her örneğe TAM 0.0 yazar. Bu durumu "akım gerçekten
+    0 A" ile karıştırmamak için backend ayrı bir bayrak üretiyor — yoksa
+    frontend düz bir sıfır çizgisi, 0.0 Wh enerji ve 0 W tepe güç gösteriyordu
+    (gerçek bir rover logunda görüldü, bkz. shared/power_log_schema.md)."""
+
+    def test_real_rover_log_has_no_current_data(self):
+        """data/px4_ground_rover_flight.ulg'de battery_status'ün current_a
+        alanı 452 örneğin hepsinde tam 0.00 — bu araçta akım sensörü yok."""
+        data = run_backend(DATA_DIR / "px4_ground_rover_flight.ulg")
+        battery = battery_by_id(data, 1)
+        self.assertFalse(battery["has_current_data"])
+        # Voltaj ölçümü ise gerçek; bayrak akımı işaretler, bataryayı değil.
+        self.assertGreater(min(battery["voltage_v"]), 10.0)
+
+    def test_real_multirotor_log_has_current_data(self):
+        data = run_backend(DATA_DIR / "px4_hexarotor_flight.ulg")
+        self.assertTrue(battery_by_id(data, 1)["has_current_data"])
+        self.assertTrue(motor_by_id(data, 1)["has_current_data"])
+
+    def test_all_zero_current_battery_flagged(self):
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 0.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 16.5, 0.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            self.assertFalse(battery_by_id(run_backend(path), 1)["has_current_data"])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_single_nonzero_sample_counts_as_real_data(self):
+        """Eşik yok, kural katı: bir tek örnek bile sıfırdan farklıysa sensör
+        var sayılır. Gerçek bir sensör araç dururken bile küçük bir gürültü/
+        ofset üretir, tam sıfır dizisi ancak sensör yokken oluşur."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 0.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 16.5, 0.02)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            self.assertTrue(battery_by_id(run_backend(path), 1)["has_current_data"])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_zero_current_battery_excluded_from_imbalance_rule(self):
+        """Bu, bayrağın düzelttiği somut yanlış alarmın regresyon testi: biri
+        gerçek ölçüm yapan, diğeri akım sensörsüz iki batarya. Sensörsüz olan
+        ortalamalara katılırsa genel ortalama 20A'dan 10A'ya iner ve İKİSİ
+        birden "%100 sapma" uyarısı üretir — halbuki sensörsüz olanın ölçümü
+        hiç yok. Voltaj sabit tutuluyor ki sag uyarısı karışmasın."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 20.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 16.8, 20.0)
+        out += make_synthetic_log.build_bat_message(0.0, 1, 16.8, 0.0)
+        out += make_synthetic_log.build_bat_message(6.0, 1, 16.8, 0.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            self.assertEqual(data["warnings"], [])
+            self.assertTrue(battery_by_id(data, 1)["has_current_data"])
+            self.assertFalse(battery_by_id(data, 2)["has_current_data"])
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class PwmOutputTests(unittest.TestCase):
+    """pwm_outputs dizisi: uçuş kontrolcüsünün çıkış kanallarının PWM darbe
+    genişliği (PX4'te "actuator_outputs", ArduPilot'ta "RCOU"). Bu bir GÜÇ
+    ölçümü değil, kontrol çıktısı — akım sensörü olmayan araçlarda (birçok
+    rover) motor aktivitesinin tek görünür kanıtı.
+
+    İki tasarım kuralı test ediliyor (bkz. shared/power_log_schema.md):
+    - Hiç değişmeyen kanallar (kullanılmayan çıkış, servo nötr konumu) JSON'a
+      hiç yazılmaz.
+    - Hangi kanalın motor hangisinin servo olduğu loglarda yazmadığı için
+      tahmin yürütülmez; kanallar donanım adlarıyla (MAIN/AUX/Kanal) aktarılır.
+    """
+
+    def pwm_labels(self, data: dict) -> list:
+        return [output["label"] for output in data["pwm_outputs"]]
+
+    def test_rover_constant_channels_are_dropped(self):
+        """Rover'ın 4 çıkış kanalından sadece 2'si hareketli (gaz +
+        direksiyon); kalan ikisi log boyunca sabit 1500 (servo nötr) ve
+        listede hiç görünmemeli."""
+        data = run_backend(DATA_DIR / "px4_ground_rover_flight.ulg")
+        self.assertEqual(self.pwm_labels(data), ["MAIN 2", "MAIN 4"])
+
+        channel = data["pwm_outputs"][0]
+        self.assertEqual(len(channel["time_s"]), len(channel["pwm_us"]))
+        self.assertGreater(max(channel["pwm_us"]), min(channel["pwm_us"]))
+
+    def test_hexarotor_six_motors_found_in_aux_group(self):
+        """Bu logda 6 motor MAIN'de değil AUX grubunda; "asıl motor grubu"
+        diye bir seçim yapılmadığının, tüm instance'ların aktarıldığının
+        kanıtı (MAIN'deki iki hareketli kanal da listede)."""
+        labels = self.pwm_labels(run_backend(DATA_DIR / "px4_hexarotor_flight.ulg"))
+        for channel in range(1, 7):
+            self.assertIn(f"AUX {channel}", labels)
+        self.assertIn("MAIN 2", labels)
+
+    def test_ardupilot_rcou_channels_parsed(self):
+        """ArduPilot'ta kanallar RCOU mesajının C1..C14 alanlarında; bu
+        quadrotor logunda 4 motor kanalı hareketli."""
+        data = run_backend(DATA_DIR / "ArduCopter-MaxAltFence-00000067.BIN")
+        self.assertEqual(self.pwm_labels(data), ["Kanal 1", "Kanal 2", "Kanal 3", "Kanal 4"])
+        self.assertEqual(len(data["pwm_outputs"][0]["time_s"]), 959)
+
+    def test_empty_when_log_has_no_output_messages(self):
+        """Sentetik log ne RCOU ne actuator_outputs içeriyor; alan
+        uydurulmamalı, boş dizi olmalı."""
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(make_synthetic_log.generate())
+            path = Path(f.name)
+        try:
+            self.assertEqual(run_backend(path)["pwm_outputs"], [])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_all_constant_channels_produce_empty_list(self):
+        """Tüm kanalları sabit olan bir araç (ör. hiç arm edilmemiş bir log)
+        boş bir liste vermeli — sabit filtresinin sınır durumu."""
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float voltage_v;float current_a;"
+        )
+        out += make_synthetic_ulog.build_format_message(
+            "actuator_outputs:uint64_t timestamp;uint32_t noutputs;float[4] output;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += make_synthetic_ulog.build_subscription_message(2, "actuator_outputs", multi_id=0)
+        out += make_synthetic_ulog.build_battery_data_message(1, 1.0, 16.5, 12.0)
+
+        for time_s in (1.0, 2.0):
+            payload = struct.pack("<H", 2) + struct.pack("<QI", int(time_s * 1e6), 4)
+            payload += struct.pack("<4f", 1500.0, 1500.0, 1000.0, 0.0)  # hepsi sabit
+            out += make_synthetic_ulog.build_message(make_synthetic_ulog.MSG_DATA, payload)
+
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            self.assertEqual(run_backend(path)["pwm_outputs"], [])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_noutputs_limits_channels_read(self):
+        """"output" sabit uzunluklu bir dizi ama araç daha az kanal kullanır;
+        noutputs'un ötesindeki elemanlar (çöp/artık veri) okunmamalı."""
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float voltage_v;float current_a;"
+        )
+        out += make_synthetic_ulog.build_format_message(
+            "actuator_outputs:uint64_t timestamp;uint32_t noutputs;float[4] output;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += make_synthetic_ulog.build_subscription_message(2, "actuator_outputs", multi_id=1)
+        out += make_synthetic_ulog.build_battery_data_message(1, 1.0, 16.5, 12.0)
+
+        # noutputs=2: sadece ilk iki kanal gerçek. 3. ve 4. de değişiyor ama
+        # bildirilmedikleri için okunmamalılar.
+        for time_s, values in ((1.0, (1100.0, 1200.0, 1300.0, 1400.0)),
+                                (2.0, (1600.0, 1700.0, 1800.0, 1900.0))):
+            payload = struct.pack("<H", 2) + struct.pack("<QI", int(time_s * 1e6), 2)
+            payload += struct.pack("<4f", *values)
+            out += make_synthetic_ulog.build_message(make_synthetic_ulog.MSG_DATA, payload)
+
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            # multi_id=1 -> AUX grubu.
+            self.assertEqual([o["label"] for o in data["pwm_outputs"]], ["AUX 1", "AUX 2"])
+            self.assertEqual(data["pwm_outputs"][0]["pwm_us"], [1100.0, 1600.0])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_pwm_does_not_affect_warning_rules(self):
+        """PWM bir güç ölçümü olmadığı için computeWarnings kapsamı dışında;
+        gerçek loglarda uyarı sayıları PWM eklendikten sonra değişmemeli."""
+        self.assertEqual(run_backend(DATA_DIR / "px4_ground_rover_flight.ulg")["warnings"], [])
+        self.assertEqual(len(run_backend(DATA_DIR / "px4_hexarotor_flight.ulg")["warnings"]), 2)
+
+
 class RealLogRegressionTests(unittest.TestCase):
     """Gerçek örnek loglarla önceden doğrulanmış değerlere karşı regresyon çapası."""
 

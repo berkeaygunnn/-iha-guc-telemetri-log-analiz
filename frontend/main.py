@@ -10,6 +10,7 @@ otomatik algılanıyor.
 import csv
 import ctypes
 import json
+import math
 import queue
 import subprocess
 import sys
@@ -22,7 +23,7 @@ import numpy as np
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import Canvas, filedialog, PhotoImage
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 from matplotlib import cbook
 from matplotlib.backend_bases import MouseButton, _Mode
 from matplotlib.backends.backend_pdf import PdfPages
@@ -252,6 +253,61 @@ STAT_TILE_DEFINITIONS = [
 ]
 
 
+# Akım ölçümü olmayan panellerde, sessiz/boş bir grafik yerine gösterilen
+# açıklamalar (sıcaklık panelindeki "Bu logda sıcaklık verisi yok." ile aynı
+# desen). Bir rover/sabit kanat logunda akım sensörü çoğu zaman hiç bağlı
+# değildir; bunu sıfır çizgisi olarak çizmek "hiç akım çekilmemiş" gibi
+# yanlış bir izlenim veriyordu.
+NO_BATTERY_CURRENT_MESSAGE = "Bu logda akım sensörü verisi yok."
+NO_MOTOR_TOPIC_MESSAGE = "Bu logda motor (ESC) akım verisi yok."
+NO_MOTOR_CURRENT_MESSAGE = "ESC telemetrisi var ama akım bildirilmiyor."
+NO_PWM_DATA_MESSAGE = "Bu logda PWM çıkış verisi yok."
+
+# Alt panelin görünüm modu ile seçicideki etiketi arasındaki eşleme. İki mod
+# arasında geçiş yapan eski if/else, üçüncü mod (PWM) eklenince okunaksız
+# olacaktı; tek bir sözlük çifti hem seçiciyi hem kayıtlı modu besliyor.
+MOTOR_VIEW_MODES = {
+    "Çizgi Grafiği": "line",
+    "Isı Haritası": "heatmap",
+    "PWM Çıkışı": "pwm",
+}
+MOTOR_VIEW_LABELS = {mode: label for label, mode in MOTOR_VIEW_MODES.items()}
+
+# meta.vehicle_type (backend) -> arayüzde gösterilecek Türkçe etiket.
+VEHICLE_TYPE_LABELS = {
+    "multirotor": "Multirotor",
+    "fixed_wing": "Sabit Kanat",
+    "rover": "Rover",
+    "vtol": "VTOL",
+    "airship": "Zeplin",
+    "submarine": "Denizaltı",
+}
+
+
+def _has_current_data(series: dict) -> bool:
+    """Bir batarya/motorun akım ölçümünün gerçek olup olmadığı — backend'in
+    has_current_data bayrağı (bkz. shared/power_log_schema.md). Akım sensörü
+    bağlı değilken ArduPilot/PX4 alanı boş bırakmaz, her örneğe tam 0.0 yazar;
+    bayrağı üreten tespit backend'de. Bayrağı taşımayan (eski sürümden kalma)
+    bir JSON gelirse veri var sayılır, yani önceki davranış korunur."""
+    return series.get("has_current_data", True)
+
+
+def _with_current_data(series_list: list) -> list:
+    """Batarya/motor listesinden sadece gerçek akım ölçümü olanları süzer."""
+    return [series for series in series_list if _has_current_data(series)]
+
+
+def _motor_empty_message(motors: list) -> str:
+    """Motor panelinde ölçüm olmamasının iki ayrı sebebini ayırt eder: ya
+    esc_status/ESC konusu logda hiç yok (rover ve sabit kanat loglarının
+    çoğu böyle), ya da ESC'ler loglanmış ama akım alanını doldurmuyor
+    (akım ölçümü desteklemeyen ESC'ler). Kullanıcı için bu fark önemli:
+    ilki 'bu araçta ESC telemetrisi kurulu değil', ikincisi 'kurulu ama
+    akım okumuyor' demek."""
+    return NO_MOTOR_TOPIC_MESSAGE if not motors else NO_MOTOR_CURRENT_MESSAGE
+
+
 def _flight_duration_seconds(batteries: list):
     """Batarya zaman serilerinin en uzununun bitiş anı; uçuşun toplam süresi
     olarak kullanılır (üst istatistik satırı ve Geçmiş Dosyalar listesi aynı
@@ -375,14 +431,51 @@ def _truncate_to_width(text: str, max_width_px: float, font) -> str:
     return text[:lo] + "..."
 
 
+def _add_toolbar_tooltip(widget, text: str):
+    """Bir araç çubuğu butonuna, fare üzerine gelince çıkan küçük bir ipucu
+    balonu bağlar.
+
+    matplotlib'in kendi yardımcısı private bir modülde ve sürümden sürüme yer
+    değiştiriyor (3.11'de `_backend_tk.add_tooltip`, daha eskilerde
+    `ToolTip.createToolTip`). İpucu, ikonlu bir butonun ne işe yaradığını
+    anlatan tek şey olduğu için o API'ye bağlı kalmak yerine burada kendi
+    küçük sürümümüz kuruluyor; ek fayda olarak balon uygulamanın koyu/açık
+    temasına uyuyor (renkler her gösterimde canlı okunuyor)."""
+    state = {"window": None}
+
+    def show(_event=None):
+        if state["window"] is not None:
+            return
+        window = tk.Toplevel(widget)
+        window.wm_overrideredirect(True)  # çerçevesiz, başlıksız balon
+        window.wm_geometry(
+            f"+{widget.winfo_rootx()}+{widget.winfo_rooty() + widget.winfo_height() + 4}"
+        )
+        tk.Label(
+            window, text=text, background=GRIDLINE, foreground=TEXT_PRIMARY,
+            relief="solid", borderwidth=1, padx=6, pady=3,
+        ).pack()
+        state["window"] = window
+
+    def hide(_event=None):
+        if state["window"] is not None:
+            state["window"].destroy()
+            state["window"] = None
+
+    # add="+" : matplotlib'in kendi bağladığı olay işleyicileri ezilmesin.
+    widget.bind("<Enter>", show, add="+")
+    widget.bind("<Leave>", hide, add="+")
+    widget.bind("<ButtonPress>", hide, add="+")
+
+
 class _PanPreviewToolbar(NavigationToolbar2Tk):
-    """Standart NavigationToolbar2Tk ile iki fark var:
+    """Standart NavigationToolbar2Tk'dan farkları:
 
     1. Pan (taşı) aracı açıkken yapılan sürüklemeler (sol ya da sağ tuşla,
        her yöne) KALICIDIR — fareyi bırakmak eski görünüme dönmez, istediğin
        kadar sürükleyip grafiği inceleyebilirsin. Kaydedilen "Pan'a girmeden
-       önceki görünüm"e dönüş sadece başka bir araca (Ana Sayfa/Geri/İleri/
-       Yakınlaştır/Kaydet) geçildiğinde olur (bkz. `pan`/`_restore_pan_view_if_pending`).
+       önceki görünüm"e dönüş sadece başka bir araca (Geri/İleri/Yakınlaştır/
+       Kaydet) geçildiğinde olur (bkz. `pan`/`_restore_pan_view_if_pending`).
     2. İkonlar, matplotlib'in varsayılan siyah/gri boyamasının yerine,
        uygulamanın koyu temasına uygun mavi tonlarda çiziliyor (bkz.
        `_set_image_for_button`).
@@ -393,14 +486,63 @@ class _PanPreviewToolbar(NavigationToolbar2Tk):
        yeniden çizildiğinde (ısı haritası geçişi, yeni dosya) sessizce
        sıfırlanıyordu — kafa karıştırıcı ve bu uygulama için gereksiz bir
        matplotlib güç-kullanıcı özelliği.
+    4. "Ana Sayfa" (ev) butonu kaldırıldı; görevini Pan'ın yanındaki
+       "Sıfırla" butonu devraldı (bkz. `_add_reset_button`/`reset_view`).
     """
 
-    toolitems = tuple(item for item in NavigationToolbar2Tk.toolitems if item[0] != "Subplots")
+    # "Subplots" (yukarıdaki 3. madde) ve "Home" çıkarılıyor. Home'un işini
+    # artık Pan'ın yanındaki "Sıfırla" butonu yapıyor (bkz. _add_reset_button):
+    # ev simgesi, uygulamada giriş ekranına dönen "← Ana Sayfa" butonu da
+    # olduğu için oraya götürüyormuş gibi duruyordu ve iki buton aynı işi
+    # yapıyordu.
+    toolitems = tuple(
+        item for item in NavigationToolbar2Tk.toolitems
+        if item[0] not in ("Subplots", "Home")
+    )
 
     def __init__(self, *args, **kwargs):
         self._tinted_icons = {}  # PhotoImage referansları GC'ye kaybolmasın diye canlı tutulur
         super().__init__(*args, **kwargs)
         self._pre_pan_view = None
+        self._add_reset_button()
+
+    def _add_reset_button(self):
+        """Pan (taşı) ile Yakınlaştır arasına metin tabanlı bir "Sıfırla"
+        butonu ekler.
+
+        Ev ikonu da aynı işi yapıyor ama ne yaptığı belirsiz kalıyordu:
+        uygulamada bir de giriş ekranına dönen "← Ana Sayfa" butonu olduğu
+        için ev simgesi oraya götürüyormuş gibi duruyor. Elle yakınlaştırma/
+        kaydırma yapılan butonların yanında duran, adı açıkça yazan ikinci bir
+        giriş bu tereddüdü ortadan kaldırıyor.
+
+        Buton `toolitems`'a EKLENMİYOR: matplotlib oradaki her kaydın ikon
+        dosyasını `images/{image_file}.png` diye çözmeye çalışıyor, yani
+        matplotlib'in hazır setinde olmayan bir simge oradan tanımlanamıyor.
+        Bunun yerine buton normal şekilde kurulup Tk'nin `pack(before=...)`
+        özelliğiyle doğru konuma alınıyor. `_buttons` sözlüğüne de yazılıyor ki
+        tema boyaması (`_style_nav_toolbar`) onu da kapsasın.
+
+        Görünüm diğer araç butonlarıyla birebir aynı: metin yok, aynı ölçüde
+        bir ikon var ve adı fare üzerine gelince tooltip olarak çıkıyor."""
+        button = tk.Button(
+            master=self, command=self.reset_view,
+            relief="flat", overrelief="groove", borderwidth=1,
+        )
+        # Bu işaret, ikon boyama mantığının (bkz. _set_image_for_button) bu
+        # butonda dosyadan değil çizilerek üretilen simgeyi kullanmasını sağlar.
+        button._is_reset_button = True
+        button._image_file = None
+        self._set_image_for_button(button)
+
+        _add_toolbar_tooltip(button, "Sıfırla — görünümü ilk haline döndür")
+
+        zoom_button = self._buttons.get("Zoom")
+        if zoom_button is not None:
+            button.pack(side=tk.LEFT, before=zoom_button)
+        else:
+            button.pack(side=tk.LEFT)
+        self._buttons["Reset"] = button
 
     def _Button(self, text, image_file, toggle, command):
         """matplotlib'in orijinali (NavigationToolbar2Tk._Button) ile birebir
@@ -439,6 +581,14 @@ class _PanPreviewToolbar(NavigationToolbar2Tk):
         """matplotlib'in varsayılan ikon boyama mantığının (arka plana göre
         siyah ya da beyaz) yerine geçer: ikonu doğrudan uygulamanın ana
         mavisiyle, büyük kaynak PNG'den (netlik için) üretir."""
+        if getattr(button, "_is_reset_button", False):
+            # "Sıfırla" ikonu matplotlib'in setinde yok; dosya yerine çizilir
+            # (bkz. _make_reset_icon). Diğer butonlarla aynı ölçüde ayarlanıyor.
+            icon = self._make_reset_icon(size=26)
+            self._tinted_icons["__reset__"] = icon
+            button.configure(image=icon, height="20p", width="20p")
+            return
+
         image_file = getattr(button, "_image_file", None)
         if image_file is None:
             return
@@ -479,6 +629,56 @@ class _PanPreviewToolbar(NavigationToolbar2Tk):
             if isinstance(button, tk.Checkbutton):
                 image_kwargs["selectimage"] = icon
             button.configure(**image_kwargs)
+
+    @staticmethod
+    def _make_reset_icon(size: int, color: str = None):
+        """"Sıfırla" butonunun dairesel ok simgesini ÇİZEREK üretir.
+
+        matplotlib'in hazır ikon setinde (home/back/forward/move/zoom/filesave)
+        "yeniden başlat" anlamına gelen bir simge yok. Diske yeni bir PNG
+        eklemek yerine çizmenin iki faydası var: PyInstaller paketine ek bir
+        varlık girmiyor (bkz. scripts/build_release.ps1) ve simge her seferinde
+        o anki tema rengiyle üretildiği için canlı tema geçişinde diğer
+        ikonlarla aynı tonu tutuyor.
+
+        Büyük (96px) çizilip küçültülmesi, `_load_tinted_icon`'daki `_large`
+        kaynak tercihiyle aynı sebeple: eğri kenarların yumuşak görünmesi."""
+        rgb = tuple(int((color or "#3987E5").lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+        source = 96
+        image = Image.new("RGBA", (source, source), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+
+        margin, thickness = 18, 10
+        center = source / 2
+        radius = center - margin
+        # Yay tam çember değil: kalan boşluk ok başına ayrılıyor.
+        # (PIL'de 0° saat 3 yönüdür ve açılar saat yönünde artar.)
+        end_deg = 310.0
+        draw.arc(
+            [margin, margin, source - margin, source - margin],
+            start=0.0, end=end_deg, fill=rgb + (255,), width=thickness,
+        )
+
+        # Ok başı, yayın bitiş ucunda duran bir üçgen: tabanı yayı dik kesiyor
+        # (biri dışa biri içe taşan iki köşe), ucu ise yayın gittiği yönde
+        # (teğet) uzanıyor. Taban yarı genişliğinin yay kalınlığından belirgin
+        # büyük olması şart — eşit olduğunda üçgen yayla kaynaşıp ok değil düz
+        # kesik bir uç gibi görünüyordu.
+        end_rad = math.radians(end_deg)
+        cos_end, sin_end = math.cos(end_rad), math.sin(end_rad)
+        tangent_x, tangent_y = -sin_end, cos_end
+        base_x, base_y = center + radius * cos_end, center + radius * sin_end
+        half_width, tip_length = 16.0, 28.0
+        draw.polygon(
+            [
+                (base_x + half_width * cos_end, base_y + half_width * sin_end),
+                (base_x - half_width * cos_end, base_y - half_width * sin_end),
+                (base_x + tip_length * tangent_x, base_y + tip_length * tangent_y),
+            ],
+            fill=rgb + (255,),
+        )
+
+        return ImageTk.PhotoImage(image.resize((size, size), Image.LANCZOS))
 
     @staticmethod
     def _load_tinted_icon(image_file: str, size: int, color: str = None):
@@ -530,9 +730,13 @@ class _PanPreviewToolbar(NavigationToolbar2Tk):
         Bu oturum içinde kaç kez sürüklenirse sürüklensin (sol ya da sağ
         tuşla, her yöne) sonuç KALICI kalır — artık her fare bırakışında eski
         hale dönmüyor. Kaydedilen görünüme dönüş, ancak başka bir araca
-        (Ana Sayfa/Geri/İleri/Yakınlaştır/Kaydet) geçildiğinde gerçekleşiyor
-        (bkz. o metodların başındaki `_restore_pan_view_if_pending` çağrıları);
-        Pan'ı aynı simgeye tekrar basarak kapatmak görünümü DEĞİŞTİRMEZ."""
+        (Geri/İleri/Yakınlaştır/Kaydet) geçildiğinde gerçekleşiyor (bkz. o
+        metodların başındaki `_restore_pan_view_if_pending` çağrıları);
+        Pan'ı aynı simgeye tekrar basarak kapatmak görünümü DEĞİŞTİRMEZ.
+
+        "Sıfırla" bir istisna: aracı kapatmadan görünümü başa alır ve
+        kaydedilen noktayı sıfırlanmış görünümle değiştirir (bkz.
+        `reset_view`)."""
         if self.mode != _Mode.PAN:
             self._pre_pan_view = self._snapshot_view()
         super().pan(*args)
@@ -559,6 +763,26 @@ class _PanPreviewToolbar(NavigationToolbar2Tk):
     def home(self, *args):
         self._restore_pan_view_if_pending()
         super().home(*args)
+
+    def reset_view(self, *args):
+        """"Sıfırla" butonunun eylemi: grafiği yakınlaştırma/kaydırma
+        yapılmamış ilk haline döndürür. Ev butonunun görevini devraldı, o
+        yüzden ev simgesi araç çubuğundan kaldırıldı (bkz. `toolitems`).
+
+        SEÇİLİ ARACA DOKUNMAZ: Pan (ya da Yakınlaştır) açıkken sıfırlamak o
+        aracı kapatmaz. İlk sürümde kapatıyordu ve kullanıcı her sıfırlamadan
+        sonra incelemeye devam edebilmek için Pan'a yeniden basmak zorunda
+        kalıyordu — sıfırlamanın amacı incelemeyi kesmek değil, incelenen
+        görünümü başa almak."""
+        # Pan'a girilirken alınan "geri dönülecek görünüm" anlık taşınıyor:
+        # önce düşürülüyor (restore EDİLMEDEN, yoksa home()'un uygulayacağı
+        # görünümle çakışırdı), sonra Pan hâlâ açıksa yeni referans olarak
+        # sıfırlanmış görünüm alınıyor. Böylece buradan sonra başka bir araca
+        # geçildiğinde sıfırlanmış hale dönülür, eski kaydırmaya değil.
+        self._pre_pan_view = None
+        super().home(*args)  # kendi home() override'ımızı atla: restore zaten yapıldı
+        if self.mode == _Mode.PAN:
+            self._pre_pan_view = self._snapshot_view()
 
     def back(self, *args):
         self._restore_pan_view_if_pending()
@@ -593,9 +817,12 @@ class App(ctk.CTk):
         if ICON_PATH.exists():
             self.iconphoto(True, PhotoImage(file=str(ICON_PATH)))
 
-        self.motor_view_mode = "line"  # "line" ya da "heatmap"
+        self.motor_view_mode = "line"  # "line", "heatmap" ya da "pwm"
         self._motor_colorbar = None
         self._last_motors = None
+        # PWM çıkışları motor akımından ayrı bir seri (bkz. _plot_pwm_lines);
+        # aynı panelde ama farklı bir görünüm modunda çiziliyor.
+        self._last_pwm_outputs = None
 
         self.voltage_view_mode = "voltage"  # "voltage" ya da "temperature" (üst panel)
         self.battery_view_mode = "line"  # "line" ya da "heatmap" (busbar yüklenmesi)
@@ -991,9 +1218,13 @@ class App(ctk.CTk):
         if self._last_batteries is not None:
             self._plot_battery_currents(self._last_batteries)
             self.canvas.draw()
+            self.nav_toolbar.push_current()  # yeni görünüm "başa dön" hedefi olsun
 
     def _build_motor_view_toggle(self):
-        """Motor panelini çizgi grafiği/ısı haritası arasında değiştiren seçici."""
+        """Alt paneli motor akımı (çizgi/ısı haritası) ile çıkış PWM'i arasında
+        değiştiren seçici. PWM ayrı bir panel değil bu panelin üçüncü modu:
+        akım sensörü olmayan araçlarda (birçok rover) motor akımı zaten hiç
+        yok, PWM tam onun yerine geçiyor."""
         toggle_row = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
         toggle_row.pack(side="top", fill="x", padx=16, pady=(0, 8))
 
@@ -1002,17 +1233,20 @@ class App(ctk.CTk):
         ).pack(side="left", padx=(0, 8))
 
         self.motor_view_toggle = ctk.CTkSegmentedButton(
-            toggle_row, values=["Çizgi Grafiği", "Isı Haritası"],
+            toggle_row, values=["Çizgi Grafiği", "Isı Haritası", "PWM Çıkışı"],
             command=self._on_motor_view_change,
         )
-        self.motor_view_toggle.set("Isı Haritası" if self.motor_view_mode == "heatmap" else "Çizgi Grafiği")
+        self.motor_view_toggle.set(MOTOR_VIEW_LABELS[self.motor_view_mode])
         self.motor_view_toggle.pack(side="left")
 
     def _on_motor_view_change(self, value: str):
-        self.motor_view_mode = "heatmap" if value == "Isı Haritası" else "line"
-        if self._last_motors is not None:
-            self._plot_motor_currents(self._last_motors)
+        self.motor_view_mode = MOTOR_VIEW_MODES.get(value, "line")
+        # PWM modunda motor akımı hiç olmayabilir (rover); bu yüzden çizim
+        # koşulu _last_motors DEĞİL, "bir dosya yüklenmiş mi" olmalı.
+        if self._last_motors is not None or self._last_pwm_outputs is not None:
+            self._plot_motor_currents(self._last_motors or [])
             self.canvas.draw()
+            self.nav_toolbar.push_current()  # yeni görünüm "başa dön" hedefi olsun
 
     def _build_toolbar(self):
         """Üst kısımdaki dosya yükleme/dışa aktarma/temizle butonları, son
@@ -1667,8 +1901,12 @@ class App(ctk.CTk):
             self.status_label.configure(text=f"⚠ Grafik kaydedilemedi: {error}", text_color=UI_COLOR_CRITICAL)
 
     def _on_export_csv_click(self):
-        """Yüklü batarya/motor zaman serilerini (zaman/voltaj/akım) ham CSV
-        olarak kaydeder — Excel gibi başka araçlarla ileri analiz için."""
+        """Yüklü batarya/motor/PWM zaman serilerini ham CSV olarak kaydeder —
+        Excel gibi başka araçlarla ileri analiz için. Her satır tipi kendi
+        sütununu doldurur, diğerleri boş kalır (batarya voltaj+akım, motor
+        sadece akım, pwm sadece pwm_us); "id" sütunu PWM satırlarında sayı
+        değil kanal etiketidir ("MAIN 2"), çünkü kanalların anlamlı olan
+        kimliği bu (bkz. shared/power_log_schema.md)."""
         file_path = filedialog.asksaveasfilename(
             title="CSV Dışa Aktar",
             defaultextension=".csv",
@@ -1680,13 +1918,16 @@ class App(ctk.CTk):
         try:
             with open(file_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(["tip", "id", "zaman_s", "voltaj_v", "akim_a"])
+                writer.writerow(["tip", "id", "zaman_s", "voltaj_v", "akim_a", "pwm_us"])
                 for battery in self._last_batteries or []:
                     for t, v, c in zip(battery["time_s"], battery["voltage_v"], battery["current_a"]):
-                        writer.writerow(["batarya", battery["id"], t, v, c])
+                        writer.writerow(["batarya", battery["id"], t, v, c, ""])
                 for motor in self._last_motors or []:
                     for t, c in zip(motor["time_s"], motor["current_a"]):
-                        writer.writerow(["motor", motor["id"], t, "", c])
+                        writer.writerow(["motor", motor["id"], t, "", c, ""])
+                for output in self._last_pwm_outputs or []:
+                    for t, pwm in zip(output["time_s"], output["pwm_us"]):
+                        writer.writerow(["pwm", output["label"], t, "", "", pwm])
             self.status_label.configure(text=f"CSV kaydedildi: {file_path}", text_color=UI_TEXT_SECONDARY)
         except OSError as error:
             self.status_label.configure(text=f"⚠ CSV kaydedilemedi: {error}", text_color=UI_COLOR_CRITICAL)
@@ -1748,6 +1989,7 @@ class App(ctk.CTk):
         self._update_stats([])
         self._last_batteries = None
         self._last_motors = None
+        self._last_pwm_outputs = None
         self._last_loaded_path = None
 
         self._plot_voltage_panel([])
@@ -1787,6 +2029,7 @@ class App(ctk.CTk):
         eksenini paylaşan panellerde çizer. Birden fazla batarya varsa her
         biri kendi rengiyle (iki panelde de aynı renk) çizilir."""
         batteries = data.get("batteries", [])
+        self._update_vehicle_label(data.get("meta", {}))
         self._update_stats(batteries)
         self._update_capacity_stats(batteries)
         self._update_warnings(data.get("warnings", []))
@@ -1797,9 +2040,28 @@ class App(ctk.CTk):
         self._plot_battery_currents(batteries)
 
         self._last_motors = data.get("motors", [])
+        self._last_pwm_outputs = data.get("pwm_outputs", [])
         self._plot_motor_currents(self._last_motors)
 
         self.canvas.draw()
+        # Grafik son halini aldıktan SONRA "başa dön" görünümünü tazele; aksi
+        # halde panelleri yeniden kuran nav_toolbar.update() çağrıları
+        # navigasyon yığınını boş bırakıyor ve Sıfırla/Ana Sayfa butonları
+        # (yığın boşken matplotlib sessizce hiçbir şey yapar) etkisiz kalıyor.
+        self.nav_toolbar.push_current()
+
+    def _update_vehicle_label(self, meta: dict):
+        """Toolbar'daki dosya adının yanına araç tipini ekler ("ucus.ulg ·
+        Rover"). Araç tipi SADECE bilgi amaçlı bir etiket — hangi panellerin
+        çizileceğini belirlemez, o karar verinin gerçekten var olup olmadığına
+        göre verilir (bkz. _has_current_data). Sebebi ölçülmüş bir gerçek:
+        aynı araç tipinin ESC telemetrisi olan da olmayan da oluyor.
+
+        Log araç tipini içermiyorsa ("unknown", ör. eski ArduPilot logları ya
+        da sentetik test dosyaları) etiket eklenmez, sadece dosya adı kalır."""
+        label = VEHICLE_TYPE_LABELS.get(meta.get("vehicle_type", "unknown"))
+        file_name = Path(self._last_loaded_path).name if self._last_loaded_path else ""
+        self.file_label.configure(text=f"{file_name} · {label}" if label else file_name)
 
     def _plot_voltage_panel(self, batteries: list):
         """Üst paneli seçili görünüme (voltaj/sıcaklık) göre çizer. Akım/motor
@@ -1887,22 +2149,41 @@ class App(ctk.CTk):
             self._plot_battery_lines(batteries)
 
     def _plot_battery_lines(self, batteries: list):
-        """Her bataryanın (busbar'ın) toplam akımını kendi renginde çizer."""
+        """Her bataryanın (busbar'ın) toplam akımını kendi renginde çizer.
+        Akım sensörü olmayan bataryalar atlanır; hiçbirinde ölçüm yoksa düz
+        bir sıfır çizgisi yerine açık bir durum mesajı gösterilir."""
         self._style_axes(self.ax_current, "Toplam Akım (A)")
 
+        plotted = 0
         for i, battery in enumerate(batteries):
+            if not _has_current_data(battery):
+                continue
+            # Renk indeksi olarak orijinal sıra (i) kullanılıyor, çizilen
+            # serinin sırası değil: bir batarya atlansa bile kalanların rengi
+            # voltaj panelindeki aynı bataryanın rengiyle eşleşmeye devam etsin.
             color, linestyle = _series_style(i)
             self.ax_current.plot(
                 battery["time_s"], battery["current_a"], color=color, linestyle=linestyle,
                 linewidth=2, label=f"Batarya {battery['id']}",
             )
+            plotted += 1
 
-        if len(batteries) > 1:
+        if plotted == 0:
+            self.ax_current.text(
+                0.5, 0.5, NO_BATTERY_CURRENT_MESSAGE, transform=self.ax_current.transAxes,
+                ha="center", va="center", color=TEXT_MUTED,
+            )
+            return
+
+        if plotted > 1:
             self.ax_current.legend(
                 loc="upper right", facecolor=SURFACE, edgecolor=AXIS_LINE,
                 labelcolor=TEXT_SECONDARY, fontsize=9,
             )
-        means = [sum(b["current_a"]) / len(b["current_a"]) for b in batteries if b["current_a"]]
+        means = [
+            sum(b["current_a"]) / len(b["current_a"])
+            for b in _with_current_data(batteries) if b["current_a"]
+        ]
         _draw_imbalance_band(self.ax_current, means, _get_warning_thresholds()["current_imbalance_threshold"])
 
     def _plot_battery_heatmap(self, batteries: list):
@@ -1917,7 +2198,15 @@ class App(ctk.CTk):
         self._style_axes(self.ax_current, "Toplam Akım (A)")
         self.ax_current.grid(False)  # ısı haritasında gridline gürültü yapar
 
+        # Ölçümü olmayan bataryalar ısı haritasında tamamen tek renk bir şerit
+        # olarak çıkardı ("hep aynı yük" gibi görünüyordu); çizgi grafiğiyle
+        # aynı şekilde süzülüp, hiçbiri kalmazsa mesaj gösteriliyor.
+        batteries = _with_current_data(batteries)
         if not batteries:
+            self.ax_current.text(
+                0.5, 0.5, NO_BATTERY_CURRENT_MESSAGE, transform=self.ax_current.transAxes,
+                ha="center", va="center", color=TEXT_MUTED,
+            )
             return
 
         all_times = sorted({t for battery in batteries for t in battery["time_s"]})
@@ -1957,30 +2246,83 @@ class App(ctk.CTk):
         self.nav_toolbar.update()
         self.nav_toolbar._restore_pan_view_if_pending()
 
-        if self.motor_view_mode == "heatmap":
+        if self.motor_view_mode == "pwm":
+            # PWM, motor akımından bağımsız bir seri; parametreden değil
+            # saklanan son yüklemeden okunur (bkz. _build_motor_view_toggle).
+            self._plot_pwm_lines(self._last_pwm_outputs or [])
+        elif self.motor_view_mode == "heatmap":
             self._plot_motor_heatmap(motors)
         else:
             self._plot_motor_lines(motors)
 
     def _plot_motor_lines(self, motors: list):
-        """Her motorun akımını kendi renginde çizer; motor yoksa panel boş kalır."""
+        """Her motorun akımını kendi renginde çizer; kullanılabilir ölçüm
+        yoksa (rover/sabit kanat loglarının çoğunda esc_status hiç yok) panel
+        sessizce boş kalmak yerine nedenini yazar."""
         self._style_axes(self.ax_motors, "Motor Akımı (A)")
         self.ax_motors.set_xlabel("Zaman (s)", color=TEXT_SECONDARY)
 
+        plotted = 0
         for i, motor in enumerate(motors):
+            if not _has_current_data(motor):
+                continue
             color, linestyle = _series_style(i)
             self.ax_motors.plot(
                 motor["time_s"], motor["current_a"], color=color, linestyle=linestyle,
                 linewidth=2, label=f"Motor {motor['id']}",
             )
+            plotted += 1
 
-        if motors:
-            self.ax_motors.legend(
-                loc="upper right", facecolor=SURFACE, edgecolor=AXIS_LINE,
-                labelcolor=TEXT_SECONDARY, fontsize=9,
+        if plotted == 0:
+            self.ax_motors.text(
+                0.5, 0.5, _motor_empty_message(motors), transform=self.ax_motors.transAxes,
+                ha="center", va="center", color=TEXT_MUTED,
             )
-        means = [sum(m["current_a"]) / len(m["current_a"]) for m in motors if m["current_a"]]
+            return
+
+        self.ax_motors.legend(
+            loc="upper right", facecolor=SURFACE, edgecolor=AXIS_LINE,
+            labelcolor=TEXT_SECONDARY, fontsize=9,
+        )
+        means = [
+            sum(m["current_a"]) / len(m["current_a"])
+            for m in _with_current_data(motors) if m["current_a"]
+        ]
         _draw_imbalance_band(self.ax_motors, means, _get_warning_thresholds()["current_imbalance_threshold"])
+
+    def _plot_pwm_lines(self, pwm_outputs: list):
+        """Uçuş kontrolcüsünün çıkış kanallarının PWM darbe genişliğini çizer.
+
+        Bu bir GÜÇ ölçümü değil, kontrol çıktısı — akım sensörü olmayan
+        araçlarda motor aktivitesinin tek görünür kanıtı. Kanal etiketleri
+        ("MAIN 2", "AUX 1", "Kanal 3") backend'de üretilir; hangi kanalın
+        motor hangisinin servo/direksiyon olduğu loglarda yazmadığı için
+        burada da tahmin yürütülmez, kanallar oldukları adla gösterilir.
+
+        Dengesizlik bandı (_draw_imbalance_band) bilerek çizilmez: o kural
+        akım içindir, farklı işlevlerdeki PWM kanallarını birbiriyle
+        kıyaslamak anlamsız olurdu."""
+        self._style_axes(self.ax_motors, "Çıkış PWM (µs)")
+        self.ax_motors.set_xlabel("Zaman (s)", color=TEXT_SECONDARY)
+
+        for i, output in enumerate(pwm_outputs):
+            color, linestyle = _series_style(i)
+            self.ax_motors.plot(
+                output["time_s"], output["pwm_us"], color=color, linestyle=linestyle,
+                linewidth=2, label=output["label"],
+            )
+
+        if not pwm_outputs:
+            self.ax_motors.text(
+                0.5, 0.5, NO_PWM_DATA_MESSAGE, transform=self.ax_motors.transAxes,
+                ha="center", va="center", color=TEXT_MUTED,
+            )
+            return
+
+        self.ax_motors.legend(
+            loc="upper right", facecolor=SURFACE, edgecolor=AXIS_LINE,
+            labelcolor=TEXT_SECONDARY, fontsize=9, ncol=2 if len(pwm_outputs) > 4 else 1,
+        )
 
     def _plot_motor_heatmap(self, motors: list):
         """Motor x zaman ısı haritası: renk = o andaki akım.
@@ -1995,8 +2337,16 @@ class App(ctk.CTk):
         self.ax_motors.set_xlabel("Zaman (s)", color=TEXT_SECONDARY)
         self.ax_motors.grid(False)  # ısı haritasında gridline gürültü yapar
 
-        if not motors:
+        # Çizgi görünümüyle aynı süzme: akım bildirmeyen ESC'ler ısı
+        # haritasında düz tek renk bir satır olarak yanıltıcı görünüyordu.
+        measured_motors = _with_current_data(motors)
+        if not measured_motors:
+            self.ax_motors.text(
+                0.5, 0.5, _motor_empty_message(motors), transform=self.ax_motors.transAxes,
+                ha="center", va="center", color=TEXT_MUTED,
+            )
             return
+        motors = measured_motors
 
         all_times = sorted({t for motor in motors for t in motor["time_s"]})
         grid = np.array([
@@ -2021,7 +2371,6 @@ class App(ctk.CTk):
         """Üstteki özet satırını günceller: tüm bataryaların birleşimi olarak
         (süre = en uzunu, voltaj/akım aralığı = hepsinin ortak min-maks'ı)."""
         all_voltage = [v for battery in batteries for v in battery["voltage_v"]]
-        all_current = [c for battery in batteries for c in battery["current_a"]]
         total_samples = sum(len(battery["time_s"]) for battery in batteries)
         duration = _flight_duration_seconds(batteries)
 
@@ -2035,19 +2384,32 @@ class App(ctk.CTk):
         self.stat_labels["voltage_range"].configure(
             text=f"{min(all_voltage):.2f}–{max(all_voltage):.2f} V"
         )
+
+        # Akıma dayanan dört kutucuk (aralık, enerji, tepe güç, iç direnç)
+        # sadece gerçekten ölçüm yapan bataryalardan hesaplanır. Akım sensörü
+        # olmayan bir araçta (birçok rover) bunları 0 göstermek "hiç akım
+        # çekilmemiş / 0 Wh harcanmış" gibi okunuyordu; ölçüm yoksa "—" hem
+        # dürüst hem de kapasite kutucuklarıyla tutarlı.
+        measured = _with_current_data(batteries)
+        if not measured:
+            for key in ("current_range", "energy_wh", "peak_power_w", "resistance_est"):
+                self.stat_labels[key].configure(text="—", text_color=UI_TEXT_PRIMARY)
+            return
+
         # Negatif akım fiziksel olarak beklenmez (bkz. backend'in "veri
         # kalitesi" uyarısı); kartın rengini de uyarı rengine çevirmek bu
         # durumu grafiğe bakmadan da fark ettirir.
+        all_current = [c for battery in measured for c in battery["current_a"]]
         min_current = min(all_current)
         self.stat_labels["current_range"].configure(
             text=f"{min_current:.1f}–{max(all_current):.1f} A",
             text_color=UI_COLOR_WARNING if min_current < 0 else UI_TEXT_PRIMARY,
         )
 
-        self.stat_labels["energy_wh"].configure(text=f"{_battery_energy_wh(batteries):.1f} Wh")
-        self.stat_labels["peak_power_w"].configure(text=f"{_battery_peak_power_w(batteries):.0f} W")
+        self.stat_labels["energy_wh"].configure(text=f"{_battery_energy_wh(measured):.1f} Wh")
+        self.stat_labels["peak_power_w"].configure(text=f"{_battery_peak_power_w(measured):.0f} W")
 
-        resistance = _battery_internal_resistance_estimate(batteries)
+        resistance = _battery_internal_resistance_estimate(measured)
         if resistance is None:
             self.stat_labels["resistance_est"].configure(text="—")
         else:
@@ -2059,13 +2421,21 @@ class App(ctk.CTk):
         alanlarından tüketilen kapasite ve kaba bir kalan uçuş süresi tahmini
         gösterir. Log formatı bu alanları içermiyorsa (eski ArduPilot logları,
         ya da remaining yayınlamayan PX4 araçları) kutucuklar sessizce "—"
-        gösterir — bu bir hata değil, alanın loglarda opsiyonel olmasındandır."""
-        capacities = [b["capacity_used_mah"] for b in batteries if b.get("capacity_used_mah") is not None]
+        gösterir — bu bir hata değil, alanın loglarda opsiyonel olmasındandır.
+
+        Bu iki alan akım ölçümünün zaman integralinden türetilir; akım sensörü
+        yoksa uçuş kontrolcüsü alanı yine doldurur ama değer anlamsızdır
+        (gerçek rover logunda 90 saniyelik sürüş sonunda 0.01 mAh tüketim ve
+        sabit %100 kalan). Bu yüzden hesap sadece ölçümü olan bataryalarla
+        yapılır — akıma dayanan diğer kutucuklarla (bkz. _update_stats) aynı
+        kural."""
+        measured = _with_current_data(batteries)
+        capacities = [b["capacity_used_mah"] for b in measured if b.get("capacity_used_mah") is not None]
         self.stat_labels["capacity_used"].configure(
             text=f"{sum(capacities):.0f} mAh" if capacities else "—"
         )
 
-        remaining_pcts = [b["remaining_pct"] for b in batteries if b.get("remaining_pct") is not None]
+        remaining_pcts = [b["remaining_pct"] for b in measured if b.get("remaining_pct") is not None]
         duration = _flight_duration_seconds(batteries)
         remaining_text = "—"
         if remaining_pcts and duration:

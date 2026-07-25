@@ -61,13 +61,40 @@ struct MotorSamplePoint {
     double current_a;
 };
 
+// Bir çıkış kanalının (motor/servo/direksiyon) PWM darbe genişliği.
+// DİKKAT: bu bir güç ölçümü DEĞİL, uçuş kontrolcüsünün ürettiği kontrol
+// çıktısı. Akım sensörü olmayan araçlarda (birçok rover, bkz. hasCurrentData)
+// motor aktivitesinin tek görünür kanıtı olduğu için ayıklanıyor.
+struct PwmSamplePoint {
+    double time_s;
+    double pwm_us;
+};
+
 // Batarya (BAT) ve motor (ESC) mesajlarından çıkarılan tüm veriler.
 // Her ikisi de anahtarı 1'den başlayan motor/batarya no olan bir map: birden
 // fazla batarya/motor varsa hepsi ayrı ayrı tutulur.
 struct ParsedLog {
     std::string format;  // "ardupilot" ya da "px4"
+    // Aracin tipi ("rover", "fixed_wing", "multirotor", "vtol", ...). Log
+    // bunu icermiyorsa ya da taninmayan bir deger tasiyorsa "unknown" kalir.
+    // SADECE bilgi amacli bir etiket: hangi panellerin cizilecegi buna gore
+    // DEGIL, verinin gercekten var olup olmadigina gore belirlenir (bkz.
+    // hasCurrentData) — ayni arac tipinin ESC telemetrisi olan da olmayan da
+    // oluyor, yani arac tipi verinin varligi icin guvenilir bir sinyal degil.
+    std::string vehicleType = "unknown";
     std::map<int, std::vector<BatterySamplePoint>> batteries;
     std::map<int, std::vector<MotorSamplePoint>> motors;
+    // Çıkış kanallarının PWM zaman serileri. Anahtar, doğrudan arayüzde
+    // gösterilecek ETİKET ("MAIN 2", "AUX 1", "Kanal 3"): ArduPilot ile PX4
+    // kanalları farklı adlandırdığı için etiketi burada üretiyoruz, böylece
+    // frontend log formatlarından tamamen habersiz kalmaya devam ediyor
+    // (mimarinin temel kuralı). std::map olduğu için etiketler alfabetik
+    // sırada, yani kanal sırası tutarlı çıkıyor.
+    //
+    // Hangi kanalın motor, hangisinin servo/direksiyon olduğu loglarda
+    // YAZMIYOR; bu yüzden burada tahmin yürütülmüyor, kanallar oldukları gibi
+    // aktarılıyor.
+    std::map<std::string, std::vector<PwmSamplePoint>> pwmOutputs;
     // PX4'te bazı araçlar (ör. bazı Rover yapılandırmaları) hiç "battery_status"
     // yayınlamıyor, sadece dahili güç hatlarını raporlayan "system_power"ı
     // kullanıyor. Bu, ana batarya voltajı/akımı DEĞİL (5V/payload hattı gibi
@@ -89,6 +116,28 @@ struct ParsedLog {
     // harita o id için hiç doldurulmaz, JSON'a boş dizi yazılır.
     std::map<int, std::vector<double>> temperaturesC;
 };
+
+// Bir batarya/motorun akım ölçümünün GERÇEK olup olmadığını belirler.
+//
+// Akım sensörü bağlı değilse ArduPilot/PX4 bu alanı yayınlamayı bırakmaz —
+// her örneğe tam 0.0 yazar. Gerçek bir rover logunda (data/
+// px4_ground_rover_flight.ulg) 452 örneğin hepsi 0.00 A çıktı; buna karşılık
+// akım sensörü olan bir logda araç dururken bile ölçüm küçük bir gürültü/
+// kalibrasyon ofseti taşıyor (hexarotor logunda min 0.26 A, hatta -0.73 A).
+// Yani "hiçbir örnekte sıfırdan farklı değer yok" pratikte "bu araçta akım
+// sensörü yok" demek.
+//
+// Bu ayrım olmadan frontend "ölçüm yok"u "ölçüm sıfır" gibi gösteriyordu:
+// düz sıfır çizgisi, tek renk ısı haritası, 0.0 Wh enerji, 0 W tepe güç.
+// Aynı sorun rover'a özgü değil — akım sensörsüz sabit kanat ve eski
+// ArduPilot logları da aynı duruma düşüyor.
+template <typename SamplePoint>
+bool hasCurrentData(const std::vector<SamplePoint>& points) {
+    for (const SamplePoint& point : points) {
+        if (point.current_a != 0.0) return true;
+    }
+    return false;
+}
 
 // Format karakterinin kapladığı byte sayısı (LogStructure.h'deki tablo).
 size_t fieldByteSize(char formatChar) {
@@ -258,6 +307,67 @@ void extractEscSample(const uint8_t* payload, const FormatDef& def, size_t paylo
     motors[instance + 1].push_back(MotorSamplePoint{timeUs / 1e6, curr});
 }
 
+// ArduPilot'ta çıkış kanallarının PWM'i "RCOU" mesajında C1..C14 alanları
+// olarak tutulur (hepsi uint16, mikrosaniye). Kaç kanalın loglandığı sürüme/
+// araca göre değiştiği için alanlar tek tek aranıp bulunamayanlar atlanıyor.
+constexpr int ARDUPILOT_MAX_RCOU_CHANNELS = 14;
+
+void extractRcouSample(const uint8_t* payload, const FormatDef& def, size_t payloadSize,
+                        std::map<std::string, std::vector<PwmSamplePoint>>& pwmOutputs) {
+    FieldLocator timeField = locateField(def, "TimeUS", payloadSize);
+    if (!timeField.found) return;
+
+    double timeUs = readFieldAsDouble(payload + timeField.byteOffset, timeField.formatChar);
+    if (!std::isfinite(timeUs)) return;
+
+    for (int channel = 1; channel <= ARDUPILOT_MAX_RCOU_CHANNELS; ++channel) {
+        FieldLocator channelField = locateField(def, "C" + std::to_string(channel), payloadSize);
+        if (!channelField.found) continue;
+
+        double pwm = readFieldAsDouble(payload + channelField.byteOffset, channelField.formatChar);
+        if (!std::isfinite(pwm)) continue;
+
+        pwmOutputs["Kanal " + std::to_string(channel)].push_back(
+            PwmSamplePoint{timeUs / 1e6, pwm});
+    }
+}
+
+// ArduPilot .bin'de araç tipi sayısal bir alan olarak loglanmaz; onun yerine
+// açılışta yazılan "MSG" (serbest metin) satırlarından biri firmware adını
+// içerir: "ArduCopter V4.3.7 (abc123)", "ArduRover V4.4.0" gibi. Araç tipini
+// bu isimden çıkarıyoruz. Tanınmayan bir isimse boş string döner (çağıran
+// taraf mevcut değeri korur).
+std::string vehicleTypeFromFirmwareName(const std::string& text) {
+    if (text.find("ArduCopter") != std::string::npos) return "multirotor";
+    if (text.find("ArduPlane") != std::string::npos) return "fixed_wing";
+    // Eski sürümler "APMrover2" adını kullanıyordu, yenileri "ArduRover".
+    if (text.find("ArduRover") != std::string::npos ||
+        text.find("APMrover") != std::string::npos) return "rover";
+    if (text.find("ArduSub") != std::string::npos) return "submarine";
+    return "";
+}
+
+// "MSG" mesajının metin alanına bakıp firmware adını yakalamaya çalışır.
+// Bir logda yüzlerce MSG satırı olabilir ama firmware adı ilk satırlardan
+// birinde geçer; tip bir kez bulunduktan sonra kalan MSG'ler atlanıyor.
+void extractVehicleTypeFromMsg(const uint8_t* payload, const FormatDef& def, size_t payloadSize,
+                                ParsedLog& result) {
+    if (result.vehicleType != "unknown") return;
+
+    FieldLocator msgField = locateField(def, "Message", payloadSize);
+    if (!msgField.found) return;
+
+    // 'Z' = char[64]. Metin 64 baytı tam doldurduysa sonunda null olmayabilir,
+    // bu yüzden önce payload sınırına göre kırpıp sonra ilk null'a kadar kesiyoruz.
+    size_t maxLength = payloadSize - msgField.byteOffset;
+    if (maxLength > fieldByteSize(msgField.formatChar)) maxLength = fieldByteSize(msgField.formatChar);
+    std::string text(reinterpret_cast<const char*>(payload + msgField.byteOffset), maxLength);
+    text = text.c_str();  // ilk null byte'a kadar keser
+
+    std::string vehicleType = vehicleTypeFromFirmwareName(text);
+    if (!vehicleType.empty()) result.vehicleType = vehicleType;
+}
+
 // ArduPilot .bin buffer'ını baştan sona tarar: FMT mesajlarından sözlüğü
 // kurar, "BAT" ve "ESC" mesajlarını tek geçişte çözer.
 ParsedLog parseArduPilotBuffer(const std::vector<uint8_t>& buffer) {
@@ -303,6 +413,10 @@ ParsedLog parseArduPilotBuffer(const std::vector<uint8_t>& buffer) {
             extractBatterySample(buffer.data() + pos + 3, def, payloadSize, result);
         } else if (def.name == "ESC") {
             extractEscSample(buffer.data() + pos + 3, def, payloadSize, result.motors);
+        } else if (def.name == "RCOU") {
+            extractRcouSample(buffer.data() + pos + 3, def, payloadSize, result.pwmOutputs);
+        } else if (def.name == "MSG") {
+            extractVehicleTypeFromMsg(buffer.data() + pos + 3, def, payloadSize, result);
         }
 
         pos += def.length;
@@ -546,6 +660,44 @@ void extractUlogBatterySample(const uint8_t* payload, const ULogFormatDef& def, 
     }
 }
 
+// PX4'te araç tipi "vehicle_status" konusunda sayısal bir alan olarak
+// yayınlanır; değerler PX4'ün vehicle_status.msg içindeki VEHICLE_TYPE_*
+// sabitleriyle eşleşir.
+constexpr int PX4_VEHICLE_TYPE_ROTARY_WING = 1;
+constexpr int PX4_VEHICLE_TYPE_FIXED_WING = 2;
+constexpr int PX4_VEHICLE_TYPE_ROVER = 3;
+constexpr int PX4_VEHICLE_TYPE_AIRSHIP = 4;
+
+// "vehicle_status" verisinden araç tipini çıkarır. Bu mesaj uçuş boyunca
+// yüzlerce kez tekrarlanır ama tip değişmez; yine de her örnekte okunması
+// zararsız (son değer kalır).
+void extractUlogVehicleType(const uint8_t* payload, const ULogFormatDef& def, size_t payloadSize,
+                             ParsedLog& result) {
+    ULogFieldLocator typeField = locateUlogField(def, "vehicle_type", payloadSize);
+    if (!typeField.found) return;
+
+    // VTOL araçlar uçuş fazına göre "vehicle_type"ı rotary_wing ile fixed_wing
+    // arasında DEĞİŞTİRİR (dikey kalkış -> yatay uçuş). Tek bir etiket üretmek
+    // istediğimiz için ayrı "is_vtol" bayrağı varsa ona öncelik veriyoruz;
+    // yoksa aynı araç log boyunca tip değiştirmiş gibi görünürdü.
+    ULogFieldLocator vtolField = locateUlogField(def, "is_vtol", payloadSize);
+    if (vtolField.found &&
+        readUlogFieldAsDouble(payload + vtolField.byteOffset, vtolField.field->elementType) != 0.0) {
+        result.vehicleType = "vtol";
+        return;
+    }
+
+    int vehicleType = static_cast<int>(
+        readUlogFieldAsDouble(payload + typeField.byteOffset, typeField.field->elementType));
+    switch (vehicleType) {
+        case PX4_VEHICLE_TYPE_ROTARY_WING: result.vehicleType = "multirotor"; break;
+        case PX4_VEHICLE_TYPE_FIXED_WING:  result.vehicleType = "fixed_wing"; break;
+        case PX4_VEHICLE_TYPE_ROVER:       result.vehicleType = "rover"; break;
+        case PX4_VEHICLE_TYPE_AIRSHIP:     result.vehicleType = "airship"; break;
+        default: break;  // 0 = unknown ya da bilmediğimiz yeni bir tip; mevcut değeri koru
+    }
+}
+
 // "esc_status" mesajından, içindeki "esc_report" dizisinin her elemanı için
 // akım değerini çıkarır (motor numarası = dizi indeksi + 1).
 void extractUlogEscSamples(const uint8_t* payload, const ULogFormatDef& escStatusDef, size_t payloadSize,
@@ -601,6 +753,54 @@ void extractUlogEscSamples(const uint8_t* payload, const ULogFormatDef& escStatu
         double curr = readUlogFieldAsDouble(elementPtr + currField.byteOffset, currField.field->elementType);
         if (!std::isfinite(curr)) continue;
         motors[i + 1].push_back(MotorSamplePoint{timestamp / 1e6, curr});
+    }
+}
+
+// PX4'te bir çıkış grubunun (instance) arayüzde görünecek adı. PX4 donanım
+// terminolojisinde instance 0 = MAIN çıkış rayı, 1 = AUX. Gerçek loglarda
+// ikisinin de dolu olduğu görüldü ve motorların HANGİSİNDE olduğu araca göre
+// değişiyor (hexarotor logunda 6 motor AUX'ta, rover'da tek hareketli kanal
+// MAIN'de) — bu yüzden bir grup "asıl motorlar" diye seçilmiyor, ikisi de
+// etiketlenip olduğu gibi aktarılıyor.
+std::string ulogOutputGroupName(uint8_t multiId) {
+    if (multiId == 0) return "MAIN";
+    if (multiId == 1) return "AUX";
+    return "OUT" + std::to_string(static_cast<int>(multiId));
+}
+
+// "actuator_outputs" mesajından her çıkış kanalının PWM değerini ayıklar.
+// esc_status'ün aksine burada TÜM instance'lar kabul edilir (yukarıdaki not).
+void extractUlogActuatorOutputs(const uint8_t* payload, const ULogFormatDef& def, size_t payloadSize,
+                                 uint8_t multiId,
+                                 std::map<std::string, std::vector<PwmSamplePoint>>& pwmOutputs) {
+    ULogFieldLocator timeField = locateUlogField(def, "timestamp", payloadSize);
+    ULogFieldLocator countField = locateUlogField(def, "noutputs", payloadSize);
+    ULogFieldLocator outputField = locateUlogField(def, "output", payloadSize);
+
+    if (!timeField.found || !outputField.found || outputField.field->arrayLength <= 0) return;
+
+    double timestamp = readUlogFieldAsDouble(payload + timeField.byteOffset, timeField.field->elementType);
+    if (!std::isfinite(timestamp)) return;
+
+    // "output" sabit uzunluklu bir dizi (float[16]) ama araç genelde daha az
+    // kanal kullanır; gerisi çöp/sıfır olduğu için noutputs ile sınırlanıyor.
+    int channelCount = outputField.field->arrayLength;
+    if (countField.found) {
+        int reported = static_cast<int>(
+            readUlogFieldAsDouble(payload + countField.byteOffset, countField.field->elementType));
+        if (reported > 0 && reported < channelCount) channelCount = reported;
+    }
+
+    size_t elementSize = outputField.field->size / static_cast<size_t>(outputField.field->arrayLength);
+    std::string groupName = ulogOutputGroupName(multiId);
+
+    for (int i = 0; i < channelCount; ++i) {
+        const uint8_t* elementPtr = payload + outputField.byteOffset + static_cast<size_t>(i) * elementSize;
+        double pwm = readUlogFieldAsDouble(elementPtr, outputField.field->elementType);
+        if (!std::isfinite(pwm)) continue;
+
+        pwmOutputs[groupName + " " + std::to_string(i + 1)].push_back(
+            PwmSamplePoint{timestamp / 1e6, pwm});
     }
 }
 
@@ -681,6 +881,11 @@ ParsedLog parseUlogBuffer(const std::vector<uint8_t>& buffer) {
                                                           subIt->second.multiId, result);
                             } else if (fmtIt->second.name == "esc_status" && subIt->second.multiId == 0) {
                                 extractUlogEscSamples(payload + 2, fmtIt->second, actualSize, formats, result.motors);
+                            } else if (fmtIt->second.name == "vehicle_status" && subIt->second.multiId == 0) {
+                                extractUlogVehicleType(payload + 2, fmtIt->second, actualSize, result);
+                            } else if (fmtIt->second.name == "actuator_outputs") {
+                                extractUlogActuatorOutputs(payload + 2, fmtIt->second, actualSize,
+                                                            subIt->second.multiId, result.pwmOutputs);
                             }
                         }
                     }
@@ -765,8 +970,61 @@ void writeMotors(std::ostream& out, const std::map<int, std::vector<MotorSampleP
         writeNumberArray(out, time_s);
         out << ",\n      \"current_a\": ";
         writeNumberArray(out, current_a);
+        out << ",\n      \"has_current_data\": " << (hasCurrentData(points) ? "true" : "false");
         out << "\n    }";
         if (++written < motors.size()) out << ",";
+        out << "\n";
+    }
+    out << "  ]";
+}
+
+// Bir PWM kanalının uçuş boyunca hiç değişmediğini (min == max) söyler.
+//
+// Bir aracın çıkış rayında genelde kullanılmayan kanallar da bulunur; bunlar
+// log boyunca sabit bir değerde durur (kullanılmıyorsa 0, servo nötr konumu
+// için 1500, kilitli motor için 1000). Gerçek loglarda ölçüldü: rover'ın 4
+// kanalından 2'si, hexarotor'un MAIN grubundaki bir kanal böyle. Bunları
+// JSON'a yazmak hem çıktıyı gereksiz şişirir (rover için ~29.000 anlamsız
+// sayı) hem de arayüzde düz çizgiler olarak gürültü yapar.
+bool isConstantPwmSeries(const std::vector<PwmSamplePoint>& points) {
+    if (points.empty()) return true;
+    double minPwm = points.front().pwm_us;
+    double maxPwm = minPwm;
+    for (const PwmSamplePoint& point : points) {
+        if (point.pwm_us < minPwm) minPwm = point.pwm_us;
+        if (point.pwm_us > maxPwm) maxPwm = point.pwm_us;
+    }
+    return minPwm == maxPwm;
+}
+
+// Sabit olmayan (gerçekten kullanılan) PWM kanallarını yazar. "id" alanı
+// sadece gösterim sırası/renk indeksi; anlamlı olan "label".
+void writePwmOutputs(std::ostream& out,
+                     const std::map<std::string, std::vector<PwmSamplePoint>>& pwmOutputs) {
+    std::vector<const std::pair<const std::string, std::vector<PwmSamplePoint>>*> active;
+    for (const auto& entry : pwmOutputs) {
+        if (!isConstantPwmSeries(entry.second)) active.push_back(&entry);
+    }
+
+    out << "  \"pwm_outputs\": [\n";
+    for (size_t i = 0; i < active.size(); ++i) {
+        const std::string& label = active[i]->first;
+        const std::vector<PwmSamplePoint>& points = active[i]->second;
+
+        std::vector<double> time_s, pwm_us;
+        for (const PwmSamplePoint& point : points) {
+            time_s.push_back(point.time_s);
+            pwm_us.push_back(point.pwm_us);
+        }
+
+        out << "    {\n      \"id\": " << (i + 1) << ",\n      \"label\": ";
+        writeJsonString(out, label);
+        out << ",\n      \"time_s\": ";
+        writeNumberArray(out, time_s);
+        out << ",\n      \"pwm_us\": ";
+        writeNumberArray(out, pwm_us);
+        out << "\n    }";
+        if (i + 1 < active.size()) out << ",";
         out << "\n";
     }
     out << "  ]";
@@ -809,6 +1067,8 @@ void writeBatteries(std::ostream& out, const std::map<int, std::vector<BatterySa
         auto temperatureIt = temperaturesC.find(id);
         if (temperatureIt != temperaturesC.end()) writeNumberArray(out, temperatureIt->second);
         else out << "[]";
+
+        out << ",\n      \"has_current_data\": " << (hasCurrentData(points) ? "true" : "false");
 
         out << "\n    }";
         if (++written < batteries.size()) out << ",";
@@ -896,6 +1156,7 @@ void appendNegativeCurrentWarnings(const std::map<int, std::vector<SamplePoint>>
         const auto& points = entry.second;
         if (points.empty()) continue;
         if (points.back().time_s - points.front().time_s < MIN_DURATION_FOR_WARNINGS_S) continue;
+        if (!hasCurrentData(points)) continue;  // akım sensörü yok; "ölçüm" diye bir şey yok
 
         double minCurrent = points.front().current_a;
         for (const auto& point : points) {
@@ -941,11 +1202,16 @@ std::vector<std::string> computeWarnings(const ParsedLog& log, const WarningThre
     appendNegativeCurrentWarnings(log.batteries, "Batarya", warnings, thresholds.negativeCurrent);
     appendNegativeCurrentWarnings(log.motors, "Motor", warnings, thresholds.negativeCurrent);
 
+    // Akım sensörü olmayan (tüm örnekleri tam 0.0) bir grup ortalamalara HİÇ
+    // katılmamalı. Aksi halde bir gerçek + bir sensörsüz batarya bulunan bir
+    // araçta genel ortalama yarıya iner ve İKİSİ birden "%100 sapma" uyarısı
+    // üretir — tamamen yanlış bir alarm, çünkü sensörsüz olanın ölçümü yok.
     std::map<int, double> batteryAverages;
     for (const auto& entry : log.batteries) {
         const std::vector<BatterySamplePoint>& points = entry.second;
         if (points.empty()) continue;
         if (points.back().time_s - points.front().time_s < MIN_DURATION_FOR_WARNINGS_S) continue;
+        if (!hasCurrentData(points)) continue;
         double sum = 0.0;
         for (const auto& point : points) sum += point.current_a;
         batteryAverages[entry.first] = sum / static_cast<double>(points.size());
@@ -957,6 +1223,7 @@ std::vector<std::string> computeWarnings(const ParsedLog& log, const WarningThre
         const std::vector<MotorSamplePoint>& points = entry.second;
         if (points.empty()) continue;
         if (points.back().time_s - points.front().time_s < MIN_DURATION_FOR_WARNINGS_S) continue;
+        if (!hasCurrentData(points)) continue;  // akım bildirmeyen ESC (bkz. batarya tarafındaki not)
         double sum = 0.0;
         for (const auto& point : points) sum += point.current_a;
         motorAverages[entry.first] = sum / static_cast<double>(points.size());
@@ -988,11 +1255,16 @@ bool writePowerLogJson(const std::string& inputLogPath, const std::string& outpu
     out << "    \"format\": ";
     writeJsonString(out, parsed.format);
     out << ",\n";
+    out << "    \"vehicle_type\": ";
+    writeJsonString(out, parsed.vehicleType);
+    out << ",\n";
     out << "    \"duration_s\": " << duration_s << "\n";
     out << "  },\n";
     writeBatteries(out, parsed.batteries, parsed.capacityUsedMah, parsed.remainingPct, parsed.temperaturesC);
     out << ",\n";
     writeMotors(out, parsed.motors);
+    out << ",\n";
+    writePwmOutputs(out, parsed.pwmOutputs);
     out << ",\n  \"warnings\": ";
     writeStringArray(out, warnings);
     out << "\n}\n";
