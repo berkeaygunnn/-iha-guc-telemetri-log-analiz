@@ -63,6 +63,28 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   bölümü). JSON çıktısında `warnings` alanı var, frontend'de gösteriliyor.
 - **Paketleme / dağıtım:** `scripts/build_release.ps1` ile PyInstaller onedir
   paketi, uygulama ikonu ve backend .exe'sinin pakete dahil edilmesi tamamlandı.
+- **Rover / araç tipi desteği:** `meta.vehicle_type` (rover, sabit kanat,
+  multirotor, VTOL...) ve batarya/motor başına `has_current_data` bayrağı
+  eklendi (bkz. `shared/power_log_schema.md`).
+
+  Önemli tasarım kararı: **panel/istatistik dallanması araç tipine göre
+  DEĞİL, verinin gerçekten var olup olmadığına göre yapılır.** Araç tipi
+  sadece bilgi amaçlı bir etiket. Sebebi örnek loglarla ölçüldü: aynı araç
+  tipinin ESC telemetrisi olan da olmayan da var, yani araç tipi verinin
+  varlığı için güvenilir bir sinyal değil. Rover'da asıl sorun formatı
+  ayrıştıramamak değildi (`battery_status` alan yapısı multirotor'la birebir
+  aynı) — akım sensörü hiç bağlı olmadığı için tüm `current_a` örnekleri tam
+  0.0 geliyordu ve arayüz bunu "ölçüm sıfır" gibi gösteriyordu.
+- **PWM çıkış paneli:** `pwm_outputs` (PX4 `actuator_outputs`, ArduPilot
+  `RCOU`) eklendi; motor panelinin üçüncü görünüm modu olarak gösteriliyor
+  ("Motor Görünümü: Çizgi / Isı Haritası / PWM Çıkışı"). Akım sensörü olmayan
+  araçlarda motor aktivitesinin tek görünür kanıtı bu.
+
+  İki kural: (1) PWM bir güç ölçümü değil kontrol çıktısı olduğu için uyarı
+  kurallarına hiç girmiyor; (2) hangi kanalın motor hangisinin servo olduğu
+  loglarda yazmadığı için tahmin yürütülmüyor — kanallar donanım adlarıyla
+  (MAIN/AUX/Kanal) aktarılıyor. Hiç değişmeyen kanallar (kullanılmayan çıkış,
+  servo nötr konumu) JSON'a yazılmıyor.
 
 ## Kapsam dışı bırakılan fikirler
 

@@ -12,6 +12,8 @@ Birden fazla batarya ya da motor olabileceği için ikisi de dizi.
   "meta": {
     "source_file": string,   // orijinal log dosyasının adı
     "format": "ardupilot" | "px4",
+    "vehicle_type": "multirotor" | "fixed_wing" | "rover" | "vtol" |
+                    "airship" | "submarine" | "unknown",  // bkz. aşağı
     "duration_s": number     // uçuşun toplam süresi (tüm bataryaların en sonuncusu)
   },
   "batteries": [
@@ -20,6 +22,7 @@ Birden fazla batarya ya da motor olabileceği için ikisi de dizi.
       "time_s": [number, ...],    // örnekleme zaman damgaları (saniye)
       "voltage_v": [number, ...], // batteries[i].time_s ile aynı uzunlukta
       "current_a": [number, ...], // o bataryanın akımı
+      "has_current_data": boolean, // current_a gerçek bir ölçüm mü (bkz. aşağı)
       "capacity_used_mah": number | null, // kümülatif tüketilen kapasite (log
                                            // içeriyorsa: ArduPilot "CurrTot",
                                            // PX4 "discharged_mah"; yoksa null)
@@ -36,7 +39,16 @@ Birden fazla batarya ya da motor olabileceği için ikisi de dizi.
     {
       "id": number,              // motor/ESC sırası (1, 2, 3, ...)
       "time_s": [number, ...],
-      "current_a": [number, ...] // o motorun çektiği akım
+      "current_a": [number, ...], // o motorun çektiği akım
+      "has_current_data": boolean // bataryadaki alanın birebir eşleniği
+    }
+  ],
+  "pwm_outputs": [
+    {
+      "id": number,            // sadece gösterim sırası/renk indeksi
+      "label": string,         // kanalın adı: "MAIN 2", "AUX 1", "Kanal 3"
+      "time_s": [number, ...],
+      "pwm_us": [number, ...]  // darbe genişliği (mikrosaniye), time_s ile aynı uzunlukta
     }
   ],
   "warnings": [string, ...]  // kural tabanlı, hazır gösterilecek uyarı cümleleri (bkz. aşağı)
@@ -55,6 +67,106 @@ olur; bu bir hata değildir, frontend bu durumda ilgili kutucukta "—" gösteri
 `current_a` gibi `time_s` ile aynı uzunlukta. Log bu alanı hiç içermiyorsa
 dizi boştur (`[]`); frontend bu durumda "Sıcaklık" görünümünde o bataryayı
 çizmez.
+
+## `has_current_data` alanı
+
+Akım sensörü bağlı **değilse** ArduPilot/PX4 `current_a` alanını boş
+bırakmaz — her örneğe **tam 0.0** yazar. Yani JSON'daki sıfırlar iki farklı
+anlama gelebilir: "ölçüm yapıldı, sonuç 0 A" ya da "ölçüm diye bir şey yok".
+Backend bu ikisini ayırır: bir batarya/motorun **tüm** `current_a` örnekleri
+tam 0.0 ise `has_current_data: false` olur.
+
+Eşik yok, kural katı (bir tek örnek bile sıfırdan farklıysa `true`). Sebebi:
+gerçek bir sensör araç dururken bile küçük bir gürültü/kalibrasyon ofseti
+üretir — `data/px4_hexarotor_flight.ulg`'de en düşük değerler 0.26 A ve
+-0.73 A. Tam sıfırdan oluşan bir dizi pratikte ancak sensör yokken oluşur;
+`data/px4_ground_rover_flight.ulg`'de 452 örneğin hepsi 0.00 A çıktı.
+
+Frontend bu bayrağa göre davranır:
+
+- Akım/motor panelinde o seriyi çizmez; hiçbirinde ölçüm yoksa düz bir sıfır
+  çizgisi (ya da tek renk ısı haritası) yerine "Bu logda akım sensörü verisi
+  yok." mesajı gösterir.
+- Akıma dayanan istatistik kutucuklarını (akım aralığı, enerji, tepe güç, iç
+  direnç, tüketilen kapasite, kalan süre) `0` yerine `—` gösterir.
+
+Backend de aynı bayrağa göre uyarı kurallarını uygular: ölçümü olmayan bir
+grup ne dengesizlik ne negatif-akım kuralına girer. Bu, somut bir yanlış
+alarmı önlüyor — biri sensörlü biri sensörsüz iki bataryası olan bir araçta
+genel ortalama yarıya iniyor ve **ikisi birden** "%100 sapma" uyarısı
+üretiyordu.
+
+Bu durum rover'a özgü değil: akım sensörsüz sabit kanat ve eski ArduPilot
+logları da aynı duruma düşüyor (`ArduCopter-SensorErrorFlags-00000012.BIN`
+bunun bir örneği).
+
+## `pwm_outputs` alanı
+
+Uçuş kontrolcüsünün çıkış kanallarına gönderdiği PWM darbe genişliği
+(mikrosaniye, tipik aralık 1000–2000). Kaynak: PX4'te `actuator_outputs`,
+ArduPilot'ta `RCOU` (`C1`..`C14`).
+
+**Bu bir güç ölçümü DEĞİL, kontrol çıktısıdır.** Akım/voltaj gibi ölçülmüş bir
+büyüklük değil, kontrolcünün motorlara/servolara verdiği komut. Şemaya
+girmesinin sebebi pratik: akım sensörü olmayan araçlarda (birçok rover, bkz.
+`has_current_data`) motor aktivitesinin tek görünür kanıtı bu.
+
+Bu yüzden `pwm_outputs` **uyarı kurallarına hiç girmez** — dengesizlik ve
+voltaj düşümü kuralları akım/voltaj içindir.
+
+### Kanal ≠ motor
+
+Aynı çıkış dizisinde motor, servo, direksiyon, gimbal karışık durur ve
+**hangi kanalın ne olduğu logda yazmaz.** Bu yüzden backend tahmin yürütmez;
+kanallar donanımdaki adlarıyla aktarılır ve `label` alanında hazır gelir
+(frontend'in format bilgisine ihtiyacı olmasın diye):
+
+- PX4, instance 0 → `"MAIN 1"`, `"MAIN 2"`, ...
+- PX4, instance 1 → `"AUX 1"`, `"AUX 2"`, ...
+- PX4, diğer instance'lar → `"OUT2 1"`, ...
+- ArduPilot → `"Kanal 1"`, `"Kanal 2"`, ...
+
+Tüm instance'lar aktarılır, biri "asıl motor grubu" diye seçilmez: gerçek
+loglarda motorların hangi grupta olduğu araca göre değişiyor —
+`px4_hexarotor_flight.ulg`'de 6 motor **AUX**'ta, `px4_ground_rover_flight.ulg`'de
+hareketli kanallar **MAIN**'de. PX4 tarafında okunacak kanal sayısı
+`noutputs` alanıyla sınırlanır (`output` sabit uzunluklu bir dizidir, gerisi
+kullanılmaz).
+
+### Sabit kanallar yazılmaz
+
+Bir aracın çıkış rayında kullanılmayan kanallar da bulunur ve bunlar log
+boyunca sabit bir değerde durur (kullanılmıyorsa 0, servo nötr konumu için
+1500, kilitli motor için 1000). Değeri hiç değişmeyen (`min == max`) kanallar
+JSON'a **hiç yazılmaz**: çıktıyı gereksiz şişirirler (tek bir rover logu için
+~29.000 anlamsız sayı) ve arayüzde düz çizgi olarak gürültü yaparlar.
+Sonuç olarak `px4_ground_rover_flight.ulg`'de 4 kanaldan 2'si, hexarotor'un
+MAIN grubunda ise bir kanal eleniyor.
+
+Log hiç çıkış mesajı içermiyorsa ya da tüm kanallar sabitse dizi boş (`[]`)
+olur; frontend bu durumda "Bu logda PWM çıkış verisi yok." mesajını gösterir.
+
+## `vehicle_type` alanı
+
+Aracın tipi. PX4'te `vehicle_status` konusundaki `vehicle_type` sayısal
+alanından (1=rotary_wing, 2=fixed_wing, 3=rover, 4=airship), ArduPilot'ta
+ise açılışta yazılan `MSG` satırlarındaki firmware adından (`ArduCopter`,
+`ArduPlane`, `ArduRover`/`APMrover`, `ArduSub`) çıkarılır. Log bu bilgiyi
+içermiyorsa (sentetik test dosyaları, çok eski loglar) `"unknown"` olur.
+
+VTOL araçlar `vehicle_type`'ı uçuş fazına göre rotary_wing ile fixed_wing
+arasında değiştirir; ayrı bir `is_vtol` bayrağı taşıdıkları için tek ve
+sabit bir etiket üretmek adına ona öncelik verilir (`"vtol"`).
+
+**Bu alan yalnızca bilgi amaçlıdır** — frontend'de dosya adının yanında bir
+etiket olarak gösterilir. Hangi panellerin çizileceği buna göre **belirlenmez**;
+o karar `has_current_data`'ya bakar. Sebebi ölçülmüş bir gerçek: araç tipi,
+verinin varlığı için güvenilir bir sinyal değil. Örnek loglarda `fixed_wing`
+ve `multirotor` tiplerinin hem ESC telemetrisi olanı hem olmayanı var
+(`px4_fixed_wing_flight.ulg` ve `px4_sample_log_small.ulg` esc_status
+içermiyor, `px4_hexarotor_flight.ulg` içeriyor). "Rover ise motor panelini
+gizle" gibi bir kural, akım sensörlü bir rover'da paneli haksız yere gizler,
+ESC'siz bir multirotor'da ise sahte sıfırı göstermeye devam ederdi.
 
 ## `warnings` alanı
 

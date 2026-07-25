@@ -2,6 +2,7 @@
   "meta": {
     "source_file": "example_flight.bin",
     "format": "ardupilot",
+    "vehicle_type": "multirotor",
     "duration_s": 5.0
   },
   "batteries": [
@@ -9,29 +10,51 @@
       "id": 1,
       "time_s": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
       "voltage_v": [16.8, 16.5, 16.1, 15.9, 15.6, 15.3],
-      "current_a": [5.0, 18.0, 22.5, 20.0, 25.5, 12.0]
+      "current_a": [5.0, 18.0, 22.5, 20.0, 25.5, 12.0],
+      "capacity_used_mah": 250.0,
+      "remaining_pct": 75.0,
+      "temperature_c": [24.5, 25.0, 25.8, 26.4, 27.1, 27.5],
+      "has_current_data": true
     }
   ],
   "motors": [
     {
       "id": 1,
       "time_s": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
-      "current_a": [1.2, 4.5, 5.6, 5.0, 6.4, 3.0]
+      "current_a": [1.2, 4.5, 5.6, 5.0, 6.4, 3.0],
+      "has_current_data": true
     },
     {
       "id": 2,
       "time_s": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
-      "current_a": [1.3, 4.6, 5.5, 5.1, 6.3, 3.1]
+      "current_a": [1.3, 4.6, 5.5, 5.1, 6.3, 3.1],
+      "has_current_data": true
     },
     {
       "id": 3,
       "time_s": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
-      "current_a": [1.2, 4.4, 5.7, 4.9, 6.5, 2.9]
+      "current_a": [1.2, 4.4, 5.7, 4.9, 6.5, 2.9],
+      "has_current_data": true
     },
     {
       "id": 4,
       "time_s": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
-      "current_a": [1.3, 4.5, 5.7, 5.0, 6.3, 3.0]
+      "current_a": [1.3, 4.5, 5.7, 5.0, 6.3, 3.0],
+      "has_current_data": true
+    }
+  ],
+  "pwm_outputs": [
+    {
+      "id": 1,
+      "label": "Kanal 1",
+      "time_s": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+      "pwm_us": [1000, 1420, 1580, 1510, 1655, 1180]
+    },
+    {
+      "id": 2,
+      "label": "Kanal 2",
+      "time_s": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+      "pwm_us": [1000, 1425, 1575, 1515, 1650, 1185]
     }
   ],
   "warnings": [
