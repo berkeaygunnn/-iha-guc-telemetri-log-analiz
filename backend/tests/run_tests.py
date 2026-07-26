@@ -1173,15 +1173,23 @@ class VehicleTypeTests(unittest.TestCase):
         finally:
             path.unlink(missing_ok=True)
 
-    def test_ardupilot_rover_firmware_name_recognized(self):
-        """Repoda gerçek bir ArduRover .bin örneği yok; firmware adından tip
-        çıkarma mantığı sentetik bir MSG mesajıyla test ediliyor. 'Z' formatı
-        char[64] olduğu için metin 64 bayta yastıklanır."""
+    def test_ardupilot_rover_detected_from_real_log(self):
+        """Gerçek ArduRover logu: MSG satırında "ArduRover V4.8.0-dev (1f6e646d)"
+        yazıyor ve tip buradan çıkarılıyor. Bu yol uzun süre yalnızca sentetik
+        bir fixture'la kapsanıyordu (bkz. bir alttaki test)."""
+        data = run_backend(DATA_DIR / "Rover-Scripting-00000036.BIN")
+        self.assertEqual(data["meta"]["vehicle_type"], "rover")
+
+    def test_ardupilot_legacy_rover_firmware_name_recognized(self):
+        """Eski ArduPilot sürümleri "APMrover2" adını kullanıyordu; elimizdeki
+        gerçek log yeni adı ("ArduRover") taşıdığı için eski ad sentetik bir
+        MSG mesajıyla test ediliyor. 'Z' formatı char[64] olduğu için metin
+        64 bayta yastıklanır."""
         MSG_TYPE = 103
         out = bytearray()
         out += make_synthetic_log.build_fmt_message(MSG_TYPE, "MSG", "QZ", "TimeUS,Message")
         out += bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, MSG_TYPE])
-        out += struct.pack("<Q", int(0.5 * 1e6)) + b"ArduRover V4.4.0".ljust(64, b"\x00")
+        out += struct.pack("<Q", int(0.5 * 1e6)) + b"APMrover2 V3.5.2".ljust(64, b"\x00")
         # Backend en az bir batarya örneği bulunmasını şart koşuyor.
         out += make_synthetic_log.build_fmt_message(
             make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
@@ -1432,6 +1440,58 @@ class RealLogRegressionTests(unittest.TestCase):
         self.assertEqual(len(data["batteries"]), 2)  # bu logda gercekten 2 farkli guc kaynagi var
         self.assertEqual(len(data["motors"]), 0)  # bu logda esc_status hic loglanmamis
         self.assertIsInstance(data["warnings"], list)
+
+
+class ArduRoverRealLogTests(unittest.TestCase):
+    """data/Rover-Scripting-00000036.BIN — ArduPilot tarafındaki rover yolu.
+
+    Bu yol daha önce yalnızca sentetik bir fixture'la kapsanıyordu; rover
+    davranışıyla ilgili her ölçüm PX4 logundan geliyordu. İki log birbirini
+    tamamlıyor: PX4 rover'ında akım sensörü YOK, bu ArduPilot rover'ında VAR
+    — yani "araç tipi verinin varlığı için güvenilir bir sinyal değil"
+    tasarım kararının ArduPilot tarafındaki kanıtı bu log."""
+
+    LOG = "Rover-Scripting-00000036.BIN"
+
+    def setUp(self):
+        self.data = run_backend(DATA_DIR / self.LOG)
+
+    def test_format_and_vehicle_type(self):
+        self.assertEqual(self.data["meta"]["format"], "ardupilot")
+        self.assertEqual(self.data["meta"]["vehicle_type"], "rover")
+
+    def test_battery_has_real_current_unlike_the_px4_rover(self):
+        """Bu rover'da akım sensörü var: örnekler 0.0 ile 7.12 A arasında
+        değişiyor. PX4 rover logunda ise 452 örneğin hepsi tam 0.0'dı —
+        panellerin araç tipine göre DEĞİL veriye göre dallanmasının sebebi."""
+        battery = battery_by_id(self.data, 1)
+        self.assertTrue(battery["has_current_data"])
+        self.assertEqual(len(battery["time_s"]), 712)
+        self.assertGreater(max(battery["current_a"]), 7.0)
+        self.assertAlmostEqual(min(battery["current_a"]), 0.0, places=6)
+
+    def test_duration_is_the_span_not_the_last_timestamp(self):
+        """İlk damga 2.4 s (kontrolcü açılışından beri); süre 97.3 değil
+        94.9 saniye olmalı (bkz. computeDuration)."""
+        self.assertAlmostEqual(self.data["meta"]["duration_s"], 94.9, delta=0.2)
+
+    def test_no_esc_telemetry(self):
+        """Rover'da ESC telemetrisi yok; motor paneli için tek kanıt PWM."""
+        self.assertEqual(self.data["motors"], [])
+
+    def test_pwm_keeps_moving_channels_and_drops_constant_ones(self):
+        """RCOU 14 kanal taşıyor ama sadece ikisi hareket ediyor: gaz
+        (Kanal 1) ve direksiyon (Kanal 3). Kalan 12 kanal sabit olduğu için
+        JSON'a hiç yazılmıyor."""
+        labels = [output["label"] for output in self.data["pwm_outputs"]]
+        self.assertEqual(labels, ["Kanal 1", "Kanal 3"])
+        for output in self.data["pwm_outputs"]:
+            self.assertEqual(len(output["pwm_us"]), 712)
+            self.assertGreater(max(output["pwm_us"]), min(output["pwm_us"]))
+
+    def test_healthy_log_produces_no_warnings(self):
+        """12.53–12.60 V arası ~%0.6'lık bir düşüm; eşiğin (%15) çok altında."""
+        self.assertEqual(self.data["warnings"], [])
 
 
 if __name__ == "__main__":

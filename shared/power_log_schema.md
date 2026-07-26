@@ -108,6 +108,14 @@ Bu durum rover'a özgü değil: akım sensörsüz sabit kanat ve eski ArduPilot
 logları da aynı duruma düşüyor (`ArduCopter-SensorErrorFlags-00000012.BIN`
 bunun bir örneği).
 
+**Tersi de doğru — araç tipi hiçbir yön için sinyal değil.**
+`data/Rover-Scripting-00000036.BIN` (gerçek bir ArduRover logu) aynı araç
+tipinde ama akım sensörü VAR: 712 örnek 0.0 ile 7.12 A arasında değişiyor,
+`has_current_data: true`. Yani iki rover logu birbirinin zıddı ve paneller
+"rover mu?" diye değil "veri var mı?" diye sormak zorunda. Bu araçta da ESC
+telemetrisi yok (`motors: []`), yani sensörün varlığı motor verisinin
+varlığını da garanti etmiyor — üç durum birbirinden bağımsız.
+
 ## `pwm_outputs` alanı
 
 Uçuş kontrolcüsünün çıkış kanallarına gönderdiği PWM darbe genişliği

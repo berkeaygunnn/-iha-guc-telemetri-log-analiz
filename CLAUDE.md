@@ -118,6 +118,30 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   olurdu; özet metrikler ölçekten ve süreden bağımsız karşılaştırılabiliyor.
   Metrikler üst istatistik satırıyla AYNI yardımcıları kullanıyor ki iki
   yerde farklı sayı çıkmasın.
+- **Gerçek ArduRover logu ile doğrulama:** ArduPilot tarafındaki rover yolu
+  yalnızca sentetik bir fixture'la kapsanıyordu; rover davranışına dair her
+  ölçüm PX4 logundan geliyordu. `data/Rover-Scripting-00000036.BIN` eklendi
+  (ArduPilot autotest arşivinden, mevcut `ArduCopter-*.BIN` örnekleriyle aynı
+  kaynak). Firmware satırı "ArduRover V4.8.0-dev"; tip doğru okunuyor.
+
+  **En değerli yanı PX4 rover'ının TERSİ olması:** bu araçta akım sensörü VAR
+  (712 örnek 0.0–7.12 A), PX4 rover'ında ise hiç yoktu (452 örneğin hepsi tam
+  0.0). Yani "panel dallanması araç tipine göre değil verinin varlığına göre"
+  kararı artık tek bir logun tesadüfü değil, aynı tipte iki zıt logla
+  kanıtlanıyor. Üstelik akım sensörü olmasına rağmen ESC telemetrisi yok
+  (`motors: []`) — üç durum (batarya akımı / motor akımı / PWM) birbirinden
+  bağımsız.
+
+  RCOU'nun 14 kanalından sadece ikisi hareketli (gaz + direksiyon), kalan 12'si
+  sabit olduğu için eleniyor. Arayüzde akım çekimi ile PWM hareketi birebir
+  örtüşüyor (araç ~43. saniyede hareket etmeye başlıyor) — fiziksel tutarlılık
+  kontrolü olarak da işe yaradı.
+
+  **Kaynak notu:** autotest logları SITL (simülasyon) koşularından geliyor,
+  fiziksel donanımdan değil. Format birebir gerçek (aynı ArduRover firmware'inin
+  loglama kodu), ama sayılar simüle. Uyarı eşiklerinin kalibrasyonu bunlara
+  değil, PX4'ün flight review veritabanındaki gerçek donanım uçuşlarına
+  dayanıyor (bkz. `shared/power_log_schema.md`) — o iddia etkilenmiyor.
 - **İstatistik satırı dar ekranda sarıyor:** dokuz kutucuk 1100px altında
   sığmıyordu (1000px'de sonuncusu, 720px'de son üçü kesiliyordu). Kutucuklar
   artık `grid` ile yerleşiyor ve sığan sütun sayısı pencere genişliğinden
