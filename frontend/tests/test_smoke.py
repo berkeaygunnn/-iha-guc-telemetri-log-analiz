@@ -326,6 +326,115 @@ class SmokeTests(unittest.TestCase):
         self.app._on_plot_hover(leave_event)
         self.assertEqual(len(self.app.ax_voltage.texts), 0)
 
+    def _hover_text(self, ax, xdata, ydata):
+        """Verilen noktada hover tetikleyip tooltip metnini döndürür
+        (tooltip çıkmazsa None)."""
+        self.app._on_plot_hover(
+            types.SimpleNamespace(inaxes=ax, xdata=xdata, ydata=ydata)
+        )
+        return self.app._hover_annotation.get_text() if self.app._hover_annotation else None
+
+    def test_hover_tooltip_on_motor_heatmap_names_cell(self):
+        """Isı haritasında eksenin hiç çizgisi yok; tooltip hücreyi çizim
+        sırasında saklanan ızgaradan okumalı. y=1 ilk satırın merkezidir
+        (imshow extent'i 0.5'ten başlıyor)."""
+        self._load_and_plot("px4_hexarotor_flight.ulg")
+        self.app.motor_view_toggle.set("Isı Haritası")
+        self.app._on_motor_view_change("Isı Haritası")
+        self.assertEqual(len(self.app.ax_motors.get_lines()), 0)  # okunacak çizgi yok
+
+        first_label = self.app.ax_motors.get_yticklabels()[0].get_text()
+        text = self._hover_text(self.app.ax_motors, self.app._motors_heatmap["times"][3], 1.0)
+
+        self.assertIsNotNone(text)
+        self.assertIn(first_label, text)
+        self.assertIn(" A", text)
+
+    def test_hover_tooltip_on_battery_heatmap_names_cell(self):
+        self._load_and_plot("px4_hexarotor_flight.ulg")
+        self.app._on_battery_view_change("Isı Haritası")
+
+        text = self._hover_text(self.app.ax_current, self.app._current_heatmap["times"][2], 1.0)
+
+        self.assertIsNotNone(text)
+        self.assertIn("Batarya", text)
+        self.assertIn(" A", text)
+
+    def test_hover_tooltip_on_heatmap_reports_the_hovered_cells_value(self):
+        """Gösterilen sayı, imlecin altındaki satır/sütunun ızgaradaki
+        değeriyle birebir aynı olmalı — komşu hücreninki değil."""
+        self.app._last_pwm_outputs = [
+            {"id": 1, "label": "AUX 1", "time_s": [0.0, 10.0], "pwm_us": [1400.0, 1400.0]},
+            {"id": 2, "label": "AUX 2", "time_s": [0.0, 10.0], "pwm_us": [1600.0, 1600.0]},
+        ]
+        self.app.motor_view_mode = "pwm_deviation"
+        self.app._plot_motor_currents([])
+
+        # AUX ortalaması 1500; 2. satır (AUX 2) +100 µs sapmalı olmalı.
+        text = self._hover_text(self.app.ax_motors, 0.0, 2.0)
+        self.assertIn("AUX 2", text)
+        self.assertIn("+100.0 µs sapma", text)
+        # Mutlak PWM de yazılıyor: bu görünüm onu skalada gizliyor ama tek
+        # hücreye bakarken değerli.
+        self.assertIn("(1600 µs)", text)
+
+        text = self._hover_text(self.app.ax_motors, 0.0, 1.0)
+        self.assertIn("AUX 1", text)
+        self.assertIn("-100.0 µs sapma", text)
+
+    def test_hover_tooltip_on_heatmap_picks_nearest_time_column(self):
+        """searchsorted ekleme noktasını verir; düzeltilmezse tooltip hep
+        sağdaki sütunu gösterirdi. t=1.0'a en yakın örnek 0.0 değil 2.0."""
+        self.app._last_pwm_outputs = [
+            {"id": 1, "label": "AUX 1", "time_s": [0.0, 2.0], "pwm_us": [1400.0, 1000.0]},
+            {"id": 2, "label": "AUX 2", "time_s": [0.0, 2.0], "pwm_us": [1600.0, 2000.0]},
+        ]
+        self.app.motor_view_mode = "pwm_deviation"
+        self.app._plot_motor_currents([])
+
+        self.assertIn("(1000 µs)", self._hover_text(self.app.ax_motors, 1.1, 1.0))
+        self.assertIn("(1400 µs)", self._hover_text(self.app.ax_motors, 0.9, 1.0))
+
+    def test_hover_tooltip_on_heatmap_ignores_rows_outside_the_grid(self):
+        """imshow extent'i 0.5..n+0.5; bu aralığın dışına denk gelen bir y
+        (ör. eksenin üst boşluğu) tooltip üretmemeli, IndexError de atmamalı."""
+        self._load_and_plot("px4_hexarotor_flight.ulg")
+        self.app.motor_view_toggle.set("Isı Haritası")
+        self.app._on_motor_view_change("Isı Haritası")
+        row_count = len(self.app._motors_heatmap["labels"])
+
+        self.assertIsNone(self._hover_text(self.app.ax_motors, 1.0, row_count + 3.0))
+        self.assertIsNone(self._hover_text(self.app.ax_motors, 1.0, -2.0))
+
+    def test_hover_heatmap_data_is_cleared_when_returning_to_line_view(self):
+        """Isı haritasından çizgi görünümüne dönünce saklanan ızgara
+        bırakılmalı; yoksa çizgi grafiğinde eski hücreler gösterilirdi."""
+        self._load_and_plot("px4_hexarotor_flight.ulg")
+        self.app.motor_view_toggle.set("Isı Haritası")
+        self.app._on_motor_view_change("Isı Haritası")
+        self.assertIsNotNone(self.app._motors_heatmap)
+
+        self.app._on_motor_view_change("Çizgi Grafiği")
+        self.assertIsNone(self.app._motors_heatmap)
+
+    def test_hover_tooltip_unit_follows_the_selected_view(self):
+        """Tooltip birimi panelin o anki içeriğine göre değişmeli: sıcaklık
+        modunda °C, PWM çizgi modunda µs (ikisi de eskiden V/A yazıyordu)."""
+        self._load_and_plot("px4_hexarotor_flight.ulg")
+
+        self.app._on_voltage_view_change("Sıcaklık")
+        line = self.app.ax_voltage.get_lines()[0]
+        text = self._hover_text(self.app.ax_voltage, line.get_xdata()[0], line.get_ydata()[0])
+        self.assertIn("°C", text)
+
+        self.app.motor_view_toggle.set("PWM Çıkışı")
+        self.app._on_motor_view_change("PWM Çıkışı")
+        line = self.app.ax_motors.get_lines()[0]
+        text = self._hover_text(self.app.ax_motors, line.get_xdata()[0], line.get_ydata()[0])
+        # Etiket "MAIN 1" gibi harf içerebildiği için metnin tamamında değil,
+        # değerin bittiği yerde kontrol ediliyor.
+        self.assertTrue(text.endswith(" µs"), text)
+
     def test_export_pdf_creates_file(self):
         self._load_and_plot("synthetic_test_log.BIN")
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -118,6 +118,21 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   olurdu; özet metrikler ölçekten ve süreden bağımsız karşılaştırılabiliyor.
   Metrikler üst istatistik satırıyla AYNI yardımcıları kullanıyor ki iki
   yerde farklı sayı çıkmasın.
+- **Isı haritalarında hover tooltip:** tooltip eskiden sadece çizgi
+  grafiklerinde çalışıyordu, çünkü `_on_plot_hover` değeri eksenin
+  `get_lines()`'ından okuyordu — ısı haritasında hiç çizgi yok. Artık her
+  ısı haritası çizim fonksiyonu, interpolasyon ızgarasını ve satır
+  etiketlerini `_current_heatmap`/`_motors_heatmap`'e bırakıyor; hover
+  imlecin `ydata`'sından satırı (`imshow` extent'i 0.5'ten başladığı için
+  `round(y)-1`), `xdata`'dan da en yakın sütunu buluyor.
+
+  Değer metnini paneller değil, ızgarayı tutan kapanış (`format_cell`)
+  üretiyor; bu sayede PWM sapma haritası sapmanın yanına mutlak PWM'i de
+  yazabiliyor ("+57.3 µs sapma (1458 µs)") — o görünüm mutlak değeri skalada
+  bilerek gizliyor ama tek hücreye bakarken bilgi değerli.
+
+  Aynı fonksiyondaki iki birim hatası da düzeltildi: sıcaklık modunda "24.50V",
+  PWM çizgi modunda "1650.00A" yazıyordu.
 - **Uçuş süresi hatası düzeltildi:** `duration_s` son zaman damgasını
   döndürüyordu; PX4 logları uçuş kontrolcüsünün açılışından beri geçen süreyi
   damgaladığı için 90.8 saniyelik bir kayıt "4104.7 s" görünüyordu. Artık ilk

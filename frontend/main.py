@@ -1042,6 +1042,12 @@ class App(ctk.CTk):
 
         self._current_warnings = []  # PDF raporunun ham uyarı listesine ihtiyacı var
         self._hover_annotation = None  # grafik üzerindeki hover tooltip'i (bkz. _on_plot_hover)
+        # Isı haritası modunda imlecin altındaki HÜCREYİ bulabilmek için gereken
+        # veri (satır etiketleri + ortak zaman ekseni + değer biçimleyici).
+        # Çizgi görünümünde None olur; o zaman hover, eksendeki çizgilerden
+        # okunur (bkz. _on_plot_hover).
+        self._current_heatmap = None
+        self._motors_heatmap = None
         # _style_nav_toolbar'ın kendini periyodik yeniden zamanlayan after()
         # çağrısının id'si — tema canlı değişiminde (_on_theme_toggle_click)
         # eski döngüyü iptal edebilmek için (bkz. o metodun yorumu).
@@ -2184,10 +2190,11 @@ class App(ctk.CTk):
             ax.spines[side].set_color(AXIS_LINE)
 
     def _on_plot_hover(self, event):
-        """Fare grafik üzerindeyken en yakın örneğin zaman/değerini gösteren
-        bir tooltip (annotation) çizer. ax_current/ax_motors her ısı haritası/
-        çizgi geçişinde YENİDEN yaratıldığı için burada self.ax_voltage/
-        ax_current/ax_motors HER ÇAĞRIDA canlı okunur, closure'da tutulmaz."""
+        """Fare grafik üzerindeyken imlecin altındaki örneğin/hücrenin
+        zaman ve değerini gösteren bir tooltip (annotation) çizer.
+        ax_current/ax_motors her ısı haritası/çizgi geçişinde YENİDEN
+        yaratıldığı için burada self.ax_voltage/ax_current/ax_motors HER
+        ÇAĞRIDA canlı okunur, closure'da tutulmaz."""
         if self._hover_annotation is not None:
             self._hover_annotation.remove()
             self._hover_annotation = None
@@ -2197,8 +2204,33 @@ class App(ctk.CTk):
             self.canvas.draw_idle()
             return
 
-        # Isı haritası modunda ilgili axes'in çizgisi olmadığından (get_lines()
-        # boş) döngü hiçbir şey bulamaz ve tooltip doğal olarak gösterilmez.
+        # Isı haritasında eksende hiç çizgi yok; hücre bilgisi çizim sırasında
+        # saklanan ızgaradan okunur (bkz. _plot_*_heatmap).
+        heatmap = self._heatmap_for_axes(ax)
+        if heatmap is not None:
+            found = self._hover_heatmap_cell(heatmap, event)
+        else:
+            found = self._hover_nearest_line_point(ax, event)
+
+        if found is None:
+            self.canvas.draw_idle()
+            return
+
+        label, x, y, value_text = found
+        self._show_hover_annotation(ax, x, y, f"{label}\n{x:.1f}s → {value_text}")
+        self.canvas.draw_idle()
+
+    def _heatmap_for_axes(self, ax):
+        """Verilen eksen şu an ısı haritası çiziyorsa hover verisini döndürür."""
+        if ax is self.ax_current:
+            return self._current_heatmap
+        if ax is self.ax_motors:
+            return self._motors_heatmap
+        return None
+
+    def _hover_nearest_line_point(self, ax, event):
+        """Çizgi grafiğinde imlece en yakın örneği bulur.
+        Dönüş: (etiket, zaman, değer, gösterilecek metin) ya da None."""
         best = None
         for line in ax.get_lines():
             xdata, ydata = line.get_xdata(), line.get_ydata()
@@ -2212,16 +2244,53 @@ class App(ctk.CTk):
                         best = (distance, line.get_label(), xdata[candidate], ydata[candidate])
 
         if best is None:
-            self.canvas.draw_idle()
-            return
+            return None
 
         _, label, x, y = best
-        unit = "V" if ax is self.ax_voltage else "A"
+        if ax is self.ax_voltage:
+            # Üst panel sıcaklık moduna alınabiliyor; birim onunla değişmeli
+            # (bu dal olmadan tooltip "24.50V" yazıyordu).
+            value_text = (f"{y:.1f} °C" if self.voltage_view_mode == "temperature"
+                          else f"{y:.2f}V")
+        elif ax is self.ax_motors and self.motor_view_mode == "pwm":
+            # PWM bir akım değil; bu dal olmadan tooltip "1650.00A" yazıyordu.
+            value_text = f"{y:.0f} µs"
+        else:
+            value_text = f"{y:.2f}A"
+        return label, x, y, value_text
 
-        # Nokta eksenin üst/sağ kenarına yakınsa tooltip'i o yöne doğru
-        # değil, ters yöne (aşağı/sola) doğru aç — aksi halde etiket
-        # figürün kenarından taşıp tamamen görünmez oluyordu (ör. "Batarya 1"
-        # üst uçtaki bir değerin üzerindeyken hiç gözükmüyordu).
+    def _hover_heatmap_cell(self, heatmap, event):
+        """Isı haritasında imlecin üstündeki hücreyi bulur.
+
+        Satırlar `imshow` extent'i gereği 1'den başlar ve her satır 1 birim
+        yüksektir; yani y=2.3 → 2. satır (dizide indeks 1). Sütun ise ortak
+        zaman eksenine en yakın örnektir. Dönüş: çizgi dalıyla aynı dörtlü."""
+        row = int(round(event.ydata)) - 1
+        if not 0 <= row < len(heatmap["labels"]):
+            return None
+
+        times = heatmap["times"]
+        if len(times) == 0:
+            return None
+        col = int(np.searchsorted(times, event.xdata))
+        col = min(max(col, 0), len(times) - 1)
+        # searchsorted ekleme noktasını verir; bir öncekiyle kıyaslayıp
+        # gerçekten en yakın örneği seç (aksi halde tooltip hep sağdaki
+        # hücreyi gösteriyordu).
+        if col > 0 and abs(times[col - 1] - event.xdata) <= abs(times[col] - event.xdata):
+            col -= 1
+
+        # y olarak satırın merkezi kullanılır (imlecin tam yeri değil), böylece
+        # tooltip hücrenin ortasına tutturulur.
+        return heatmap["labels"][row], float(times[col]), row + 1.0, heatmap["format_cell"](row, col)
+
+    def _show_hover_annotation(self, ax, x, y, text):
+        """Tooltip'i çizer.
+
+        Nokta eksenin üst/sağ kenarına yakınsa tooltip o yöne doğru değil,
+        ters yöne (aşağı/sola) doğru açılır — aksi halde etiket figürün
+        kenarından taşıp tamamen görünmez oluyordu (ör. "Batarya 1" üst
+        uçtaki bir değerin üzerindeyken hiç gözükmüyordu)."""
         xlim, ylim = ax.get_xlim(), ax.get_ylim()
         x_frac = (x - xlim[0]) / (xlim[1] - xlim[0]) if xlim[1] != xlim[0] else 0.5
         y_frac = (y - ylim[0]) / (ylim[1] - ylim[0]) if ylim[1] != ylim[0] else 0.5
@@ -2229,13 +2298,12 @@ class App(ctk.CTk):
         offset_y, va = (-12, "top") if y_frac > 0.85 else (12, "bottom")
 
         self._hover_annotation = ax.annotate(
-            f"{label}\n{x:.1f}s → {y:.2f}{unit}",
+            text,
             xy=(x, y), xytext=(offset_x, offset_y), textcoords="offset points",
             ha=ha, va=va,
             bbox=dict(boxstyle="round", fc=SURFACE, ec=AXIS_LINE),
             color=TEXT_PRIMARY, fontsize=9,
         )
-        self.canvas.draw_idle()
 
     def _on_load_file_click(self):
         """Dosya seçme penceresini açar; sadece .bin ve .ulog dosyalarını listeler."""
@@ -2586,6 +2654,7 @@ class App(ctk.CTk):
         self._current_cax.clear()
         self._current_cax.axis("off")
         self._battery_colorbar = None
+        self._current_heatmap = None  # ısı haritası çizilirse aşağıda yeniden doldurulur
         # Zoom/pan geçmiş yığını eski (silinen) axes'e referans tutabilir;
         # yeni axes'le senkron kalması için sıfırlanır. Bekleyen bir pan
         # önizlemesi varsa da (bkz. _PanPreviewToolbar) eski axes'e işaret
@@ -2676,6 +2745,15 @@ class App(ctk.CTk):
         self.ax_current.set_yticks(range(1, len(batteries) + 1))
         self.ax_current.set_yticklabels([f"Batarya {battery['id']}" for battery in batteries])
 
+        self._current_heatmap = {
+            "times": np.asarray(all_times),
+            "labels": [f"Batarya {battery['id']}" for battery in batteries],
+            # Hücrenin metnini üreten kapanış: interpolasyon ızgarasını (grid)
+            # kendisi tutar, böylece _on_plot_hover her panelin birimini
+            # bilmek zorunda kalmaz.
+            "format_cell": lambda row, col: f"{grid[row][col]:.2f} A",
+        }
+
         self._current_cax.axis("on")
         self._battery_colorbar = self.figure.colorbar(image, cax=self._current_cax)
         self._battery_colorbar.set_label("Akım (A)", color=TEXT_SECONDARY)
@@ -2692,6 +2770,7 @@ class App(ctk.CTk):
         self._motors_cax.clear()
         self._motors_cax.axis("off")
         self._motor_colorbar = None
+        self._motors_heatmap = None  # ısı haritası çizilirse aşağıda yeniden doldurulur
         # Zoom/pan geçmiş yığını eski (silinen) axes'e referans tutabilir;
         # yeni axes'le senkron kalması için sıfırlanır. Bekleyen bir pan
         # önizlemesi varsa da (bkz. _PanPreviewToolbar) eski axes'e işaret
@@ -2842,6 +2921,17 @@ class App(ctk.CTk):
         self.ax_motors.set_yticks(range(1, len(pwm_outputs) + 1))
         self.ax_motors.set_yticklabels([output["label"] for output in pwm_outputs])
 
+        self._motors_heatmap = {
+            "times": np.asarray(all_times),
+            "labels": [output["label"] for output in pwm_outputs],
+            # Sapmanın yanında MUTLAK PWM de yazılıyor: bu görünüm mutlak
+            # değeri bilerek gizliyor (skalayı servolar domine ediyordu), ama
+            # tek bir hücreye bakarken "1650 µs" bilgisi hâlâ değerli.
+            "format_cell": lambda row, col: (
+                f"{deviation[row][col]:+.1f} µs sapma ({grid[row][col]:.0f} µs)"
+            ),
+        }
+
         self._motors_cax.axis("on")
         self._motor_colorbar = self.figure.colorbar(image, cax=self._motors_cax)
         self._motor_colorbar.set_label("Ray ortalamasından fark (µs)", color=TEXT_SECONDARY)
@@ -2884,6 +2974,12 @@ class App(ctk.CTk):
         )
         self.ax_motors.set_yticks(range(1, len(motors) + 1))
         self.ax_motors.set_yticklabels([f"Motor {motor['id']}" for motor in motors])
+
+        self._motors_heatmap = {
+            "times": np.asarray(all_times),
+            "labels": [f"Motor {motor['id']}" for motor in motors],
+            "format_cell": lambda row, col: f"{grid[row][col]:.2f} A",
+        }
 
         self._motors_cax.axis("on")
         self._motor_colorbar = self.figure.colorbar(image, cax=self._motors_cax)
