@@ -107,6 +107,23 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   anlamlı bir ayrışma yok; dengesizlik her tipte 1–2 logda ölçülebiliyor. Tipe
   özel sayı uydurmak, mevcut eşiklerin "gerçek loglarla kalibre edildi"
   standardını düşürürdü. Yapı kuruldu, kalibrasyon kullanıcıya bırakıldı.
+- **Çoklu uçuş karşılaştırma:** giriş ekranındaki Geçmiş Dosyalar panelinde
+  "⇄ Uçuşları Karşılaştır" butonu; seçilen 2+ uçuşun özet metrikleri (araç
+  tipi, süre, voltaj/akım aralığı, enerji, tepe güç, kapasite, iç direnç,
+  voltaj düşümü, uyarı sayısı) yan yana tabloda gösteriliyor.
+
+  **Neden grafik değil tablo:** örnek loglar ölçüldüğünde uçuşların zaman
+  eksenleri hiç örtüşmüyordu (ilk damgalar 3 s ile 4014 s arasında) ve
+  batarya sınıfları farklıydı (3S/6S/12S). Aynı panele çizmek okunaksız
+  olurdu; özet metrikler ölçekten ve süreden bağımsız karşılaştırılabiliyor.
+  Metrikler üst istatistik satırıyla AYNI yardımcıları kullanıyor ki iki
+  yerde farklı sayı çıkmasın.
+- **Uçuş süresi hatası düzeltildi:** `duration_s` son zaman damgasını
+  döndürüyordu; PX4 logları uçuş kontrolcüsünün açılışından beri geçen süreyi
+  damgaladığı için 90.8 saniyelik bir kayıt "4104.7 s" görünüyordu. Artık ilk
+  ve son örnek arasındaki fark alınıyor (hem backend `computeDuration` hem
+  frontend `_flight_duration_seconds`). Aynı hata kalan-süre tahminine de
+  taşınıyordu — orada süreyle çarpıldığı için sonuç ~45 kat şişiyordu.
 
 ## Kapsam dışı bırakılan fikirler
 

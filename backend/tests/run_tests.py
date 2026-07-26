@@ -397,6 +397,61 @@ class WarningThresholdOverrideTests(unittest.TestCase):
             path.unlink(missing_ok=True)
 
 
+class FlightDurationTests(unittest.TestCase):
+    """meta.duration_s, kaydın ilk ve son örneği arasındaki SÜRE olmalı —
+    son zaman damgasının kendisi değil.
+
+    PX4 logları uçuş kontrolcüsünün açılışından beri geçen süreyi damgalıyor,
+    sıfırdan başlamıyor: px4_fixed_wing_flight.ulg'de ilk örnek 4013.9 s'de.
+    İlk damga çıkarılmadığında bu log "4104.7 saniyelik uçuş" olarak
+    raporlanıyordu; gerçek kayıt 90.8 saniye."""
+
+    def _sample_span(self, data: dict) -> float:
+        starts = [b["time_s"][0] for b in data["batteries"] if b["time_s"]]
+        ends = [b["time_s"][-1] for b in data["batteries"] if b["time_s"]]
+        return max(ends) - min(starts)
+
+    # JSON'a yazılan sayılar 6 anlamlı basamağa yuvarlandığı için (bkz.
+    # writeNumberArray) ~1500 s'lik damgalarda milisaniye altı sapma normal;
+    # tolerans buna göre seçildi, asıl aranan hata saniyeler mertebesinde.
+    SPAN_TOLERANCE_S = 0.05
+
+    def test_px4_duration_excludes_boot_time_offset(self):
+        data = run_backend(DATA_DIR / "px4_fixed_wing_flight.ulg")
+        self.assertAlmostEqual(data["meta"]["duration_s"], 90.8, places=1)
+        self.assertAlmostEqual(
+            data["meta"]["duration_s"], self._sample_span(data), delta=self.SPAN_TOLERANCE_S
+        )
+
+    def test_duration_matches_sample_span_for_every_real_log(self):
+        for name in ("px4_ground_rover_flight.ulg", "px4_hexarotor_flight.ulg",
+                     "px4_sample_log_small.ulg", "ArduCopter-MaxAltFence-00000067.BIN"):
+            with self.subTest(log=name):
+                data = run_backend(DATA_DIR / name)
+                self.assertAlmostEqual(
+                    data["meta"]["duration_s"], self._sample_span(data),
+                    delta=self.SPAN_TOLERANCE_S,
+                )
+
+    def test_duration_is_span_not_last_timestamp(self):
+        """Sentetik, sıfırdan BAŞLAMAYAN bir kayıt: süre 6 saniye olmalı,
+        son damga olan 106 değil."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(100.0, 0, 16.8, 10.0)
+        out += make_synthetic_log.build_bat_message(106.0, 0, 16.5, 10.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            self.assertAlmostEqual(run_backend(path)["meta"]["duration_s"], 6.0, places=3)
+        finally:
+            path.unlink(missing_ok=True)
+
+
 class VehicleSpecificThresholdTests(unittest.TestCase):
     """--vehicle-thresholds=<tip>:<sag>:<dengesizlik>:<negatif> araç tipine
     özel eşikler tanımlar. Eşikler backend'e çağrı ANINDA veriliyor ama araç
