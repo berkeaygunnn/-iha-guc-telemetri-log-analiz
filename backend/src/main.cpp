@@ -1151,7 +1151,7 @@ void appendImbalanceWarnings(const std::map<int, double>& averages, const std::s
             std::ostringstream msg;
             msg << labelPrefix << " " << entry.first << ": ortalama akımı diğerlerinden %"
                 << roundToPercent(deviation < 0 ? -deviation : deviation)
-                << (deviation > 0 ? " daha fazla" : " daha az");
+                << (deviation > 0 ? " daha fazla." : " daha az.");
             warnings.push_back(msg.str());
         }
     }
@@ -1179,7 +1179,7 @@ void appendNegativeCurrentWarnings(const std::map<int, std::vector<SamplePoint>>
         if (minCurrent < negativeCurrentThreshold) {
             std::ostringstream msg;
             msg << labelPrefix << " " << entry.first << ": akım verisinde negatif değer görüldü ("
-                << minCurrent << " A) — muhtemelen sensör gürültüsü, gerçek bir arıza olmayabilir";
+                << minCurrent << " A) — muhtemelen sensör gürültüsü, gerçek bir arıza olmayabilir.";
             warnings.push_back(msg.str());
         }
     }
@@ -1208,7 +1208,7 @@ std::vector<std::string> computeWarnings(const ParsedLog& log, const WarningThre
         if (sagRatio >= thresholds.voltageSag) {
             std::ostringstream msg;
             msg << "Batarya " << entry.first << ": voltaj %" << roundToPercent(sagRatio)
-                << " düştü (" << first << "V → " << minVoltage << "V)";
+                << " düştü (" << first << "V → " << minVoltage << "V).";
             warnings.push_back(msg.str());
         }
     }

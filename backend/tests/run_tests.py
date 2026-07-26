@@ -397,6 +397,151 @@ class WarningThresholdOverrideTests(unittest.TestCase):
             path.unlink(missing_ok=True)
 
 
+class WarningTextFormatTests(unittest.TestCase):
+    """Uyarı cümleleri arayüzde olduğu gibi gösteriliyor (frontend metne hiç
+    dokunmuyor), o yüzden cümle biçimi backend'in sorumluluğunda: her uyarı
+    noktayla bitmeli."""
+
+    def _all_warning_kinds(self) -> list:
+        """Üç kuralı da (voltaj düşümü, dengesizlik, negatif akım) aynı anda
+        tetikleyen bir fixture."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        # Batarya 1: buyuk voltaj dusumu + yuksek ortalama akim
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 20.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 12.0, 20.0)
+        # Batarya 2: dusuk ortalama akim (dengesizlik) + negatif ornek
+        out += make_synthetic_log.build_bat_message(0.0, 1, 16.8, 5.0)
+        out += make_synthetic_log.build_bat_message(6.0, 1, 16.8, -0.7)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            return run_backend(path)["warnings"]
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_every_warning_ends_with_a_period(self):
+        warnings = self._all_warning_kinds()
+        self.assertGreaterEqual(len(warnings), 3)  # her uc kural da tetiklenmis olmali
+        for warning in warnings:
+            with self.subTest(warning=warning):
+                self.assertTrue(warning.endswith("."), warning)
+
+    def test_all_three_rule_kinds_are_covered_by_the_fixture(self):
+        """Yukarıdaki noktalama testinin gerçekten üç farklı cümle tipini de
+        kapsadığını doğrular; aksi halde test yanlış güven verirdi."""
+        warnings = self._all_warning_kinds()
+        self.assertTrue(any("voltaj" in w for w in warnings))
+        self.assertTrue(any("ortalama akımı" in w for w in warnings))
+        self.assertTrue(any("negatif değer" in w for w in warnings))
+
+
+class ParserRobustnessEdgeCaseTests(unittest.TestCase):
+    """PWM/araç tipi kod yollarının bozuk ya da uç girdilerle davranışı.
+    Hepsinde beklenen: çökme yok, geçerli JSON, veri kirlenmesi yok."""
+
+    def _ulog_with_actuator(self, noutputs, array_length, rows, multi_id=0) -> bytes:
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float voltage_v;float current_a;"
+        )
+        out += make_synthetic_ulog.build_format_message(
+            f"actuator_outputs:uint64_t timestamp;uint32_t noutputs;float[{array_length}] output;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += make_synthetic_ulog.build_subscription_message(2, "actuator_outputs", multi_id=multi_id)
+        out += make_synthetic_ulog.build_battery_data_message(1, 0.0, 16.8, 10.0)
+        out += make_synthetic_ulog.build_battery_data_message(1, 6.0, 16.5, 10.0)
+        for time_s, values in rows:
+            payload = struct.pack("<H", 2) + struct.pack("<QI", int(time_s * 1e6), noutputs)
+            payload += struct.pack(f"<{array_length}f", *values)
+            out += make_synthetic_ulog.build_message(make_synthetic_ulog.MSG_DATA, payload)
+        return bytes(out)
+
+    def _run_bytes(self, data: bytes, suffix: str) -> dict:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+            f.write(data)
+            path = Path(f.name)
+        try:
+            return run_backend(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_noutputs_larger_than_array_is_clamped(self):
+        """Bozuk bir logda noutputs dizi boyunu aşabilir; dizi dışına taşıp
+        çöp okumak yerine gerçek dizi uzunluğuyla sınırlanmalı."""
+        data = self._run_bytes(self._ulog_with_actuator(
+            99, 4, [(0.0, (1000, 1500, 1200, 1800)), (6.0, (1900, 1500, 1300, 1800))],
+        ), ".ulog")
+        # 4 kanaldan sadece 2'si degisken; digerleri sabit oldugu icin yazilmaz.
+        self.assertEqual([o["label"] for o in data["pwm_outputs"]], ["MAIN 1", "MAIN 3"])
+
+    def test_zero_and_overflowing_noutputs_do_not_break_parsing(self):
+        for noutputs in (0, 0xFFFFFFFF):
+            with self.subTest(noutputs=noutputs):
+                data = self._run_bytes(self._ulog_with_actuator(
+                    noutputs, 4,
+                    [(0.0, (1000, 1500, 1200, 1800)), (6.0, (1900, 1500, 1300, 1800))],
+                ), ".ulog")
+                self.assertEqual(len(data["pwm_outputs"]), 2)
+
+    def test_non_finite_pwm_samples_are_skipped(self):
+        """NaN/Inf değerler JSON'a yazılamaz; o kanal sessizce atlanmalı,
+        geçerli kanallar etkilenmemeli."""
+        data = self._run_bytes(self._ulog_with_actuator(
+            4, 4,
+            [(0.0, (float("nan"), float("inf"), 1200, 1800)),
+             (6.0, (float("nan"), float("inf"), 1300, 1900))],
+        ), ".ulog")
+        labels = [o["label"] for o in data["pwm_outputs"]]
+        self.assertEqual(labels, ["MAIN 3", "MAIN 4"])
+
+    def test_unknown_output_group_gets_its_own_label(self):
+        """MAIN/AUX dışında bir instance gelirse etiket uydurulmadan
+        "OUT<n>" biçiminde aktarılmalı (gruplama buna göre çalışıyor)."""
+        data = self._run_bytes(self._ulog_with_actuator(
+            2, 4, [(0.0, (1000, 1500, 0, 0)), (6.0, (1900, 1600, 0, 0))], multi_id=7,
+        ), ".ulog")
+        self.assertEqual([o["label"] for o in data["pwm_outputs"]], ["OUT7 1", "OUT7 2"])
+
+    def test_rcou_without_channel_fields_yields_no_pwm(self):
+        """Sadece TimeUS içeren bir RCOU tanımı: kanal alanı yok, uydurma
+        veri üretilmemeli."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 10.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 16.5, 10.0)
+        out += make_synthetic_log.build_fmt_message(103, "RCOU", "Q", "TimeUS")
+        header = bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, 103])
+        out += header + struct.pack("<Q", 0)
+        out += header + struct.pack("<Q", int(6.0 * 1e6))
+
+        self.assertEqual(self._run_bytes(bytes(out), ".BIN")["pwm_outputs"], [])
+
+    def test_single_pwm_sample_counts_as_constant(self):
+        """Tek örnekli bir kanalda min == max olur; "hiç değişmedi" sayılıp
+        yazılmamalı (sabit kanal filtresinin sınır durumu)."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 10.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 16.5, 10.0)
+        out += make_synthetic_log.build_fmt_message(103, "RCOU", "QHHHH", "TimeUS,C1,C2,C3,C4")
+        header = bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, 103])
+        out += header + struct.pack("<QHHHH", 0, 1000, 1500, 1000, 2000)
+
+        self.assertEqual(self._run_bytes(bytes(out), ".BIN")["pwm_outputs"], [])
+
+
 class FlightDurationTests(unittest.TestCase):
     """meta.duration_s, kaydın ilk ve son örneği arasındaki SÜRE olmalı —
     son zaman damgasının kendisi değil.
