@@ -124,12 +124,20 @@ DARK_PALETTE = {
 LIGHT_PALETTE = {
     "SURFACE": "#f4f5f2",
     "TEXT_PRIMARY": "#1c1c1a",
-    "TEXT_SECONDARY": "#4a4a44",
-    "TEXT_MUTED": "#767066",
+    # İkincil/soluk tonlar bilerek koyu temadaki muadilleriyle AYNI kontrast
+    # oranına ayarlandı; ilk değerleri açık zeminde soluk kalıyordu. Ölçüm
+    # (WCAG, yüzey / istatistik kutucuğu zemini üzerinde):
+    #   TEXT_SECONDARY  8.15 -> 9.83  (koyu temada 9.72)
+    #   TEXT_MUTED      4.48 -> 6.06  ve kutucukta 3.74 -> 5.05; eskisi normal
+    #                                  metin için AA sınırının (4.5) altındaydı
+    #   COLOR_WARNING   4.12 -> 5.58  (uyarı satırları için)
+    # Tonlar korundu, sadece açıklık düşürüldü.
+    "TEXT_SECONDARY": "#3e3e39",
+    "TEXT_MUTED": "#615c54",
     "GRIDLINE": "#e1e1db",
     "AXIS_LINE": "#c6c6bf",
     "COLOR_CRITICAL": "#b5231f",
-    "COLOR_WARNING": "#a8681a",
+    "COLOR_WARNING": "#8b5616",
     # Koyu temanın tersi yönde: açık zeminde uçların KOYU, orta noktanın açık
     # gri olması gerekiyor ki aynı "sapma parlar, sapmasızlık geri çekilir"
     # okuması korunsun. (Ardışık HEATMAP_COLORS'ın aksine bu skala temaya göre
@@ -334,6 +342,24 @@ MOTOR_VIEW_LABELS = {mode: label for label, mode in MOTOR_VIEW_MODES.items()}
 
 # Dışa aktarma açılır menüsü: etiket -> App üzerindeki işleyicinin adı.
 # Menünün kendi başlığı seçim yapılsa da değişmez (bkz. _on_export_selected).
+# Görünüm seçicileri (CTkSegmentedButton) hiç renk verilmeden kuruluyordu,
+# yani uygulamanın paletini değil CustomTkinter'ın kendi varsayılanını
+# kullanıyorlardı: açık temada seçili OLMAYAN segmentlerin metni zeminle
+# karışacak kadar soluk kalıyordu. Seçili segment marka mavisinde kalıyor
+# (orada metin beyaz), seçili olmayanlar ise yüzeyle aynı zemine ve normal
+# metin rengine çekiliyor.
+def _segmented_button_style() -> dict:
+    """Üç görünüm seçicisinin ortak renkleri. Fonksiyon olarak veriliyor
+    çünkü UI_* renk çiftleri modül yüklenirken tanımlanıyor ve tema canlı
+    değiştiğinde ctk bunları kendisi çeviriyor."""
+    return {
+        "text_color": UI_TEXT_PRIMARY,
+        "fg_color": UI_GRIDLINE,
+        "unselected_color": UI_GRIDLINE,
+        "unselected_hover_color": UI_AXIS_LINE,
+    }
+
+
 EXPORT_MENU_LABEL = "Dışa Aktar"
 EXPORT_MENU_ACTIONS = {
     "Grafik (PNG)": "_on_export_png_click",
@@ -1367,6 +1393,7 @@ class App(ctk.CTk):
 
         self.voltage_view_toggle = ctk.CTkSegmentedButton(
             toggle_row, values=["Voltaj", "Sıcaklık"], command=self._on_voltage_view_change,
+            **_segmented_button_style(),
         )
         # Mevcut modu yansıtır (sabit "Voltaj" değil): kullanıcı sıcaklık
         # görünümündeyken başka bir dosya yükleyip toggle yeniden kurulsa da
@@ -1394,7 +1421,7 @@ class App(ctk.CTk):
 
         self.battery_view_toggle = ctk.CTkSegmentedButton(
             toggle_row, values=["Çizgi Grafiği", "Isı Haritası"],
-            command=self._on_battery_view_change,
+            command=self._on_battery_view_change, **_segmented_button_style(),
         )
         self.battery_view_toggle.set("Isı Haritası" if self.battery_view_mode == "heatmap" else "Çizgi Grafiği")
         self.battery_view_toggle.pack(side="left")
@@ -1420,7 +1447,7 @@ class App(ctk.CTk):
 
         self.motor_view_toggle = ctk.CTkSegmentedButton(
             toggle_row, values=list(MOTOR_VIEW_MODES),
-            command=self._on_motor_view_change,
+            command=self._on_motor_view_change, **_segmented_button_style(),
         )
         self.motor_view_toggle.set(MOTOR_VIEW_LABELS[self.motor_view_mode])
         self.motor_view_toggle.pack(side="left")
