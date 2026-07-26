@@ -4,40 +4,84 @@
 
 ArduPilot (`.bin`) veya PX4 (`.ulog`/`.ulg` — PX4 araçları genelde `.ulg`
 uzantısıyla üretir, ikisi de aynı ULog formatıdır) uçuş kontrolcülerinden alınan
-uçuş sonrası log dosyalarını okuyup; batarya voltaj düşümünü (voltage sag) ve
-motor/ESC akım çekimini grafiklere dönüştüren bir masaüstü uygulaması.
+uçuş sonrası log dosyalarını okuyup; batarya voltaj düşümünü (voltage sag),
+motor/ESC akım çekimini ve çıkış kanallarının PWM'ini grafiklere, ısı
+haritalarına ve otomatik uyarılara dönüştüren bir masaüstü uygulaması.
+
+Multirotor, sabit kanat, rover ve VTOL loglarıyla çalışır; akım sensörü
+bulunmayan araçlarda "ölçüm yok" ile "ölçüm sıfır"ı ayırt eder.
 
 ## Özellikler
 
-- Uygulama açılışında canlı renkli bir **karşılama ekranı** karşılıyor:
-  solda geçmiş dosyalar listesi, ortada orijinal bir drone ikonu ve
-  "Dosya Yükle" butonu; dosya seçilince (ya da geçmişten tıklanınca)
-  analiz ekranına geçiliyor.
-- **ArduPilot `.bin` desteği** — kendini tanımlayan (FMT mesajlı) ikili format,
-  batarya (`BAT`) ve motor (`ESC`) mesajlarını doğrudan çözer.
-- **PX4 `.ulog` desteği** — Format/Subscription/Data mesaj yapısını çözer,
-  `battery_status` ve iç içe dizili `esc_status`/`esc_report` verisini okur.
+### Log okuma
+
+- **ArduPilot `.bin` desteği** — kendini tanımlayan (FMT mesajlı) ikili format;
+  batarya (`BAT`/`CURR`), motor (`ESC`) ve çıkış kanalı (`RCOU`) mesajlarını çözer.
+- **PX4 `.ulog` desteği** — Format/Subscription/Data mesaj yapısını çözer;
+  `battery_status`, iç içe dizili `esc_status`/`esc_report`, `actuator_outputs`
+  ve `vehicle_status` verisini okur.
 - Log formatı dosya içeriğinden (magic byte) otomatik algılanır; kullanıcı
   format seçmek zorunda değildir.
-- Koyu temalı arayüz: voltaj, toplam akım ve motor bazlı akım ayrı panellerde
-  (ortak zaman eksenini paylaşarak) çizilir.
-- Motor paneli, çizgi grafiği ile motor × zaman ısı haritası arasında tek
-  tıkla geçiş yapabiliyor.
-- Toplam akım (busbar yüklenmesi) paneli de aynı şekilde çizgi grafiği ↔
-  batarya × zaman ısı haritası arasında geçiş yapabiliyor; birden fazla
-  batarya (yedekli güç hattı) olduğunda hangisinin ne zaman daha yüklü
-  olduğunu karşılaştırmak için kullanışlı.
-- Birden fazla batarya (ör. ana + yedek güç kaynağı) ayrı ayrı, tutarlı
-  renklerle voltaj/akım panellerinde gösterilir.
-- Kural tabanlı otomatik uyarılar: aşırı voltaj düşümü (%15+) ve motorlar
-  arası akım dengesizliği (%20+) gerçek loglarla kalibre edilmiş eşiklerle
-  otomatik tespit edilip arayüzde gösterilir (bkz.
-  `shared/power_log_schema.md`'deki `warnings` alanı).
-- Grafiği tek tıkla (ya da Ctrl+S) PNG olarak dışa aktarma.
-- **Temizle** butonuyla ekranı sıfırlayıp temiz bir durumdan yeni bir dosya
-  yükleme.
-- Son kullanılan dosyalar (en fazla 5) açılır listeden tek tıkla tekrar
-  yüklenebilir; liste kalıcıdır (uygulama kapanıp açılınca korunur).
+- **Araç tipi tespiti** — rover, sabit kanat, multirotor, VTOL... PX4'te
+  `vehicle_status`, ArduPilot'ta firmware adından çıkarılır ve dosya adının
+  yanında etiket olarak gösterilir.
+- **"Ölçüm yok" ile "ölçüm sıfır" ayrımı** — akım sensörü bağlı değilken uçuş
+  kontrolcüsü alanı boş bırakmaz, her örneğe tam 0.0 yazar. Bu durum tespit
+  edilir; ilgili paneller düz sıfır çizgisi yerine açık bir mesaj, istatistik
+  kutucukları da `0` yerine `—` gösterir (bkz. `has_current_data`).
+
+### Görselleştirme
+
+- Voltaj, toplam akım ve motor verisi ayrı panellerde, ortak zaman eksenini
+  paylaşarak çizilir. Birden fazla batarya (ör. ana + yedek güç kaynağı)
+  paneller arasında tutarlı renklerle gösterilir.
+- **Üst panel:** batarya voltajı ↔ batarya sıcaklığı arasında geçiş.
+- **Toplam akım paneli:** çizgi grafiği ↔ batarya × zaman ısı haritası. Yedekli
+  güç hattı varsa hangi busbar'ın ne zaman daha yüklü olduğunu gösterir.
+- **Motor paneli, dört görünüm:**
+  - *Çizgi grafiği* — motor başına akım
+  - *Isı haritası* — motor × zaman akım yoğunluğu
+  - *PWM çıkışı* — kontrolcünün çıkış kanallarına verdiği darbe genişliği
+    (akım sensörü olmayan araçlarda motor aktivitesinin tek görünür kanıtı)
+  - *PWM sapma* — her kanalın, aynı çıkış rayındaki (MAIN/AUX) kanalların o
+    andaki ortalamasından farkı; kanallar arası dengesizliği görünür kılar
+- Özet istatistik satırı: süre, örnek sayısı, voltaj/akım aralığı, enerji
+  tüketimi (Wh), tepe güç (W), tahmini iç direnç (mΩ), tüketilen kapasite
+  (mAh) ve tahmini kalan süre.
+- Yakınlaştırma/kaydırma araç çubuğu (kalıcı pan, tek tuşla görünüm sıfırlama)
+  ve çizgi grafiklerinde imlecin altındaki en yakın örneği gösteren tooltip.
+- **Açık/koyu tema** arasında canlı geçiş — pencere kapanıp açılmaz, tercih
+  kalıcıdır.
+
+### Analiz ve uyarılar
+
+Kural tabanlı, gerçek loglarla kalibre edilmiş eşiklerle otomatik uyarılar
+(yapay zekâ/ML yok — bkz. `shared/power_log_schema.md`'deki `warnings`):
+
+- Batarya voltaj düşümü (varsayılan %15+)
+- Motorlar arası akım dengesizliği (varsayılan %20+)
+- Bataryalar arası akım dengesizliği (yedekli hatlar için)
+- Negatif akım — veri kalitesi işareti (fiziksel olarak beklenmez)
+
+Eşikler **Ayarlar** penceresinden değiştirilebilir ve **araç tipi başına ayrı
+ayrı** saklanabilir; grafikteki eşik çizgileri her zaman üretilen uyarıyla
+aynı değeri kullanır.
+
+### Karşılaştırma ve dışa aktarma
+
+- **Çoklu uçuş karşılaştırma** — geçmiş dosyalardan 2+ uçuş işaretlenip özet
+  metrikleri (araç tipi, süre, voltaj/akım aralığı, enerji, tepe güç,
+  kapasite, iç direnç, voltaj düşümü, uyarı sayısı) yan yana tabloda görülür.
+- **PNG** (grafik), **PDF** (istatistik + uyarı + grafik raporu) ve **CSV**
+  (ham zaman serileri) olarak dışa aktarma.
+
+### Kullanım kolaylıkları
+
+- Açılışta canlı renkli bir **karşılama ekranı**: solda geçmiş dosyalar
+  (format rozeti, ne zaman açıldığı, uçuş süresiyle), ortada "Dosya Yükle".
+- Son kullanılan dosyalar (en fazla 5) kalıcıdır; uygulama kapanıp açılınca
+  korunur ve açılır listeden tek tıkla yüklenir.
+- **Temizle** butonuyla ekranı sıfırlayıp temiz bir durumdan başlama.
 - Klavye kısayolları: Ctrl+O (dosya yükle), Ctrl+S (grafiği PNG kaydet).
 
 ## Mimari
@@ -99,13 +143,23 @@ kullanıcı kendi `.bin`/`.ulog`/`.ulg` dosyasını yükler.
 ## Proje durumu
 
 - [x] Python UI iskeleti
-- [x] ArduPilot `.bin` parser'ı (batarya + motor/ESC)
-- [x] PX4 `.ulog` parser'ı (batarya + motor/ESC)
+- [x] ArduPilot `.bin` parser'ı (batarya + motor/ESC + RCOU)
+- [x] PX4 `.ulog` parser'ı (batarya + esc_status + actuator_outputs + vehicle_status)
 - [x] Gerçek ve sentetik loglarla uçtan uca test
 - [x] Güç dağıtım (busbar) ısı haritası
 - [x] Birden fazla batarya desteği
-- [x] Kural tabanlı otomatik uyarı sistemi (voltaj düşümü + motor dengesizliği)
+- [x] Kural tabanlı otomatik uyarı sistemi (4 kural, ayarlanabilir eşikler)
+- [x] Batarya sıcaklığı, enerji/kapasite ve iç direnç istatistikleri
+- [x] Açık/koyu tema (canlı geçiş)
+- [x] PNG / PDF / CSV dışa aktarma
+- [x] Rover ve sabit kanat desteği (araç tipi tespiti, akım sensörü yokluğu)
+- [x] PWM çıkış ve PWM sapma panelleri
+- [x] Araç tipi başına uyarı eşikleri
+- [x] Çoklu uçuş karşılaştırma
 - [x] PyInstaller ile paketleme (tek klasörlük dağıtım)
+
+Testler: `python backend/tests/run_tests.py` (parser + uyarı kuralları) ve
+`python frontend/tests/test_smoke.py` (arayüz duman testleri).
 
 ## Lisans
 
