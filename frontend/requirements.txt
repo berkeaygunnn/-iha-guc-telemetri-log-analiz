@@ -1,3 +1,8 @@
 customtkinter
 matplotlib
 numpy
+# main.py doğrudan "from PIL import Image, ImageDraw, ImageTk" yapıyor
+# (uygulama ikonu, araç çubuğu simgeleri). matplotlib zaten Pillow'a bağımlı
+# olduğu için dolaylı olarak da kuruluyor, ama doğrudan kullandığımız bir
+# paketi dolaylı bağımlılığa bırakmak kırılgan.
+Pillow
