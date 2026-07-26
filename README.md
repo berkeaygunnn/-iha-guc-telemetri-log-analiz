@@ -121,10 +121,15 @@ eksenleri örtüşmüyor ve batarya sınıfları farklı (3S/6S); özet metrikle
 | `backend/` | C++ (CMake). Log dosyasını parse edip `shared/` şemasına uygun JSON üretir. |
 | `frontend/` | Python + CustomTkinter + Matplotlib. Dosya seçimi, backend'i çalıştırma, grafik çizimi. |
 | `shared/` | Backend ↔ frontend arasındaki JSON veri sözleşmesi (şema + örnek). |
-| `data/` | Test için örnek/sentetik uçuş logları (ArduCopter, PX4 quadrotor/hexarotor/rover/sabit kanat). |
+| `data/` | Test için örnek/sentetik uçuş logları (ArduCopter, ArduRover, PX4 hexarotor/rover/sabit kanat/VTOL). |
 
 Backend ve frontend bağımsız çalışır; aralarında doğrudan bir çağrı yoktur,
 sadece dosya üzerinden JSON alışverişi vardır.
+
+Örnek logların kaynağı: `.ulg` dosyaları PX4'ün herkese açık flight review
+veritabanından (gerçek donanımlı uçuşlar), `.BIN` dosyaları ArduPilot'un
+autotest arşivinden (gerçek firmware, SITL koşusu — format birebir doğru,
+sayılar simüle). `synthetic_*` dosyaları testler için elle üretilmiştir.
 
 ## Kurulum ve çalıştırma
 
@@ -180,7 +185,8 @@ kullanıcı kendi `.bin`/`.ulog`/`.ulg` dosyasını yükler.
 - [x] Batarya sıcaklığı, enerji/kapasite ve iç direnç istatistikleri
 - [x] Açık/koyu tema (canlı geçiş)
 - [x] PNG / PDF / CSV dışa aktarma
-- [x] Rover ve sabit kanat desteği (araç tipi tespiti, akım sensörü yokluğu)
+- [x] Rover ve sabit kanat desteği (araç tipi tespiti, akım sensörü yokluğu),
+      hem PX4 hem ArduPilot tarafı gerçek loglarla doğrulandı
 - [x] PWM çıkış ve PWM sapma panelleri
 - [x] Araç tipi başına uyarı eşikleri
 - [x] Çoklu uçuş karşılaştırma

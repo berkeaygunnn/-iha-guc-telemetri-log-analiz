@@ -711,6 +711,64 @@ class SmokeTests(unittest.TestCase):
         self._load_file_and_wait(str(DATA_DIR / "synthetic_test_log.BIN"))
         self.assertEqual(self.app.file_label.cget("text"), "synthetic_test_log.BIN")
 
+    # --- Akım sensörü OLAN rover (ArduPilot tarafı) ---------------------------
+    #
+    # data/Rover-Scripting-00000036.BIN gerçek bir ArduRover logu ve yukarıdaki
+    # PX4 rover'ının TERSİ: aynı araç tipi ama akım sensörü var. Bu ikili,
+    # panellerin araç tipine göre değil verinin varlığına göre dallanması
+    # kararının kanıtı — tek bir rover loguyla iki davranış da doğrulanamazdı.
+
+    ARDUROVER_LOG = "Rover-Scripting-00000036.BIN"
+
+    def test_ardupilot_rover_is_labelled_rover_too(self):
+        self._load_file_and_wait(str(DATA_DIR / self.ARDUROVER_LOG))
+        self.assertEqual(
+            self.app._file_label_text, f"{self.ARDUROVER_LOG} · Rover"
+        )
+
+    def test_ardupilot_rover_draws_current_unlike_the_px4_rover(self):
+        """Akım paneli burada durum mesajı DEĞİL gerçek bir çizgi göstermeli."""
+        self._load_and_plot(self.ARDUROVER_LOG)
+        self.assertEqual(len(self.app.ax_current.get_lines()), 1)
+        self.assertNotIn("akım sensörü verisi yok",
+                         self._rover_axis_texts(self.app.ax_current))
+
+    def test_ardupilot_rover_current_based_stats_have_real_values(self):
+        """PX4 rover'ında bu dört kutucuk '—' idi; burada sayı olmalı."""
+        self._load_and_plot(self.ARDUROVER_LOG)
+        for key in ("current_range", "energy_wh", "peak_power_w", "resistance_est"):
+            self.assertNotEqual(self.app.stat_labels[key].cget("text"), "—", key)
+
+    def test_ardupilot_rover_still_has_no_motor_current(self):
+        """Akım sensörü olması ESC telemetrisi olduğu anlamına gelmiyor:
+        batarya akımı ölçülüyor ama motor paneli yine boş."""
+        data = self._load_and_plot(self.ARDUROVER_LOG)
+        self.assertEqual(data["motors"], [])
+        self.assertIn("motor (esc) akım verisi yok",
+                      self._rover_axis_texts(self.app.ax_motors))
+
+    def test_ardupilot_rover_pwm_channels_are_plotted(self):
+        """RCOU'dan gelen iki hareketli kanal ("Kanal N" etiketiyle, çünkü
+        ArduPilot'ta MAIN/AUX ayrımı yok) çizilmeli."""
+        self._load_and_plot(self.ARDUROVER_LOG)
+        self.app.motor_view_toggle.set("PWM Çıkışı")
+        self.app._on_motor_view_change("PWM Çıkışı")
+
+        lines = self.app.ax_motors.get_lines()
+        self.assertEqual([line.get_label() for line in lines], ["Kanal 1", "Kanal 3"])
+        self.assertIn("µs", self.app.ax_motors.get_ylabel())
+
+    def test_ardupilot_rover_exports_do_not_crash(self):
+        self._load_and_plot(self.ARDUROVER_LOG)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for method, suffix in (("_on_export_png_click", ".png"),
+                                   ("_on_export_pdf_click", ".pdf"),
+                                   ("_on_export_csv_click", ".csv")):
+                out_path = str(Path(tmp_dir) / f"rover{suffix}")
+                with patch("main.filedialog.asksaveasfilename", return_value=out_path):
+                    getattr(self.app, method)()
+                self.assertGreater(Path(out_path).stat().st_size, 0, suffix)
+
     # --- PWM çıkış görünümü ---------------------------------------------------
 
     def test_pwm_view_plots_channels_for_rover(self):
