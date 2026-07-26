@@ -492,7 +492,10 @@ def _flight_summary_metrics(data: dict) -> dict:
     Değerler ham (sayı) döner, biçimlendirme çağırana ait: testler sayıyı
     doğrulayabilsin, tablo da kendi birimini seçebilsin."""
     batteries = data.get("batteries", [])
-    measured = _with_current_data(batteries)
+    # Hiç örneği olmayan bir batarya (bozuk/yarım JSON) metriklere girmemeli:
+    # aksi halde enerji ve tepe güç "0.0" olarak hesaplanıp tabloda "0.00 Wh"
+    # görünüyor, yani "ölçüm yok" yine "ölçüm sıfır" gibi okunuyordu.
+    measured = [battery for battery in _with_current_data(batteries) if battery["time_s"]]
     all_voltage = [v for battery in batteries for v in battery["voltage_v"]]
     all_current = [c for battery in measured for c in battery["current_a"]]
 
@@ -1890,13 +1893,15 @@ class App(ctk.CTk):
 
             if compare_button.winfo_exists():
                 compare_button.configure(state="normal")
+            # Tek kontrol yeterli: result_frame ile status_label aynı
+            # pencerenin çocukları, pencere kapatılınca ikisi birden yok olur.
             if not result_frame.winfo_exists():
                 return  # kullanıcı pencereyi kapatmış
 
             self._build_comparison_table(result_frame, results)
             if errors:
                 status_label.configure(text="⚠ " + " | ".join(errors), text_color=COLOR_CRITICAL)
-            elif status_label.winfo_exists():
+            else:
                 status_label.configure(
                     text=f"{len(results)} uçuş karşılaştırıldı.", text_color=TEXT_MUTED
                 )
@@ -2425,37 +2430,47 @@ class App(ctk.CTk):
         self.canvas.draw()
 
     def _run_backend(self, input_path: str) -> dict:
-        """Backend'i seçilen log dosyasıyla çalıştırıp ürettiği JSON'u okur."""
+        """Backend'i seçilen log dosyasıyla çalıştırıp ürettiği JSON'u okur.
+
+        Çıktı dosyası HER ÇAĞRI İÇİN AYRI bir geçici dizine yazılır. Sabit bir
+        ad (eskiden "iha_power_log_output.json") kullanmak, aynı anda iki
+        backend çağrısı olduğunda iki çağrının aynı dosyaya yazmasına yol
+        açıyordu: uçuş karşılaştırma arka planda çalışırken ana pencereden bir
+        dosya yüklemek yeterliydi. Sonuç ya yarım yazılmış dosyanın okunması
+        (JSONDecodeError) ya da -- daha sinsisi -- bir logun verisinin öbürüne
+        ait sanılmasıydı. (Aynı desen backend/tests/run_tests.py'de zaten
+        böyleydi; uygulama kodu geride kalmıştı.)"""
         if not BACKEND_EXE.exists():
             raise RuntimeError(
                 f"Backend derlenmemiş: {BACKEND_EXE} bulunamadı. Önce CMake ile derleyin."
             )
 
-        output_path = Path(tempfile.gettempdir()) / "iha_power_log_output.json"
         thresholds = _get_general_thresholds()
-        command = [
-            str(BACKEND_EXE), input_path, str(output_path),
-            f"--voltage-sag={thresholds['voltage_sag_threshold']}",
-            f"--current-imbalance={thresholds['current_imbalance_threshold']}",
-            f"--negative-current={thresholds['negative_current_threshold']}",
-        ]
-        # Araç tipine özel eşiklerin HEPSİ geçiriliyor: hangisinin geçerli
-        # olduğuna backend karar veriyor, çünkü araç tipi ancak log
-        # ayrıştırıldıktan sonra biliniyor. Böylece log tek geçişte okunuyor.
-        for vehicle_type, values in sorted(_get_vehicle_threshold_overrides().items()):
-            command.append(
-                f"--vehicle-thresholds={vehicle_type}"
-                f":{values['voltage_sag_threshold']}"
-                f":{values['current_imbalance_threshold']}"
-                f":{values['negative_current_threshold']}"
-            )
-        result = subprocess.run(command, capture_output=True, text=True)
-        if result.returncode != 0:
-            message = result.stderr.strip() or f"Backend hata koduyla sonlandı: {result.returncode}"
-            raise RuntimeError(message)
+        with tempfile.TemporaryDirectory(prefix="iha_power_log_") as tmp_dir:
+            output_path = Path(tmp_dir) / "output.json"
+            command = [
+                str(BACKEND_EXE), input_path, str(output_path),
+                f"--voltage-sag={thresholds['voltage_sag_threshold']}",
+                f"--current-imbalance={thresholds['current_imbalance_threshold']}",
+                f"--negative-current={thresholds['negative_current_threshold']}",
+            ]
+            # Araç tipine özel eşiklerin HEPSİ geçiriliyor: hangisinin geçerli
+            # olduğuna backend karar veriyor, çünkü araç tipi ancak log
+            # ayrıştırıldıktan sonra biliniyor. Böylece log tek geçişte okunuyor.
+            for vehicle_type, values in sorted(_get_vehicle_threshold_overrides().items()):
+                command.append(
+                    f"--vehicle-thresholds={vehicle_type}"
+                    f":{values['voltage_sag_threshold']}"
+                    f":{values['current_imbalance_threshold']}"
+                    f":{values['negative_current_threshold']}"
+                )
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode != 0:
+                message = result.stderr.strip() or f"Backend hata koduyla sonlandı: {result.returncode}"
+                raise RuntimeError(message)
 
-        with open(output_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            with open(output_path, "r", encoding="utf-8") as f:
+                return json.load(f)
 
     def _plot_power_data(self, data: dict):
         """Her bataryanın voltajı/akımı ve motor akımlarını, ortak zaman

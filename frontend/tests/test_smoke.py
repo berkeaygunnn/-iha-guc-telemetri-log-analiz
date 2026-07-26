@@ -11,6 +11,7 @@ Kullanım: python test_smoke.py  (frontend/tests/ içinden)
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -929,6 +930,107 @@ class SmokeTests(unittest.TestCase):
             self.assertIn("synthetic_test_log.BIN", labels)
         finally:
             dialog.destroy()
+
+    def test_concurrent_backend_calls_do_not_mix_results(self):
+        """Aynı anda iki backend çağrısı birbirinin çıktısını bozmamalı.
+
+        Regresyon: eskiden çıktı SABİT bir geçici dosyaya
+        ("iha_power_log_output.json") yazılıyordu. Uçuş karşılaştırma arka
+        planda çalışırken ana pencereden bir dosya yüklemek iki çağrıyı
+        çakıştırmaya yetiyordu; sonuç ya yarım yazılmış dosyanın okunması
+        (JSONDecodeError) ya da bir logun verisinin öbürüne ait sanılmasıydı."""
+        expected = {
+            "px4_ground_rover_flight.ulg": ("rover", 1, 0),
+            "px4_fixed_wing_flight.ulg": ("fixed_wing", 1, 0),
+        }
+        seen = {name: [] for name in expected}
+        errors = []
+
+        def worker(name):
+            try:
+                for _ in range(4):
+                    data = self.app._run_backend(str(DATA_DIR / name))
+                    seen[name].append((
+                        data["meta"]["vehicle_type"],
+                        len(data["batteries"]),
+                        len(data["motors"]),
+                    ))
+            except Exception as error:  # JSONDecodeError dahil
+                errors.append(f"{name}: {type(error).__name__}: {error}")
+
+        threads = [threading.Thread(target=worker, args=(name,)) for name in expected]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=180)
+
+        self.assertEqual(errors, [])
+        for name, want in expected.items():
+            self.assertEqual(set(seen[name]), {want}, name)
+
+    # --- Özet metriklerin sınır durumları -------------------------------------
+
+    def test_summary_metrics_without_any_samples_show_placeholder(self):
+        """Hiç örnek yokken uydurma sayı üretilmemeli; hepsi "—" olmalı.
+        "Boş zaman serisi" hali bir kusuru ortaya çıkarmıştı: enerji ve tepe
+        güç 0.0 hesaplanıp tabloda "0.00 Wh" görünüyordu, yani "ölçüm yok"
+        yine "ölçüm sıfır" gibi okunuyordu."""
+        cases = {
+            "tamamen boş": {},
+            "boş batarya listesi": {"batteries": [], "warnings": []},
+            "boş zaman serisi": {"batteries": [
+                {"id": 1, "time_s": [], "voltage_v": [], "current_a": [],
+                 "capacity_used_mah": None, "remaining_pct": None,
+                 "temperature_c": [], "has_current_data": True}], "warnings": []},
+        }
+        for name, data in cases.items():
+            with self.subTest(case=name):
+                metrics = frontend_main._flight_summary_metrics(data)
+                self.assertIsNone(metrics["energy_wh"])
+                self.assertIsNone(metrics["peak_power_w"])
+                self.assertIsNone(metrics["voltage_sag_pct"])
+                # Her satır çökmeden bir metne dönüşmeli ve "—" olmalı.
+                for key, _title in frontend_main.COMPARISON_ROWS:
+                    if key == "warning_count":
+                        continue  # sayi; 0 gostermesi dogru
+                    self.assertEqual(
+                        frontend_main._format_comparison_value(key, metrics), "—", key
+                    )
+
+    def test_zero_voltage_flight_reports_zero_energy_not_placeholder(self):
+        """Sıfır voltajda enerji GERÇEKTEN sıfırdır (0 V x 1 A = 0 W); burada
+        "—" göstermek yanlış olurdu. Ölçüm var, sonucu sıfır — yukarıdaki
+        "hiç ölçüm yok" durumundan farkı bu."""
+        data = {"batteries": [
+            {"id": 1, "time_s": [0.0, 10.0], "voltage_v": [0.0, 0.0],
+             "current_a": [1.0, 1.0], "capacity_used_mah": None,
+             "remaining_pct": None, "temperature_c": [],
+             "has_current_data": True}], "warnings": []}
+        metrics = frontend_main._flight_summary_metrics(data)
+
+        self.assertEqual(metrics["energy_wh"], 0.0)
+        self.assertEqual(frontend_main._format_comparison_value("energy_wh", metrics), "0.00 Wh")
+        # Voltaj düşümü oranı ise ilk voltaj 0 iken tanımsız: "—" kalmalı.
+        self.assertIsNone(metrics["voltage_sag_pct"])
+
+    def test_single_sample_flight_has_zero_duration_not_crash(self):
+        battery = {"id": 1, "time_s": [42.0], "voltage_v": [16.0], "current_a": [10.0],
+                   "capacity_used_mah": None, "remaining_pct": None,
+                   "temperature_c": [], "has_current_data": True}
+        self.assertEqual(frontend_main._flight_duration_seconds([battery]), 0.0)
+        self.assertEqual(frontend_main._battery_energy_wh([battery]), 0.0)
+
+    def test_duration_spans_union_of_all_batteries(self):
+        """İki batarya farklı aralıklarda örneklenmişse süre, ikisinin
+        birleşimi olmalı (en erken başlangıç -> en geç bitiş)."""
+        def battery(times):
+            return {"id": 1, "time_s": times, "voltage_v": [16.0] * len(times),
+                    "current_a": [1.0] * len(times), "capacity_used_mah": None,
+                    "remaining_pct": None, "temperature_c": [], "has_current_data": True}
+        self.assertEqual(
+            frontend_main._flight_duration_seconds([battery([10.0, 20.0]), battery([5.0, 30.0])]),
+            25.0,
+        )
 
     def _open_settings_dialog(self):
         """Ayarlar penceresini açar ve içindeki widget'ları döndürür. Pencere
