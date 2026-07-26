@@ -639,6 +639,63 @@ class SmokeTests(unittest.TestCase):
             else:
                 self.assertGreater(len(self.app.ax_motors.get_lines()), 0, label)
 
+    def test_pwm_deviation_heatmap_draws_image_and_labels(self):
+        """PWM Sapma modu, kanal sayısı kadar satırlı bir ısı haritası
+        çizmeli ve panel başlığı sapma birimini söylemeli."""
+        data = self._load_and_plot("px4_hexarotor_flight.ulg")
+
+        self.app.motor_view_toggle.set("PWM Sapma")
+        self.app._on_motor_view_change("PWM Sapma")
+
+        self.assertEqual(len(self.app.ax_motors.get_images()), 1)
+        self.assertIn("Sapma", self.app.ax_motors.get_ylabel())
+        self.assertEqual(
+            [t.get_text() for t in self.app.ax_motors.get_yticklabels()],
+            [o["label"] for o in data["pwm_outputs"]],
+        )
+
+    def test_pwm_deviation_compares_only_within_same_output_rail(self):
+        """Sapma, kanalın AYNI raydaki (MAIN/AUX) kanalların ortalamasından
+        farkı. Burada AUX kanallarından biri kasıtlı olarak yüksek: sadece o
+        satır pozitif sapmalı, MAIN grubu bundan etkilenmemeli. Tek kanallı
+        grup karşılaştırılamayacağı için nötr (0) kalmalı."""
+        self.app._last_pwm_outputs = [
+            {"id": 1, "label": "AUX 1", "time_s": [0.0, 1.0], "pwm_us": [1400.0, 1400.0]},
+            {"id": 2, "label": "AUX 2", "time_s": [0.0, 1.0], "pwm_us": [1400.0, 1400.0]},
+            {"id": 3, "label": "AUX 3", "time_s": [0.0, 1.0], "pwm_us": [1600.0, 1600.0]},
+            {"id": 4, "label": "MAIN 1", "time_s": [0.0, 1.0], "pwm_us": [1900.0, 1900.0]},
+        ]
+        self.app.motor_view_mode = "pwm_deviation"
+        self.app._plot_motor_currents([])
+
+        deviation = self.app.ax_motors.get_images()[0].get_array()
+        # AUX ortalamasi (1400+1400+1600)/3 = 1466.67
+        self.assertAlmostEqual(deviation[0][0], -66.67, places=1)  # AUX 1
+        self.assertAlmostEqual(deviation[1][0], -66.67, places=1)  # AUX 2
+        self.assertAlmostEqual(deviation[2][0], 133.33, places=1)  # AUX 3 -> tek pozitif
+        # MAIN grubunda tek kanal var: karsilastirma anlamsiz, notr kalmali.
+        self.assertEqual(deviation[3][0], 0.0)
+
+    def test_pwm_deviation_shows_message_when_no_data(self):
+        self._load_and_plot("synthetic_test_log.BIN")
+
+        self.app.motor_view_toggle.set("PWM Sapma")
+        self.app._on_motor_view_change("PWM Sapma")
+
+        self.assertEqual(len(self.app.ax_motors.get_images()), 0)
+        texts = [t.get_text().lower() for t in self.app.ax_motors.texts]
+        self.assertTrue(any("pwm çıkış verisi yok" in t for t in texts))
+
+    def test_pwm_deviation_color_scale_is_symmetric_around_zero(self):
+        """0 (sapma yok) her zaman ıraksak skalanın tam ortasındaki nötr griye
+        denk gelmeli; asimetrik sınır "az sapma"yı "hiç sapma" gibi gösterirdi."""
+        self._load_and_plot("px4_hexarotor_flight.ulg")
+        self.app.motor_view_toggle.set("PWM Sapma")
+        self.app._on_motor_view_change("PWM Sapma")
+
+        vmin, vmax = self.app.ax_motors.get_images()[0].get_clim()
+        self.assertAlmostEqual(vmin, -vmax, places=6)
+
     def test_pwm_view_does_not_shift_panel_position(self):
         """Isı haritası colorbar'ı için ayrılan sabit eksen sayesinde panel
         konumu görünümler arasında değişmiyordu; PWM modu da bunu bozmamalı."""
@@ -651,6 +708,181 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(self.app.ax_motors.get_position().bounds, position_before)
 
     # --- Toolbar "Sıfırla" butonu ---------------------------------------------
+
+    # --- Araç tipi başına uyarı eşikleri ---------------------------------------
+
+    def _write_vehicle_thresholds(self, vehicle_type: str, values: dict):
+        settings = frontend_main._load_settings()
+        settings[frontend_main.SETTINGS_VEHICLE_THRESHOLDS_KEY] = {vehicle_type: values}
+        frontend_main._save_settings(settings)
+
+    def test_thresholds_fall_back_to_general_when_type_has_no_entry(self):
+        self._write_vehicle_thresholds("rover", {
+            "voltage_sag_threshold": 0.05,
+            "current_imbalance_threshold": 0.05,
+            "negative_current_threshold": -0.02,
+        })
+        general = frontend_main._get_general_thresholds()
+
+        self.assertEqual(frontend_main._get_warning_thresholds("multirotor"), general)
+        self.assertEqual(frontend_main._get_warning_thresholds(None), general)
+        self.assertEqual(
+            frontend_main._get_warning_thresholds("rover")["voltage_sag_threshold"], 0.05
+        )
+
+    def test_malformed_vehicle_threshold_entries_are_ignored(self):
+        """Ayar dosyası elle düzenlenmiş olabilir; eksik/yanlış tipli kayıtlar
+        uygulamayı çökertmemeli, sessizce genel eşiklere düşmeli."""
+        settings = frontend_main._load_settings()
+        settings[frontend_main.SETTINGS_VEHICLE_THRESHOLDS_KEY] = {
+            "rover": {"voltage_sag_threshold": 0.05},          # eksik alanlar
+            "vtol": "bozuk",                                    # yanlis tip
+            "fixed_wing": {"voltage_sag_threshold": "a",
+                           "current_imbalance_threshold": 0.1,
+                           "negative_current_threshold": -0.1},  # sayi degil
+        }
+        frontend_main._save_settings(settings)
+
+        self.assertEqual(frontend_main._get_vehicle_threshold_overrides(), {})
+        general = frontend_main._get_general_thresholds()
+        self.assertEqual(frontend_main._get_warning_thresholds("rover"), general)
+
+    def test_vehicle_thresholds_are_passed_to_backend(self):
+        """Araç tipine özel eşiklerin HEPSİ backend'e geçirilmeli: hangisinin
+        geçerli olduğuna backend karar veriyor, çünkü araç tipi ancak log
+        ayrıştırıldıktan sonra biliniyor."""
+        self._write_vehicle_thresholds("rover", {
+            "voltage_sag_threshold": 0.12,
+            "current_imbalance_threshold": 0.25,
+            "negative_current_threshold": -0.2,
+        })
+        with patch("main.subprocess.run") as fake_run:
+            fake_run.return_value = types.SimpleNamespace(returncode=1, stderr="dur")
+            with self.assertRaises(RuntimeError):
+                self.app._run_backend(str(DATA_DIR / "synthetic_test_log.BIN"))
+
+        command = fake_run.call_args[0][0]
+        self.assertIn("--vehicle-thresholds=rover:0.12:0.25:-0.2", command)
+        # Genel eşikler de her zaman geçiriliyor (eşleşen tip yoksa onlar geçerli).
+        self.assertTrue(any(a.startswith("--voltage-sag=") for a in command))
+
+    def test_vehicle_specific_threshold_changes_warnings_end_to_end(self):
+        """Uçtan uca: hexarotor logu multirotor olarak ayrıştırılıyor; bu tipe
+        sıkı bir dengesizlik eşiği tanımlanınca uyarı sayısı artmalı, aynı
+        eşik BAŞKA bir tipe tanımlıyken değişmemeli."""
+        baseline = len(self.app._run_backend(str(DATA_DIR / "px4_hexarotor_flight.ulg"))["warnings"])
+
+        self._write_vehicle_thresholds("rover", {
+            "voltage_sag_threshold": 0.15,
+            "current_imbalance_threshold": 0.05,
+            "negative_current_threshold": -0.1,
+        })
+        unrelated = len(self.app._run_backend(str(DATA_DIR / "px4_hexarotor_flight.ulg"))["warnings"])
+        self.assertEqual(unrelated, baseline)
+
+        self._write_vehicle_thresholds("multirotor", {
+            "voltage_sag_threshold": 0.15,
+            "current_imbalance_threshold": 0.05,
+            "negative_current_threshold": -0.1,
+        })
+        strict = len(self.app._run_backend(str(DATA_DIR / "px4_hexarotor_flight.ulg"))["warnings"])
+        self.assertGreater(strict, baseline)
+
+    def test_plot_threshold_lines_follow_vehicle_specific_values(self):
+        """Grafikteki eşik çizgisi, backend'in o log için kullandığı eşikle
+        AYNI olmalı; aksi halde çizgi uyarıyla çelişirdi."""
+        self._write_vehicle_thresholds("multirotor", {
+            "voltage_sag_threshold": 0.02,  # cok sikí -> cizgi voltaja cok yakin
+            "current_imbalance_threshold": 0.20,
+            "negative_current_threshold": -0.1,
+        })
+        self._load_and_plot("px4_hexarotor_flight.ulg")
+        self.assertEqual(self.app._last_vehicle_type, "multirotor")
+
+        first_voltage = self.app._last_batteries[0]["voltage_v"][0]
+        threshold_lines = [
+            line for line in self.app.ax_voltage.get_lines()
+            if line.get_label().startswith("_")
+        ]
+        self.assertTrue(threshold_lines)
+        self.assertAlmostEqual(
+            threshold_lines[0].get_ydata()[0], first_voltage * (1 - 0.02), places=3
+        )
+
+    def _open_settings_dialog(self):
+        """Ayarlar penceresini açar ve içindeki widget'ları döndürür. Pencere
+        grab_set() yaptığı için testte hemen serbest bırakılıyor, yoksa
+        sonraki update() çağrıları kilitlenebiliyor."""
+        self.app._on_settings_click()
+        self.app.update()
+        dialog = [
+            w for w in self.app.winfo_children()
+            if isinstance(w, frontend_main.ctk.CTkToplevel)
+        ][-1]
+        dialog.grab_release()
+
+        option_menus, entry_widgets, buttons = [], [], []
+
+        def walk(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, frontend_main.ctk.CTkOptionMenu):
+                    option_menus.append(child)
+                elif isinstance(child, frontend_main.ctk.CTkEntry):
+                    entry_widgets.append(child)
+                elif isinstance(child, frontend_main.ctk.CTkButton):
+                    buttons.append(child)
+                walk(child)
+
+        walk(dialog)
+        return dialog, option_menus[0], entry_widgets, buttons
+
+    def test_settings_dialog_opens_on_loaded_vehicle_type(self):
+        """Kullanıcı çoğunlukla az önce baktığı uçuş için eşik ayarlar; seçici
+        yüklü logun araç tipiyle açılmalı."""
+        self._load_and_plot("px4_ground_rover_flight.ulg")
+        dialog, scope_menu, _entries, _buttons = self._open_settings_dialog()
+        try:
+            self.assertEqual(scope_menu.get(), "Sadece Rover")
+        finally:
+            dialog.destroy()
+
+    def test_settings_dialog_saves_per_vehicle_entry(self):
+        """Bir araç tipi seçiliyken kaydetmek SADECE o tipin kaydını
+        oluşturmalı, genel eşiklere dokunmamalı."""
+        general_before = frontend_main._get_general_thresholds()
+        self._load_and_plot("px4_ground_rover_flight.ulg")
+        dialog, _scope_menu, entries, buttons = self._open_settings_dialog()
+        try:
+            entries[0].delete(0, "end")
+            entries[0].insert(0, "9")  # voltaj dusumu %9
+            save_button = next(b for b in buttons if b.cget("text") == "Kaydet")
+            save_button.invoke()
+            self.app.update()
+        finally:
+            if dialog.winfo_exists():
+                dialog.destroy()
+
+        overrides = frontend_main._get_vehicle_threshold_overrides()
+        self.assertIn("rover", overrides)
+        self.assertAlmostEqual(overrides["rover"]["voltage_sag_threshold"], 0.09)
+        self.assertEqual(frontend_main._get_general_thresholds(), general_before)
+
+    def test_settings_dialog_general_scope_does_not_create_vehicle_entry(self):
+        dialog, scope_menu, entries, buttons = self._open_settings_dialog()
+        try:
+            self.assertEqual(scope_menu.get(), "Genel (tüm araçlar)")  # dosya yuklu degil
+            entries[1].delete(0, "end")
+            entries[1].insert(0, "33")  # dengesizlik %33
+            next(b for b in buttons if b.cget("text") == "Kaydet").invoke()
+            self.app.update()
+        finally:
+            if dialog.winfo_exists():
+                dialog.destroy()
+
+        self.assertEqual(frontend_main._get_vehicle_threshold_overrides(), {})
+        self.assertAlmostEqual(
+            frontend_main._get_general_thresholds()["current_imbalance_threshold"], 0.33
+        )
 
     def test_reset_button_exists_next_to_pan(self):
         self.assertIn("Reset", self.app.nav_toolbar._buttons)

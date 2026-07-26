@@ -200,6 +200,22 @@ makul bir aralıkta olduğunu destekliyor; kesin bir arıza örneğiyle (ör.
 bilinen bozuk bir motor) doğrulanmadı, o yüzden hâlâ kesin/nihai değerler
 olarak değil, gerçek veriyle desteklenmiş başlangıç değerleri olarak görülmeli.
 
+### Araç tipine göre eşikler
+
+Eşikler araç tipi başına ayarlanabilir. Frontend, tanımlı **tüm** tiplerin
+eşiklerini tek seferde `--vehicle-thresholds=<tip>:<sag>:<dengesizlik>:<negatif>`
+argümanlarıyla (tekrarlanabilir) geçirir; backend log'u ayrıştırıp
+`meta.vehicle_type`'ı belirledikten sonra eşleşeni seçer, eşleşen yoksa genel
+eşikler (`--voltage-sag` vb.) geçerli olur. Bu sıra zorunlu: eşikler çağrı
+anında veriliyor ama araç tipi ancak ayrıştırmadan sonra biliniyor — böylece
+log yine **tek geçişte** okunuyor.
+
+Varsayılanlar tüm araç tiplerinde **aynıdır**. Örnek loglar ölçüldüğünde
+voltaj düşümü her tipte %0.5–6.2 aralığında çıktı (eşik %15) ve tipler
+arasında anlamlı bir ayrışma görülmedi; dengesizlik ise her tipte yalnızca
+1–2 logda ölçülebiliyor. Tipe özel sayılar uydurmak yerine yapı kurulup
+kalibrasyon kullanıcıya bırakıldı.
+
 Ayrıca: bir batarya/motorun ilk ve son örneği arasındaki süre 5 saniyeden
 kısaysa (`MIN_DURATION_FOR_WARNINGS_S`) o grup için kural hiç değerlendirilmez.
 Bu, gerçek loglarla ilk kalibrasyon denemesinde bulundu: çok kısa (arm-öncesi/
