@@ -1233,9 +1233,50 @@ std::vector<std::string> computeWarnings(const ParsedLog& log, const WarningThre
     return warnings;
 }
 
+// Araç tipine özel eşikler: "--vehicle-thresholds=rover:0.12:0.25:-0.1"
+// biçimindeki (tekrarlanabilir) argümandan doldurulur.
+//
+// Neden burada, frontend'de değil: eşiklerin backend'e verilmesi gerekiyor
+// ama araç tipi ancak log AYRIŞTIRILDIKTAN sonra biliniyor. Frontend tüm
+// tiplerin eşiklerini birden geçiriyor, doğru olanı burada seçiyoruz —
+// böylece log tek geçişte okunuyor.
+//
+// Eşleşen bir tip yoksa genel eşikler (--voltage-sag vb. ya da DEFAULT_*)
+// kullanılır; yani bu tamamen opsiyonel bir üst katman.
+using VehicleThresholdMap = std::map<std::string, WarningThresholds>;
+
+const WarningThresholds& selectThresholds(const VehicleThresholdMap& perVehicle,
+                                           const WarningThresholds& fallback,
+                                           const std::string& vehicleType) {
+    auto it = perVehicle.find(vehicleType);
+    return it != perVehicle.end() ? it->second : fallback;
+}
+
+// "rover:0.12:0.25:-0.1" -> perVehicle["rover"]. Bozuk/eksik bir değer varsa
+// o kayıt sessizce yok sayılır (diğer --flag'lerdeki davranışın aynısı: bunlar
+// kullanıcının ayarlar penceresinden gelen opsiyonel değerler).
+void parseVehicleThresholdArg(const std::string& value, VehicleThresholdMap& perVehicle) {
+    std::vector<std::string> parts;
+    std::stringstream stream(value);
+    std::string part;
+    while (std::getline(stream, part, ':')) parts.push_back(part);
+    if (parts.size() != 4 || parts[0].empty()) return;
+
+    try {
+        WarningThresholds thresholds;
+        thresholds.voltageSag = std::stod(parts[1]);
+        thresholds.currentImbalance = std::stod(parts[2]);
+        thresholds.negativeCurrent = std::stod(parts[3]);
+        perVehicle[parts[0]] = thresholds;
+    } catch (const std::exception&) {
+        // Sayıya çevrilemeyen bir değer: bu araç tipi için özel eşik yok sayılır.
+    }
+}
+
 // Basarili olursa (en az bir batarya bulunduysa) true doner.
 bool writePowerLogJson(const std::string& inputLogPath, const std::string& outputPath,
-                       const WarningThresholds& thresholds) {
+                       const WarningThresholds& thresholds,
+                       const VehicleThresholdMap& perVehicleThresholds = {}) {
     ParsedLog parsed = parseLog(inputLogPath);
 
     std::ofstream out(toPath(outputPath));
@@ -1245,7 +1286,8 @@ bool writePowerLogJson(const std::string& inputLogPath, const std::string& outpu
     }
 
     double duration_s = computeDuration(parsed.batteries);
-    std::vector<std::string> warnings = computeWarnings(parsed, thresholds);
+    std::vector<std::string> warnings = computeWarnings(
+        parsed, selectThresholds(perVehicleThresholds, thresholds, parsed.vehicleType));
 
     out << "{\n";
     out << "  \"meta\": {\n";
@@ -1327,7 +1369,8 @@ int main(int argc, char** argv) {
 
     if (args.size() < 3) {
         std::cerr << "Kullanim: power_log_backend <girdi_log.bin> <cikti.json> "
-                     "[--voltage-sag=0.15] [--current-imbalance=0.20] [--negative-current=-0.1]"
+                     "[--voltage-sag=0.15] [--current-imbalance=0.20] [--negative-current=-0.1] "
+                     "[--vehicle-thresholds=<tip>:<sag>:<dengesizlik>:<negatif> ...]"
                   << std::endl;
         return 1;
     }
@@ -1339,6 +1382,7 @@ int main(int argc, char** argv) {
     // penceresinden girdiği sayılar için sıkı bir doğrulama gerektirmeyen,
     // opsiyonel bir özellik.
     WarningThresholds thresholds;
+    VehicleThresholdMap perVehicleThresholds;
     for (size_t i = 3; i < args.size(); ++i) {
         try {
             if (args[i].rfind("--voltage-sag=", 0) == 0) {
@@ -1347,12 +1391,15 @@ int main(int argc, char** argv) {
                 thresholds.currentImbalance = std::stod(args[i].substr(20));
             } else if (args[i].rfind("--negative-current=", 0) == 0) {
                 thresholds.negativeCurrent = std::stod(args[i].substr(19));
+            } else if (args[i].rfind("--vehicle-thresholds=", 0) == 0) {
+                // Tekrarlanabilir: her araç tipi için ayrı bir tane verilir.
+                parseVehicleThresholdArg(args[i].substr(21), perVehicleThresholds);
             }
         } catch (const std::exception&) {
             // Sayıya çevrilemeyen bir değer geldiyse o eşik varsayılanında kalır.
         }
     }
 
-    bool ok = writePowerLogJson(args[1], args[2], thresholds);
+    bool ok = writePowerLogJson(args[1], args[2], thresholds, perVehicleThresholds);
     return ok ? 0 : 2;
 }

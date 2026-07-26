@@ -76,15 +76,37 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   aynı) — akım sensörü hiç bağlı olmadığı için tüm `current_a` örnekleri tam
   0.0 geliyordu ve arayüz bunu "ölçüm sıfır" gibi gösteriyordu.
 - **PWM çıkış paneli:** `pwm_outputs` (PX4 `actuator_outputs`, ArduPilot
-  `RCOU`) eklendi; motor panelinin üçüncü görünüm modu olarak gösteriliyor
-  ("Motor Görünümü: Çizgi / Isı Haritası / PWM Çıkışı"). Akım sensörü olmayan
-  araçlarda motor aktivitesinin tek görünür kanıtı bu.
+  `RCOU`) eklendi; motor paneline iki görünüm modu olarak giriyor
+  ("Motor Görünümü: Çizgi / Isı Haritası / PWM Çıkışı / PWM Sapma"). Akım
+  sensörü olmayan araçlarda motor aktivitesinin tek görünür kanıtı bu.
 
   İki kural: (1) PWM bir güç ölçümü değil kontrol çıktısı olduğu için uyarı
   kurallarına hiç girmiyor; (2) hangi kanalın motor hangisinin servo olduğu
   loglarda yazmadığı için tahmin yürütülmüyor — kanallar donanım adlarıyla
   (MAIN/AUX/Kanal) aktarılıyor. Hiç değişmeyen kanallar (kullanılmayan çıkış,
   servo nötr konumu) JSON'a yazılmıyor.
+
+  **PWM ısı haritası neden "sapma" gösteriyor:** mutlak PWM skalası gerçek
+  loglarla denendi ve okunaksız çıktı — aynı haritadaki servo/gimbal
+  kanalları (900-2100, çoğu zaman uçta sabit) skalayı domine edip motorlar
+  arasındaki asıl bilgiyi tek düze bir renge çeviriyordu. Kanal başına
+  normalize etmek de çözmedi (motorlar zaten senkron hareket ediyor).
+  Kasıtlı olarak +120 µs kaydırılmış bir motorla test edildiğinde SADECE
+  "aynı çıkış rayındaki kanalların o andaki ortalamasından fark" görünümü
+  dengesizliği açıkça gösterdi. Gruplama etiketin ilk kelimesine (MAIN/AUX/
+  Kanal) göre; bu donanımdaki ayrı raylar, yani yine motor tahmini yok.
+- **Araç tipine göre uyarı eşikleri:** eşikler artık araç tipi başına
+  saklanabiliyor (Ayarlar penceresinde "Hangi araç için?" seçicisi). Frontend
+  tanımlı tüm tiplerin eşiklerini `--vehicle-thresholds=<tip>:<sag>:<deng>:<neg>`
+  ile geçiriyor, backend `meta.vehicle_type`'a göre eşleşeni seçiyor — eşikler
+  çağrı anında veriliyor ama araç tipi ancak ayrıştırmadan sonra bilindiği için
+  bu sıra zorunlu (log tek geçişte okunuyor).
+
+  **Varsayılanlar tipe göre DEĞİŞMİYOR** ve bu bilinçli: örnek loglar ölçüldü,
+  voltaj düşümü her araç tipinde %0.5–6.2 çıktı (eşik %15) ve tipler arasında
+  anlamlı bir ayrışma yok; dengesizlik her tipte 1–2 logda ölçülebiliyor. Tipe
+  özel sayı uydurmak, mevcut eşiklerin "gerçek loglarla kalibre edildi"
+  standardını düşürürdü. Yapı kuruldu, kalibrasyon kullanıcıya bırakıldı.
 
 ## Kapsam dışı bırakılan fikirler
 

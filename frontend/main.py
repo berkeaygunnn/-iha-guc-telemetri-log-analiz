@@ -113,6 +113,13 @@ DARK_PALETTE = {
     "AXIS_LINE": "#383835",
     "COLOR_CRITICAL": "#d03b3b",  # durum paleti: kritik/hata (backend hatası)
     "COLOR_WARNING": "#d9a334",   # durum paleti: uyarı (backend'in kural tabanlı yorumları)
+    # PWM sapma ısı haritasının ıraksak (diverging) skalası: soğuk uç
+    # (ortalamanın altı) → NÖTR GRİ orta nokta (sapma yok) → sıcak uç
+    # (ortalamanın üstü). Orta noktanın gri olması şart: sapmasız bölgeler
+    # göze çarpmamalı, dikkat sapmanın olduğu yere gitmeli. Durum paletiyle
+    # (COLOR_WARNING/CRITICAL) bilerek aynı tonlar seçilmedi — bu bir ölçüm
+    # skalası, "uyarı" değil.
+    "PWM_DEVIATION_COLORS": ("#5aa9f0", "#2c2c2a", "#eb9b4f"),
 }
 LIGHT_PALETTE = {
     "SURFACE": "#f4f5f2",
@@ -123,6 +130,11 @@ LIGHT_PALETTE = {
     "AXIS_LINE": "#c6c6bf",
     "COLOR_CRITICAL": "#b5231f",
     "COLOR_WARNING": "#a8681a",
+    # Koyu temanın tersi yönde: açık zeminde uçların KOYU, orta noktanın açık
+    # gri olması gerekiyor ki aynı "sapma parlar, sapmasızlık geri çekilir"
+    # okuması korunsun. (Ardışık HEATMAP_COLORS'ın aksine bu skala temaya göre
+    # değişiyor; orta noktanın zeminle uyumlu kalması buna bağlı.)
+    "PWM_DEVIATION_COLORS": ("#1f6fb8", "#e1e1db", "#c2701a"),
 }
 
 # Tema tercihi yeniden başlatınca uygulanır (canlı geçiş değil — bkz. tema
@@ -143,6 +155,7 @@ GRIDLINE = _ACTIVE_PALETTE["GRIDLINE"]
 AXIS_LINE = _ACTIVE_PALETTE["AXIS_LINE"]
 COLOR_CRITICAL = _ACTIVE_PALETTE["COLOR_CRITICAL"]
 COLOR_WARNING = _ACTIVE_PALETTE["COLOR_WARNING"]
+PWM_DEVIATION_COLORS = _ACTIVE_PALETTE["PWM_DEVIATION_COLORS"]
 
 # CustomTkinter widget'ları için (AÇIK, KOYU) renk ÇİFTLERİ. Yukarıdaki tekil
 # sabitlerle (SURFACE, ...) FARKI ve NEDEN ikisi de gerekli:
@@ -172,10 +185,25 @@ DEFAULT_CURRENT_IMBALANCE_THRESHOLD = 0.20
 DEFAULT_NEGATIVE_CURRENT_THRESHOLD = -0.1
 
 
-def _get_warning_thresholds() -> dict:
-    """Kaydedilmiş eşik ayarlarını okur, ayarlanmamış olanlar için varsayılan
-    değerleri kullanır. Hem backend'i --flag'lerle çağırırken hem de grafik
-    üzerindeki eşik çizgilerini çizerken tek bir yerden okunur."""
+# Eşikler araç tipi başına ayrı ayrı saklanabilir; bu sözlüğün anahtarı
+# meta.vehicle_type ("rover", "multirotor", ...). Bir tip için kayıt yoksa
+# genel (tipten bağımsız) eşikler geçerli olur.
+#
+# Neden tipe göre ayrı VARSAYILAN yok: örnek loglar ölçüldüğünde voltaj
+# düşümü tüm araç tiplerinde %0.5-6.2 aralığında çıktı (eşik %15) ve tipler
+# arasında anlamlı bir ayrışma görülmedi; dengesizlik ise her tipte sadece
+# 1-2 logda ölçülebiliyor. Tipe özel sayılar uydurmak yerine yapı kurulup
+# varsayılanlar ortak bırakıldı — kullanıcı kendi filosuna göre kalibre eder.
+SETTINGS_VEHICLE_THRESHOLDS_KEY = "thresholds_by_vehicle"
+THRESHOLD_KEYS = (
+    "voltage_sag_threshold",
+    "current_imbalance_threshold",
+    "negative_current_threshold",
+)
+
+
+def _get_general_thresholds() -> dict:
+    """Tipten bağımsız (genel) eşikler; hiç ayarlanmamışsa varsayılanlar."""
     settings = _load_settings()
     return {
         "voltage_sag_threshold": settings.get("voltage_sag_threshold", DEFAULT_VOLTAGE_SAG_THRESHOLD),
@@ -186,6 +214,36 @@ def _get_warning_thresholds() -> dict:
             "negative_current_threshold", DEFAULT_NEGATIVE_CURRENT_THRESHOLD
         ),
     }
+
+
+def _get_vehicle_threshold_overrides() -> dict:
+    """Araç tipi -> eşik sözlüğü. Sadece kullanıcının o tip için AYRICA
+    kaydettiği eşikler burada bulunur; hepsi backend'e geçirilir ve backend
+    ayrıştırdığı araç tipine uyanı seçer (bkz. selectThresholds, main.cpp).
+    Bozuk/eksik bir kayıt sessizce atlanır — ayar dosyası elle düzenlenmiş
+    olabilir."""
+    raw = _load_settings().get(SETTINGS_VEHICLE_THRESHOLDS_KEY, {})
+    if not isinstance(raw, dict):
+        return {}
+
+    overrides = {}
+    for vehicle_type, values in raw.items():
+        if not isinstance(values, dict):
+            continue
+        if all(isinstance(values.get(key), (int, float)) for key in THRESHOLD_KEYS):
+            overrides[vehicle_type] = {key: float(values[key]) for key in THRESHOLD_KEYS}
+    return overrides
+
+
+def _get_warning_thresholds(vehicle_type: str = None) -> dict:
+    """Verilen araç tipi için geçerli eşikler; o tipe özel kayıt yoksa genel
+    eşikler. Hem backend'i --flag'lerle çağırırken hem de grafik üzerindeki
+    eşik çizgilerini çizerken tek bir yerden okunur."""
+    if vehicle_type:
+        override = _get_vehicle_threshold_overrides().get(vehicle_type)
+        if override:
+            return override
+    return _get_general_thresholds()
 
 # Giriş (splash) ekranı için ayrı, "dikkat çekici" bir palet — sadece landing
 # ekranında kullanılır, analiz ekranının sakin koyu teması (SURFACE vb.)
@@ -270,6 +328,7 @@ MOTOR_VIEW_MODES = {
     "Çizgi Grafiği": "line",
     "Isı Haritası": "heatmap",
     "PWM Çıkışı": "pwm",
+    "PWM Sapma": "pwm_deviation",
 }
 MOTOR_VIEW_LABELS = {mode: label for label, mode in MOTOR_VIEW_MODES.items()}
 
@@ -823,6 +882,9 @@ class App(ctk.CTk):
         # PWM çıkışları motor akımından ayrı bir seri (bkz. _plot_pwm_lines);
         # aynı panelde ama farklı bir görünüm modunda çiziliyor.
         self._last_pwm_outputs = None
+        # Yüklü logun araç tipi: grafikteki eşik çizgileri backend'in o log
+        # için kullandığı eşiklerle AYNI olmalı, o yüzden saklanıyor.
+        self._last_vehicle_type = None
 
         self.voltage_view_mode = "voltage"  # "voltage" ya da "temperature" (üst panel)
         self.battery_view_mode = "line"  # "line" ya da "heatmap" (busbar yüklenmesi)
@@ -1233,7 +1295,7 @@ class App(ctk.CTk):
         ).pack(side="left", padx=(0, 8))
 
         self.motor_view_toggle = ctk.CTkSegmentedButton(
-            toggle_row, values=["Çizgi Grafiği", "Isı Haritası", "PWM Çıkışı"],
+            toggle_row, values=list(MOTOR_VIEW_MODES),
             command=self._on_motor_view_change,
         )
         self.motor_view_toggle.set(MOTOR_VIEW_LABELS[self.motor_view_mode])
@@ -1359,7 +1421,7 @@ class App(ctk.CTk):
         matplotlib figürü ctk'nin dışında olduğundan renkleri elle güncellenip
         yeniden çizilir."""
         global ACTIVE_THEME, SURFACE, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED
-        global GRIDLINE, AXIS_LINE, COLOR_CRITICAL, COLOR_WARNING
+        global GRIDLINE, AXIS_LINE, COLOR_CRITICAL, COLOR_WARNING, PWM_DEVIATION_COLORS
 
         new_theme = "dark" if ACTIVE_THEME == "light" else "light"
         settings = _load_settings()
@@ -1379,6 +1441,7 @@ class App(ctk.CTk):
         AXIS_LINE = palette["AXIS_LINE"]
         COLOR_CRITICAL = palette["COLOR_CRITICAL"]
         COLOR_WARNING = palette["COLOR_WARNING"]
+        PWM_DEVIATION_COLORS = palette["PWM_DEVIATION_COLORS"]
 
         # (2) Tüm pencereyi HEDEF renkte tek bir opak dikdörtgenle (örtü) kapla.
         # Neden: Windows, tema değişiminde her widget'ı (kutuyu) AYRI bir bölge
@@ -1439,12 +1502,17 @@ class App(ctk.CTk):
         akım A) düzenleyen basit bir pencere. Değerler her yüklemede backend'e
         --flag olarak geçiliyor (bkz. _run_backend); burada sadece diske
         yazılır. Bir dosya zaten yüklüyse, kaydedince yeni eşiklerle otomatik
-        yeniden yüklenir — kullanıcı farkı hemen görsün diye."""
-        thresholds = _get_warning_thresholds()
+        yeniden yüklenir — kullanıcı farkı hemen görsün diye.
 
+        Eşikler ARAÇ TİPİ BAŞINA saklanabilir: üstteki seçici "Genel"deyken
+        tüm araçlar için geçerli değerler, bir araç tipi seçiliyken sadece o
+        tip için geçerli olanlar düzenlenir. Açılışta, yüklü logun araç tipi
+        varsa doğrudan o seçili gelir. Varsayılanlar tüm tiplerde aynıdır —
+        örnek loglarda araç tipine göre farklı sayılar önermeyi destekleyen
+        bir ayrışma ölçülmedi (bkz. SETTINGS_VEHICLE_THRESHOLDS_KEY)."""
         dialog = ctk.CTkToplevel(self)
         dialog.title("Uyarı Eşikleri")
-        dialog.geometry("380x300")
+        dialog.geometry("400x400")
         dialog.transient(self)
         dialog.grab_set()
 
@@ -1452,21 +1520,70 @@ class App(ctk.CTk):
             dialog, text="Uyarı Eşikleri", font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(pady=(16, 8))
 
+        # Seçici etiketi -> ayarların saklanacağı araç tipi (None = genel).
+        scope_options = {"Genel (tüm araçlar)": None}
+        for vehicle_type, label in VEHICLE_TYPE_LABELS.items():
+            scope_options[f"Sadece {label}"] = vehicle_type
+
+        scope_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        scope_row.pack(fill="x", padx=20, pady=(0, 4))
+        ctk.CTkLabel(
+            scope_row, text="Hangi araç için?", text_color=TEXT_SECONDARY, anchor="w",
+        ).pack(side="top", fill="x")
+        scope_menu = ctk.CTkOptionMenu(scope_row, values=list(scope_options))
+        scope_menu.pack(side="top", fill="x", pady=(4, 0))
+
+        # Yüklü logun tipi varsa doğrudan onunla açılır: kullanıcı çoğunlukla
+        # az önce baktığı uçuş için eşik ayarlamak ister.
+        current_label = next(
+            (label for label, value in scope_options.items() if value == self._last_vehicle_type),
+            "Genel (tüm araçlar)",
+        )
+        scope_menu.set(current_label)
+
         fields = [
-            ("voltage_sag_pct", "Voltaj Düşümü Eşiği (%)", thresholds["voltage_sag_threshold"] * 100),
-            ("current_imbalance_pct", "Akım Dengesizliği Eşiği (%)",
-             thresholds["current_imbalance_threshold"] * 100),
-            ("negative_current_a", "Negatif Akım Eşiği (A)", thresholds["negative_current_threshold"]),
+            ("voltage_sag_pct", "Voltaj Düşümü Eşiği (%)"),
+            ("current_imbalance_pct", "Akım Dengesizliği Eşiği (%)"),
+            ("negative_current_a", "Negatif Akım Eşiği (A)"),
         ]
         entries = {}
-        for key, label, value in fields:
+        for key, label in fields:
             row = ctk.CTkFrame(dialog, fg_color="transparent")
             row.pack(fill="x", padx=20, pady=6)
             ctk.CTkLabel(row, text=label, text_color=TEXT_SECONDARY, anchor="w").pack(side="top", fill="x")
             entry = ctk.CTkEntry(row)
-            entry.insert(0, f"{value:g}")
             entry.pack(side="top", fill="x", pady=(4, 0))
             entries[key] = entry
+
+        hint_label = ctk.CTkLabel(dialog, text="", text_color=TEXT_MUTED, font=ctk.CTkFont(size=11))
+        hint_label.pack(pady=(2, 0))
+
+        def fill_fields(scope_label: str):
+            """Seçilen kapsamın kayıtlı değerlerini alanlara yazar. O kapsam
+            için özel bir kayıt yoksa genel değerler gösterilir (kullanıcı
+            kaydetmedikçe yeni bir kayıt oluşmaz)."""
+            vehicle_type = scope_options.get(scope_label)
+            overrides = _get_vehicle_threshold_overrides()
+            has_override = vehicle_type is not None and vehicle_type in overrides
+            values = overrides[vehicle_type] if has_override else _get_general_thresholds()
+
+            for key, value in (
+                ("voltage_sag_pct", values["voltage_sag_threshold"] * 100),
+                ("current_imbalance_pct", values["current_imbalance_threshold"] * 100),
+                ("negative_current_a", values["negative_current_threshold"]),
+            ):
+                entries[key].delete(0, "end")
+                entries[key].insert(0, f"{value:g}")
+
+            if vehicle_type is None:
+                hint_label.configure(text="Kendi eşiği tanımlı olmayan tüm araçlar için geçerli.")
+            elif has_override:
+                hint_label.configure(text="Bu araç tipinin kendi eşikleri tanımlı.")
+            else:
+                hint_label.configure(text="Şu an genel eşikleri kullanıyor; kaydedersen ayrılır.")
+
+        fill_fields(scope_menu.get())
+        scope_menu.configure(command=fill_fields)
 
         error_label = ctk.CTkLabel(dialog, text="", text_color=COLOR_CRITICAL)
         error_label.pack(pady=(4, 0))
@@ -1486,10 +1603,21 @@ class App(ctk.CTk):
                 error_label.configure(text="Negatif akım eşiği 0'dan küçük olmalı.")
                 return
 
+            values = {
+                "voltage_sag_threshold": voltage_sag_pct / 100,
+                "current_imbalance_threshold": current_imbalance_pct / 100,
+                "negative_current_threshold": negative_current_a,
+            }
             settings = _load_settings()
-            settings["voltage_sag_threshold"] = voltage_sag_pct / 100
-            settings["current_imbalance_threshold"] = current_imbalance_pct / 100
-            settings["negative_current_threshold"] = negative_current_a
+            vehicle_type = scope_options.get(scope_menu.get())
+            if vehicle_type is None:
+                settings.update(values)
+            else:
+                by_vehicle = settings.get(SETTINGS_VEHICLE_THRESHOLDS_KEY)
+                if not isinstance(by_vehicle, dict):
+                    by_vehicle = {}
+                by_vehicle[vehicle_type] = values
+                settings[SETTINGS_VEHICLE_THRESHOLDS_KEY] = by_vehicle
             _save_settings(settings)
             dialog.destroy()
 
@@ -2006,17 +2134,24 @@ class App(ctk.CTk):
             )
 
         output_path = Path(tempfile.gettempdir()) / "iha_power_log_output.json"
-        thresholds = _get_warning_thresholds()
-        result = subprocess.run(
-            [
-                str(BACKEND_EXE), input_path, str(output_path),
-                f"--voltage-sag={thresholds['voltage_sag_threshold']}",
-                f"--current-imbalance={thresholds['current_imbalance_threshold']}",
-                f"--negative-current={thresholds['negative_current_threshold']}",
-            ],
-            capture_output=True,
-            text=True,
-        )
+        thresholds = _get_general_thresholds()
+        command = [
+            str(BACKEND_EXE), input_path, str(output_path),
+            f"--voltage-sag={thresholds['voltage_sag_threshold']}",
+            f"--current-imbalance={thresholds['current_imbalance_threshold']}",
+            f"--negative-current={thresholds['negative_current_threshold']}",
+        ]
+        # Araç tipine özel eşiklerin HEPSİ geçiriliyor: hangisinin geçerli
+        # olduğuna backend karar veriyor, çünkü araç tipi ancak log
+        # ayrıştırıldıktan sonra biliniyor. Böylece log tek geçişte okunuyor.
+        for vehicle_type, values in sorted(_get_vehicle_threshold_overrides().items()):
+            command.append(
+                f"--vehicle-thresholds={vehicle_type}"
+                f":{values['voltage_sag_threshold']}"
+                f":{values['current_imbalance_threshold']}"
+                f":{values['negative_current_threshold']}"
+            )
+        result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode != 0:
             message = result.stderr.strip() or f"Backend hata koduyla sonlandı: {result.returncode}"
             raise RuntimeError(message)
@@ -2059,6 +2194,7 @@ class App(ctk.CTk):
 
         Log araç tipini içermiyorsa ("unknown", ör. eski ArduPilot logları ya
         da sentetik test dosyaları) etiket eklenmez, sadece dosya adı kalır."""
+        self._last_vehicle_type = meta.get("vehicle_type") or None
         label = VEHICLE_TYPE_LABELS.get(meta.get("vehicle_type", "unknown"))
         file_name = Path(self._last_loaded_path).name if self._last_loaded_path else ""
         self.file_label.configure(text=f"{file_name} · {label}" if label else file_name)
@@ -2077,7 +2213,8 @@ class App(ctk.CTk):
     def _plot_voltage_lines(self, batteries: list):
         self._style_axes(self.ax_voltage, "Voltaj (V)")
 
-        voltage_sag_threshold = _get_warning_thresholds()["voltage_sag_threshold"]
+        voltage_sag_threshold = _get_warning_thresholds(
+            self._last_vehicle_type)["voltage_sag_threshold"]
         for i, battery in enumerate(batteries):
             color, linestyle = _series_style(i)
             self.ax_voltage.plot(
@@ -2184,7 +2321,10 @@ class App(ctk.CTk):
             sum(b["current_a"]) / len(b["current_a"])
             for b in _with_current_data(batteries) if b["current_a"]
         ]
-        _draw_imbalance_band(self.ax_current, means, _get_warning_thresholds()["current_imbalance_threshold"])
+        _draw_imbalance_band(
+            self.ax_current, means,
+            _get_warning_thresholds(self._last_vehicle_type)["current_imbalance_threshold"],
+        )
 
     def _plot_battery_heatmap(self, batteries: list):
         """Batarya/busbar x zaman ısı haritası: renk = o andaki toplam akım.
@@ -2250,6 +2390,8 @@ class App(ctk.CTk):
             # PWM, motor akımından bağımsız bir seri; parametreden değil
             # saklanan son yüklemeden okunur (bkz. _build_motor_view_toggle).
             self._plot_pwm_lines(self._last_pwm_outputs or [])
+        elif self.motor_view_mode == "pwm_deviation":
+            self._plot_pwm_deviation_heatmap(self._last_pwm_outputs or [])
         elif self.motor_view_mode == "heatmap":
             self._plot_motor_heatmap(motors)
         else:
@@ -2288,7 +2430,10 @@ class App(ctk.CTk):
             sum(m["current_a"]) / len(m["current_a"])
             for m in _with_current_data(motors) if m["current_a"]
         ]
-        _draw_imbalance_band(self.ax_motors, means, _get_warning_thresholds()["current_imbalance_threshold"])
+        _draw_imbalance_band(
+            self.ax_motors, means,
+            _get_warning_thresholds(self._last_vehicle_type)["current_imbalance_threshold"],
+        )
 
     def _plot_pwm_lines(self, pwm_outputs: list):
         """Uçuş kontrolcüsünün çıkış kanallarının PWM darbe genişliğini çizer.
@@ -2323,6 +2468,71 @@ class App(ctk.CTk):
             loc="upper right", facecolor=SURFACE, edgecolor=AXIS_LINE,
             labelcolor=TEXT_SECONDARY, fontsize=9, ncol=2 if len(pwm_outputs) > 4 else 1,
         )
+
+    def _plot_pwm_deviation_heatmap(self, pwm_outputs: list):
+        """PWM kanallarının, AYNI çıkış rayındaki diğer kanalların o andaki
+        ortalamasından farkını ısı haritası olarak çizer.
+
+        Neden mutlak PWM değil: gerçek loglarla denendi ve mutlak skala
+        okunaksız çıktı. Aynı haritada hem motorlar (uçuş boyunca ~1000-1750
+        arasında, birbirine çok yakın) hem de servo/gimbal kanalları (900-2100,
+        çoğu zaman uçta sabit) bulunuyor; servolar skalayı domine edip
+        motorlar arasındaki asıl bilgiyi -- birinin diğerlerinden fazla
+        çalışması -- tek düze bir renge çeviriyordu. Kanal başına normalize
+        etmek de işe yaramadı (motorlar zaten senkron hareket ettiği için
+        hepsi aynı desene dönüşüyor). Kasıtlı olarak +120us kaydırılmış bir
+        motorla test edildiğinde sadece bu sapma görünümü dengesizliği açıkça
+        gösterdi.
+
+        Gruplama, backend'in ürettiği etiketin ilk kelimesine ("MAIN", "AUX",
+        "Kanal") göre yapılıyor — bunlar donanımdaki ayrı çıkış rayları, yani
+        "hangi kanal motor" tahmini YAPILMIYOR (bkz. shared/power_log_schema.md).
+        Sadece aynı raydaki kanallar birbiriyle karşılaştırılıyor. Tek kanallı
+        bir grupta karşılaştırma anlamsız olduğundan o satır nötr (0) kalır."""
+        self._style_axes(self.ax_motors, "PWM Sapması (µs)")
+        self.ax_motors.set_xlabel("Zaman (s)", color=TEXT_SECONDARY)
+        self.ax_motors.grid(False)  # ısı haritasında gridline gürültü yapar
+
+        if not pwm_outputs:
+            self.ax_motors.text(
+                0.5, 0.5, NO_PWM_DATA_MESSAGE, transform=self.ax_motors.transAxes,
+                ha="center", va="center", color=TEXT_MUTED,
+            )
+            return
+
+        all_times = sorted({t for output in pwm_outputs for t in output["time_s"]})
+        grid = np.array([
+            np.interp(all_times, output["time_s"], output["pwm_us"])
+            for output in pwm_outputs
+        ])
+
+        groups = {}
+        for index, output in enumerate(pwm_outputs):
+            groups.setdefault(output["label"].rsplit(" ", 1)[0], []).append(index)
+
+        deviation = np.zeros_like(grid)
+        for rows in groups.values():
+            if len(rows) < 2:
+                continue
+            block = grid[rows]
+            deviation[rows] = block - block.mean(axis=0)
+
+        # Renk sınırı simetrik: 0 (sapma yok) her zaman skalanın tam ortasındaki
+        # nötr griye denk gelmeli, yoksa "az sapma" ile "hiç sapma" karışır.
+        limit = max(float(np.abs(deviation).max()), 1.0)
+        cmap = LinearSegmentedColormap.from_list("pwm_deviation", PWM_DEVIATION_COLORS)
+        image = self.ax_motors.imshow(
+            deviation, aspect="auto", origin="lower", cmap=cmap,
+            vmin=-limit, vmax=limit,
+            extent=[all_times[0], all_times[-1], 0.5, len(pwm_outputs) + 0.5],
+        )
+        self.ax_motors.set_yticks(range(1, len(pwm_outputs) + 1))
+        self.ax_motors.set_yticklabels([output["label"] for output in pwm_outputs])
+
+        self._motors_cax.axis("on")
+        self._motor_colorbar = self.figure.colorbar(image, cax=self._motors_cax)
+        self._motor_colorbar.set_label("Ray ortalamasından fark (µs)", color=TEXT_SECONDARY)
+        self._motor_colorbar.ax.tick_params(colors=TEXT_MUTED)
 
     def _plot_motor_heatmap(self, motors: list):
         """Motor x zaman ısı haritası: renk = o andaki akım.

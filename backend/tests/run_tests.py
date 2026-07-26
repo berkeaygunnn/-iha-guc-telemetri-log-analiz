@@ -397,6 +397,94 @@ class WarningThresholdOverrideTests(unittest.TestCase):
             path.unlink(missing_ok=True)
 
 
+class VehicleSpecificThresholdTests(unittest.TestCase):
+    """--vehicle-thresholds=<tip>:<sag>:<dengesizlik>:<negatif> araç tipine
+    özel eşikler tanımlar. Eşikler backend'e çağrı ANINDA veriliyor ama araç
+    tipi ancak log ayrıştırıldıktan sonra biliniyor; bu yüzden frontend tüm
+    tiplerin eşiklerini birden geçiriyor ve doğru olan burada seçiliyor
+    (bkz. selectThresholds). Eşleşen tip yoksa genel eşikler geçerli."""
+
+    def _two_battery_imbalance_log(self) -> bytes:
+        """Batarya 1 ortalama 11A, batarya 2 ortalama 9A -> genel ortalamadan
+        %10 sapma: varsayılan %20 eşiğini geçmez, %5'lik bir eşiği geçer.
+        Voltaj sabit tutuluyor ki sag uyarısı karışmasın."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(0.0, 0, 16.8, 11.0)
+        out += make_synthetic_log.build_bat_message(6.0, 0, 16.8, 11.0)
+        out += make_synthetic_log.build_bat_message(0.0, 1, 16.8, 9.0)
+        out += make_synthetic_log.build_bat_message(6.0, 1, 16.8, 9.0)
+        return bytes(out)
+
+    def test_matching_vehicle_type_thresholds_are_applied(self):
+        """Gerçek bir multirotor logunda, multirotor için tanımlanan sıkı
+        eşik devreye girmeli."""
+        default_warnings = run_backend(DATA_DIR / "px4_hexarotor_flight.ulg")["warnings"]
+        strict = run_backend(
+            DATA_DIR / "px4_hexarotor_flight.ulg",
+            ["--vehicle-thresholds=multirotor:0.15:0.05:-0.1"],
+        )["warnings"]
+        self.assertGreater(len(strict), len(default_warnings))
+
+    def test_non_matching_vehicle_type_is_ignored(self):
+        """Aynı sıkı eşik BAŞKA bir araç tipine tanımlıysa etkisiz kalmalı —
+        özelliğin özü bu ayrım."""
+        default_warnings = run_backend(DATA_DIR / "px4_hexarotor_flight.ulg")["warnings"]
+        other = run_backend(
+            DATA_DIR / "px4_hexarotor_flight.ulg",
+            ["--vehicle-thresholds=rover:0.15:0.05:-0.1"],
+        )["warnings"]
+        self.assertEqual(len(other), len(default_warnings))
+
+    def test_vehicle_specific_overrides_general_flag(self):
+        """Hem genel --current-imbalance hem de araç tipine özel eşik varsa,
+        araç tipine özel olan kazanmalı (daha dar kapsamlı olan)."""
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(self._two_battery_imbalance_log())
+            path = Path(f.name)
+        try:
+            # Sentetik ArduPilot logunda MSG yok -> vehicle_type "unknown".
+            self.assertEqual(run_backend(path)["meta"]["vehicle_type"], "unknown")
+            # Genel eşik gevşek (%50) ama "unknown" tipine sıkı (%5) tanımlı.
+            warnings = run_backend(path, [
+                "--current-imbalance=0.50",
+                "--vehicle-thresholds=unknown:0.15:0.05:-0.1",
+            ])["warnings"]
+            self.assertEqual(len(warnings), 2)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_general_flag_used_when_no_vehicle_entry_matches(self):
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(self._two_battery_imbalance_log())
+            path = Path(f.name)
+        try:
+            warnings = run_backend(path, [
+                "--current-imbalance=0.05",
+                "--vehicle-thresholds=rover:0.15:0.50:-0.1",  # log "unknown", eslesmez
+            ])["warnings"]
+            self.assertEqual(len(warnings), 2)  # genel siki esik gecerli
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_malformed_vehicle_threshold_arg_is_ignored(self):
+        """Eksik alan/sayıya çevrilemeyen değer, diğer --flag'lerdeki gibi
+        sessizce yok sayılmalı; backend çökmemeli."""
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(self._two_battery_imbalance_log())
+            path = Path(f.name)
+        try:
+            for bad in ("--vehicle-thresholds=rover:0.15",
+                        "--vehicle-thresholds=rover:a:b:c",
+                        "--vehicle-thresholds=",
+                        "--vehicle-thresholds=:0.1:0.1:-0.1"):
+                self.assertEqual(run_backend(path, [bad])["warnings"], [])
+        finally:
+            path.unlink(missing_ok=True)
+
+
 class CapacityAndRemainingTests(unittest.TestCase):
     """CurrTot/RemPct (ArduPilot) ve discharged_mah/remaining (PX4) opsiyonel
     kapasite/kalan-yüzde alanlarının doğru parse edildiğini, bu alanlar logda
