@@ -332,6 +332,15 @@ MOTOR_VIEW_MODES = {
 }
 MOTOR_VIEW_LABELS = {mode: label for label, mode in MOTOR_VIEW_MODES.items()}
 
+# Dışa aktarma açılır menüsü: etiket -> App üzerindeki işleyicinin adı.
+# Menünün kendi başlığı seçim yapılsa da değişmez (bkz. _on_export_selected).
+EXPORT_MENU_LABEL = "Dışa Aktar"
+EXPORT_MENU_ACTIONS = {
+    "Grafik (PNG)": "_on_export_png_click",
+    "Rapor (PDF)": "_on_export_pdf_click",
+    "Ham veri (CSV)": "_on_export_csv_click",
+}
+
 # meta.vehicle_type (backend) -> arayüzde gösterilecek Türkçe etiket.
 VEHICLE_TYPE_LABELS = {
     "multirotor": "Multirotor",
@@ -1471,20 +1480,21 @@ class App(ctk.CTk):
         )
         self.settings_button.pack(side="right", padx=(0, 12))
 
-        self.export_button = ctk.CTkButton(
-            toolbar, text="Grafiği Kaydet (PNG) (Ctrl+S)", command=self._on_export_png_click
+        # Üç ayrı dışa aktarma butonu yerine tek açılır menü: ölçüldü, üç
+        # buton toolbar'ın istediği genişliği 1638px'e çıkarıyordu ve 1360px'lik
+        # yaygın bir ekranda "Temizle"/"CSV" butonları ekran dışında kalıyordu.
+        # Menü aynı işi ~150px'te yapıyor ve ileride yeni bir biçim eklenirse
+        # toolbar'ı yine büyütmüyor.
+        #
+        # CTkOptionMenu burada bir "seçim" değil EYLEM menüsü olarak
+        # kullanılıyor: seçim kalıcı değil, her seçimden sonra etiket geri
+        # dönüyor (recent_menu de aynı deseni kullanıyor).
+        self.export_menu = ctk.CTkOptionMenu(
+            toolbar, values=list(EXPORT_MENU_ACTIONS), command=self._on_export_selected,
+            width=150,
         )
-        self.export_button.pack(side="right", padx=(0, 12))
-
-        self.pdf_export_button = ctk.CTkButton(
-            toolbar, text="Rapor Kaydet (PDF)", command=self._on_export_pdf_click
-        )
-        self.pdf_export_button.pack(side="right", padx=(0, 12))
-
-        self.csv_export_button = ctk.CTkButton(
-            toolbar, text="CSV Dışa Aktar", command=self._on_export_csv_click
-        )
-        self.csv_export_button.pack(side="right", padx=(0, 12))
+        self.export_menu.set(EXPORT_MENU_LABEL)
+        self.export_menu.pack(side="right", padx=(0, 12))
 
         self.clear_button = ctk.CTkButton(
             toolbar, text="Temizle", fg_color="transparent", border_width=1,
@@ -1611,6 +1621,16 @@ class App(ctk.CTk):
             # yumuşak görünür.
             overlay.destroy()
             self.update_idletasks()
+
+    def _on_export_selected(self, choice: str):
+        """Dışa aktarma menüsünden bir biçim seçildiğinde ilgili kaydetme
+        akışını başlatır. Menü bir seçim değil eylem listesi olduğu için
+        etiket hemen geri alınıyor — aksi halde son seçilen biçim menüde
+        seçili kalır ve "şu an CSV modundayım" gibi yanlış bir izlenim verir."""
+        self.export_menu.set(EXPORT_MENU_LABEL)
+        handler = EXPORT_MENU_ACTIONS.get(choice)
+        if handler:
+            getattr(self, handler)()
 
     def _on_settings_click(self):
         """Uyarı eşiklerini (voltaj düşümü %, akım dengesizliği %, negatif

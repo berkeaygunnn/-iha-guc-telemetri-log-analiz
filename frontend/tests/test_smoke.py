@@ -158,6 +158,27 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(self.app.file_label.cget("text"), "Henüz dosya seçilmedi.")
         self.assertEqual(self.app.stat_labels["duration"].cget("text"), "—")
 
+    def test_export_menu_triggers_handler_and_resets_label(self):
+        """Dışa aktarma menüsü bir seçim değil eylem listesi: seçilen biçimin
+        işleyicisi çalışmalı ve etiket hemen geri dönmeli, yoksa menüde
+        "şu an CSV modundayım" gibi yanlış bir izlenim kalır."""
+        self._load_and_plot("synthetic_test_log.BIN")
+        self.assertEqual(self.app.export_menu.get(), frontend_main.EXPORT_MENU_LABEL)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = str(Path(tmp_dir) / "veri.csv")
+            with patch("main.filedialog.asksaveasfilename", return_value=out_path):
+                self.app._on_export_selected("Ham veri (CSV)")
+            self.assertTrue(Path(out_path).exists())
+
+        self.assertEqual(self.app.export_menu.get(), frontend_main.EXPORT_MENU_LABEL)
+
+    def test_export_menu_lists_every_supported_format(self):
+        values = self.app.export_menu.cget("values")
+        self.assertEqual(list(values), list(frontend_main.EXPORT_MENU_ACTIONS))
+        for handler in frontend_main.EXPORT_MENU_ACTIONS.values():
+            self.assertTrue(hasattr(self.app, handler), handler)
+
     def test_export_png_creates_file(self):
         self._load_and_plot("synthetic_test_log.BIN")
         with tempfile.TemporaryDirectory() as tmp_dir:
