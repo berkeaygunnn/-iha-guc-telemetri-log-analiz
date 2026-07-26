@@ -107,9 +107,9 @@ eksenleri örtüşmüyor ve batarya sınıfları farklı (3S/6S); özet metrikle
 - Son kullanılan dosyalar (en fazla 5) kalıcıdır; uygulama kapanıp açılınca
   korunur ve açılır listeden tek tıkla yüklenir.
 - **Temizle** butonuyla ekranı sıfırlayıp temiz bir durumdan başlama.
-- Üst araç çubuğu pencere genişliğine uyum sağlar: yer kalmayınca butonlar
-  ikinci satıra iner, uzun dosya adları kısaltılıp tamamı fare ipucunda
-  gösterilir — hiçbir buton ekran dışında kalmaz.
+- Üst araç çubuğu ve istatistik satırı pencere genişliğine uyum sağlar: yer
+  kalmayınca butonlar ve kutucuklar alt satıra iner, uzun dosya adları
+  kısaltılıp tamamı fare ipucunda gösterilir — hiçbiri ekran dışında kalmaz.
 - Klavye kısayolları: Ctrl+O (dosya yükle), Ctrl+S (grafiği PNG kaydet).
 
 ## Mimari

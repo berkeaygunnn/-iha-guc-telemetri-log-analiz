@@ -367,6 +367,8 @@ TOOLBAR_GAP = 12  # bileşenler arası boşluk (px)
 # karar verilseydi uzun bir dosya adı toolbar'ı gereksiz yere ikinci satıra
 # sarardı (etiket zaten kısaltılabiliyor, butonlar kısaltılamıyor).
 TOOLBAR_FILE_LABEL_MIN_WIDTH = 120
+# Üst istatistik satırındaki kutucuklar arası boşluk (bkz. _layout_stats_row).
+STATS_TILE_GAP = 8
 
 EXPORT_MENU_LABEL = "Dışa Aktar"
 EXPORT_MENU_ACTIONS = {
@@ -2148,26 +2150,98 @@ class App(ctk.CTk):
             self._load_file(file_path)
 
     def _build_stats_row(self):
-        """Dosya yüklendikten sonra süre/örnek sayısı/aralık gibi özet değerleri gösteren satır."""
+        """Dosya yüklendikten sonra süre/örnek sayısı/aralık gibi özet değerleri
+        gösteren satır.
+
+        Kutucuklar `grid` ile yerleşiyor (yan yana pack DEĞİL): dokuz kutucuk
+        dar bir pencereye sığmıyor ve sağdakiler kesiliyordu. Sütun sayısı
+        pencere genişliğine göre seçilip artan kutucuklar alt satıra iniyor
+        (bkz. _layout_stats_row)."""
         self.stats_row = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
         self.stats_row.pack(side="top", fill="x", padx=16, pady=(0, 8))
 
         self.stat_labels = {}
+        self._stat_tiles = []
         for key, title in STAT_TILE_DEFINITIONS:
             tile = ctk.CTkFrame(self.stats_row, fg_color=UI_GRIDLINE, corner_radius=8)
-            tile.pack(side="left", padx=(0, 8), ipadx=12, ipady=8)
 
             # fill="x" + anchor="center": metin kutunun tam soluna değil,
             # ortasına doğru kayar (tile genişliği en uzun değere göre
             # otomatik ayarlanır, metin o genişlik içinde ortalanır).
             ctk.CTkLabel(
                 tile, text=title, text_color=UI_TEXT_MUTED, font=ctk.CTkFont(size=11)
-            ).pack(fill="x", anchor="center")
+            ).pack(fill="x", anchor="center", padx=12, pady=(8, 0))
             value_label = ctk.CTkLabel(
                 tile, text="—", text_color=UI_TEXT_PRIMARY, font=ctk.CTkFont(size=15, weight="bold")
             )
-            value_label.pack(fill="x", anchor="center")
+            value_label.pack(fill="x", anchor="center", padx=12, pady=(0, 8))
             self.stat_labels[key] = value_label
+            self._stat_tiles.append(tile)
+
+        self._stat_columns = None  # henüz yerleşmedi
+        self._layout_stats_row()
+        self.stats_row.bind("<Configure>", self._on_stats_row_configure)
+
+    @staticmethod
+    def _stat_row_width(widths: list, columns: int) -> int:
+        """Belirli bir sütun sayısıyla satırın kaplayacağı genişlik. Sütun
+        genişliği, o sütuna düşen kutucukların EN GENİŞİ kadar olur (grid
+        kuralı) — kutucuklar eşit genişlikte değil ("Süre" 79px, "Voltaj
+        Aralığı" 133px), bu yüzden basit bir bölme doğru sonucu vermiyor."""
+        total = 0
+        for column in range(columns):
+            in_column = widths[column::columns]
+            if in_column:
+                total += max(in_column) + STATS_TILE_GAP
+        return total
+
+    def _stat_columns_that_fit(self, widths: list, available: int) -> int:
+        """Kutucukların sığdığı sütun sayısı.
+
+        Önce sığan en fazla sütun bulunuyor; sarma gerekiyorsa sütunlar
+        satırlara EŞİT dağıtılıyor. Yoksa dokuz kutucuk sekiz sütuna sığdığında
+        yerleşim 8+1 oluyordu — tek başına kalan kutucuk hata gibi duruyordu;
+        aynı iki satırda 5+4 hem dengeli hem de daha dar."""
+        widest = 1
+        for columns in range(len(widths), 1, -1):
+            if self._stat_row_width(widths, columns) <= available:
+                widest = columns
+                break
+
+        rows = -(-len(widths) // widest)  # yukarı yuvarlayan bölme
+        balanced = -(-len(widths) // rows)
+        if balanced < widest and self._stat_row_width(widths, balanced) <= available:
+            return balanced
+        return widest
+
+    def _layout_stats_row(self, width: int = None):
+        """Kutucukları, sığdıkları kadar sütunla ızgaraya yerleştirir."""
+        if width is None:
+            width = self.stats_row.winfo_width()
+        widths = [tile.winfo_reqwidth() for tile in self._stat_tiles]
+        columns = self._stat_columns_that_fit(widths, width)
+        if self._stat_columns == columns:
+            return
+        self._stat_columns = columns
+
+        for index, tile in enumerate(self._stat_tiles):
+            row = index // columns
+            tile.grid(
+                row=row, column=index % columns, sticky="w",
+                padx=(0, STATS_TILE_GAP), pady=(0 if row == 0 else STATS_TILE_GAP, 0),
+            )
+
+    def _on_stats_row_configure(self, event=None):
+        # <Configure> sırasında winfo_width() eski değeri veriyor; yeni genişlik
+        # olay nesnesinde (aynı tuzak toolbar'da da vardı, bkz. _toolbar_width).
+        self._layout_stats_row(event.width if event is not None else None)
+
+    def _refresh_stats_layout(self):
+        """Kutucuk metinleri değiştikten sonra yerleşimi yeniden hesaplar.
+        `after_idle`: Tk genişlik hesabını boşta yapıyor, hemen okunan
+        `winfo_reqwidth()` eski metnin genişliğini verirdi."""
+        self._stat_columns = None  # genişlikler değişti, kararı yenile
+        self.after_idle(self._layout_stats_row)
 
     def _build_warnings_area(self):
         """Backend'in kural tabanlı ürettiği uyarıları (ör. aşırı voltaj düşümü,
@@ -2620,6 +2694,7 @@ class App(ctk.CTk):
         self.status_label.configure(text="")
         self._update_warnings([])
         self._update_stats([])
+        self._refresh_stats_layout()  # kutucuklar "—"ye döndü, daralabilirler
         self._last_batteries = None
         self._last_motors = None
         self._last_pwm_outputs = None
@@ -2682,6 +2757,9 @@ class App(ctk.CTk):
         self._update_vehicle_label(data.get("meta", {}))
         self._update_stats(batteries)
         self._update_capacity_stats(batteries)
+        # Yeni değerler kutucukların genişliğini değiştirdi; kaç sütunun
+        # sığdığı yeniden hesaplansın.
+        self._refresh_stats_layout()
         self._update_warnings(data.get("warnings", []))
 
         self._plot_voltage_panel(batteries)
