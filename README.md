@@ -60,7 +60,9 @@ PWM çıkışı motorun ne yaptığını yine de gösteriyor.*
   tüketimi (Wh), tepe güç (W), tahmini iç direnç (mΩ), tüketilen kapasite
   (mAh) ve tahmini kalan süre.
 - Yakınlaştırma/kaydırma araç çubuğu (kalıcı pan, tek tuşla görünüm sıfırlama)
-  ve çizgi grafiklerinde imlecin altındaki en yakın örneği gösteren tooltip.
+  ve imlecin altındaki değeri gösteren tooltip — çizgi grafiklerinde en yakın
+  örnek, ısı haritalarında ise imlecin üstündeki hücre (hangi motor/batarya/
+  kanal, hangi an, hangi değer).
 - **Açık/koyu tema** arasında canlı geçiş — pencere kapanıp açılmaz, tercih
   kalıcıdır.
 
