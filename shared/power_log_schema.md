@@ -14,7 +14,7 @@ Birden fazla batarya ya da motor olabileceği için ikisi de dizi.
     "format": "ardupilot" | "px4",
     "vehicle_type": "multirotor" | "fixed_wing" | "rover" | "vtol" |
                     "airship" | "submarine" | "unknown",  // bkz. aşağı
-    "duration_s": number     // uçuşun toplam süresi (tüm bataryaların en sonuncusu)
+    "duration_s": number     // kaydın ilk ve son örneği arasındaki SÜRE (bkz. aşağı)
   },
   "batteries": [
     {
@@ -67,6 +67,14 @@ olur; bu bir hata değildir, frontend bu durumda ilgili kutucukta "—" gösteri
 `current_a` gibi `time_s` ile aynı uzunlukta. Log bu alanı hiç içermiyorsa
 dizi boştur (`[]`); frontend bu durumda "Sıcaklık" görünümünde o bataryayı
 çizmez.
+
+## `duration_s` alanı
+
+Kaydın **ilk ve son örneği arasında geçen süre** — son zaman damgasının
+kendisi değil. Bu ayrım şart: PX4 logları uçuş kontrolcüsünün açılışından
+beri geçen süreyi damgalıyor, sıfırdan başlamıyor.
+`data/px4_fixed_wing_flight.ulg`'de ilk örnek 4013.9 s'de, son örnek
+4104.7 s'de; süre 90.8 saniyedir, 4104.7 değil.
 
 ## `has_current_data` alanı
 

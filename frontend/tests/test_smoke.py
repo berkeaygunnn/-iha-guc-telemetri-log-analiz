@@ -809,6 +809,106 @@ class SmokeTests(unittest.TestCase):
             threshold_lines[0].get_ydata()[0], first_voltage * (1 - 0.02), places=3
         )
 
+    # --- Çoklu uçuş karşılaştırma ---------------------------------------------
+
+    def test_flight_duration_excludes_boot_time_offset(self):
+        """PX4 logları uçuş kontrolcüsünün açılışından beri geçen süreyi
+        damgalıyor; ilk damga çıkarılmazsa 90.8 saniyelik bir kayıt "4104.7 s"
+        olarak görünüyordu. Aynı hata kalan-süre tahminine de taşınıyordu."""
+        data = self._load_and_plot("px4_fixed_wing_flight.ulg")
+        duration = frontend_main._flight_duration_seconds(data["batteries"])
+        self.assertAlmostEqual(duration, 90.8, places=1)
+        self.assertIn("90.8", self.app.stat_labels["duration"].cget("text"))
+
+    def test_summary_metrics_match_stat_row_for_same_flight(self):
+        """Karşılaştırma tablosu ile üst istatistik satırı aynı yardımcıları
+        kullanır; ikisi farklı sayı gösterirse hangisine güvenileceği belirsiz
+        olurdu."""
+        data = self._load_and_plot("ArduCopter-MaxAltFence-00000067.BIN")
+        metrics = frontend_main._flight_summary_metrics(data)
+
+        self.assertIn(f"{metrics['energy_wh']:.1f}", self.app.stat_labels["energy_wh"].cget("text"))
+        self.assertIn(f"{metrics['peak_power_w']:.0f}", self.app.stat_labels["peak_power_w"].cget("text"))
+        self.assertEqual(metrics["vehicle"], "Multirotor")
+        self.assertGreater(metrics["duration_s"], 0)
+
+    def test_summary_metrics_are_none_without_current_sensor(self):
+        """Rover'da akım sensörü yok; akıma dayanan metrikler None olmalı
+        (tabloda "—"), 0 değil — sıfır "hiç akım çekilmemiş" gibi okunurdu."""
+        data = self._load_and_plot("px4_ground_rover_flight.ulg")
+        metrics = frontend_main._flight_summary_metrics(data)
+
+        for key in ("energy_wh", "peak_power_w", "current_min", "capacity_used_mah"):
+            self.assertIsNone(metrics[key], key)
+            self.assertEqual(frontend_main._format_comparison_value(key, metrics), "—")
+        # Voltaj gerçek ölçüm; o gösterilmeye devam etmeli.
+        self.assertIn("V", frontend_main._format_comparison_value("voltage_range", metrics))
+
+    def test_comparison_table_has_row_per_metric_and_column_per_flight(self):
+        results = []
+        for name in ("ArduCopter-MaxAltFence-00000067.BIN", "px4_hexarotor_flight.ulg"):
+            data = self.app._run_backend(str(DATA_DIR / name))
+            results.append((name, frontend_main._flight_summary_metrics(data)))
+
+        frame = frontend_main.ctk.CTkFrame(self.app)
+        self.app._build_comparison_table(frame, results)
+
+        cells = [w for w in frame.winfo_children() if isinstance(w, frontend_main.ctk.CTkLabel)]
+        # 1 bos kose + 2 baslik + her metrik icin (1 etiket + 2 deger)
+        expected = 1 + len(results) + len(frontend_main.COMPARISON_ROWS) * (1 + len(results))
+        self.assertEqual(len(cells), expected)
+
+        texts = [w.cget("text") for w in cells]
+        self.assertIn("Enerji Tüketimi", texts)
+        self.assertIn("ArduCopter-MaxAltFence-00000067.BIN", texts)
+
+    def test_compare_button_warns_when_history_too_short(self):
+        """Tek dosyalık geçmişte karşılaştırma anlamsız; pencere açılmak
+        yerine durum çubuğunda uyarı çıkmalı."""
+        self._load_file_and_wait(str(DATA_DIR / "synthetic_test_log.BIN"))
+        self.assertEqual(len(self.app._load_recent_files()), 1)
+
+        dialogs_before = len([
+            w for w in self.app.winfo_children()
+            if isinstance(w, frontend_main.ctk.CTkToplevel)
+        ])
+        self.app._on_compare_click()
+        self.app.update()
+
+        dialogs_after = len([
+            w for w in self.app.winfo_children()
+            if isinstance(w, frontend_main.ctk.CTkToplevel)
+        ])
+        self.assertEqual(dialogs_after, dialogs_before)
+        self.assertIn("en az iki", self.app.status_label.cget("text").lower())
+
+    def test_compare_dialog_lists_recent_files(self):
+        for name in ("synthetic_test_log.BIN", "px4_ground_rover_flight.ulg"):
+            self._load_file_and_wait(str(DATA_DIR / name))
+
+        self.app._on_compare_click()
+        self.app.update()
+        dialog = [
+            w for w in self.app.winfo_children()
+            if isinstance(w, frontend_main.ctk.CTkToplevel)
+        ][-1]
+        try:
+            checkboxes = []
+
+            def walk(widget):
+                for child in widget.winfo_children():
+                    if isinstance(child, frontend_main.ctk.CTkCheckBox):
+                        checkboxes.append(child)
+                    walk(child)
+
+            walk(dialog)
+            labels = [c.cget("text") for c in checkboxes]
+            self.assertEqual(len(checkboxes), 2)
+            self.assertIn("px4_ground_rover_flight.ulg", labels)
+            self.assertIn("synthetic_test_log.BIN", labels)
+        finally:
+            dialog.destroy()
+
     def _open_settings_dialog(self):
         """Ayarlar penceresini açar ve içindeki widget'ları döndürür. Pencere
         grab_set() yaptığı için testte hemen serbest bırakılıyor, yoksa

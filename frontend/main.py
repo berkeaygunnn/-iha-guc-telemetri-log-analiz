@@ -368,11 +368,20 @@ def _motor_empty_message(motors: list) -> str:
 
 
 def _flight_duration_seconds(batteries: list):
-    """Batarya zaman serilerinin en uzununun bitiş anı; uçuşun toplam süresi
-    olarak kullanılır (üst istatistik satırı ve Geçmiş Dosyalar listesi aynı
-    hesaplamayı paylaşır). Veri yoksa None döner."""
-    last_times = [battery["time_s"][-1] for battery in batteries if battery["time_s"]]
-    return max(last_times) if last_times else None
+    """Kaydın ilk ve son örneği arasında geçen süre (üst istatistik satırı ve
+    Geçmiş Dosyalar listesi aynı hesaplamayı paylaşır). Veri yoksa None döner.
+
+    İlk zaman damgasının ÇIKARILMASI şart: PX4 logları uçuş kontrolcüsünün
+    açılışından beri geçen süreyi damgalıyor, sıfırdan başlamıyor. Bunu
+    yapmayan eski hali `px4_fixed_wing_flight.ulg` için 4104.7 s gösteriyordu
+    — gerçek kayıt 90.8 saniye. Aynı hata `_update_capacity_stats`'taki kalan
+    süre tahminine de taşınıyordu (oradaki doğrusal ekstrapolasyon süreyle
+    çarpıldığı için sonuç ~45 kat şişiyordu)."""
+    spans = [(battery["time_s"][0], battery["time_s"][-1])
+             for battery in batteries if battery["time_s"]]
+    if not spans:
+        return None
+    return max(end for _, end in spans) - min(start for start, _ in spans)
 
 
 def _battery_energy_wh(batteries: list) -> float:
@@ -415,6 +424,102 @@ def _battery_internal_resistance_estimate(batteries: list):
         if best is None or resistance_mohm > best[1]:
             best = (battery["id"], resistance_mohm)
     return best
+
+
+# Karşılaştırma tablosunun satırları: (anahtar, başlık, birim biçimi).
+# Üst istatistik satırından (STAT_TILE_DEFINITIONS) ayrı tutuluyor çünkü
+# karşılaştırmada anlamlı olan alt küme farklı: "Örnek Sayısı" iki uçuşu
+# kıyaslarken bilgi vermez, "Araç Tipi" ve "Uyarı Sayısı" ise burada gerekli.
+COMPARISON_ROWS = [
+    ("vehicle", "Araç Tipi"),
+    ("duration_s", "Süre"),
+    ("voltage_range", "Voltaj Aralığı"),
+    ("current_range", "Akım Aralığı"),
+    ("energy_wh", "Enerji Tüketimi"),
+    ("peak_power_w", "Tepe Güç"),
+    ("capacity_used_mah", "Tüketilen Kapasite"),
+    ("resistance_mohm", "İç Direnç (tahmini)"),
+    ("voltage_sag_pct", "Voltaj Düşümü"),
+    ("warning_count", "Uyarı Sayısı"),
+]
+
+
+def _flight_summary_metrics(data: dict) -> dict:
+    """Bir uçuşun, başka uçuşlarla yan yana konabilecek özet metrikleri.
+
+    Hesaplamalar üst istatistik satırıyla AYNI yardımcıları kullanır
+    (_battery_energy_wh vb.), böylece iki yerde farklı sayı çıkmaz. Akıma
+    dayanan metrikler yalnızca gerçekten ölçümü olan bataryalardan
+    hesaplanır (bkz. _has_current_data); ölçüm yoksa değer None olur ve
+    tabloda "—" görünür — sıfır göstermek "hiç akım çekilmemiş" gibi
+    yanlış okunurdu.
+
+    Değerler ham (sayı) döner, biçimlendirme çağırana ait: testler sayıyı
+    doğrulayabilsin, tablo da kendi birimini seçebilsin."""
+    batteries = data.get("batteries", [])
+    measured = _with_current_data(batteries)
+    all_voltage = [v for battery in batteries for v in battery["voltage_v"]]
+    all_current = [c for battery in measured for c in battery["current_a"]]
+
+    resistance = _battery_internal_resistance_estimate(measured)
+    capacities = [
+        b["capacity_used_mah"] for b in measured if b.get("capacity_used_mah") is not None
+    ]
+
+    # Voltaj düşümü, backend'in uyarı kuralıyla aynı tanım: ilk örneğe göre
+    # en düşük voltaja inişin yüzdesi (bataryalar arasında en kötüsü).
+    voltage_sag_pct = None
+    for battery in batteries:
+        voltages = battery["voltage_v"]
+        if not voltages or voltages[0] <= 0:
+            continue
+        sag = (voltages[0] - min(voltages)) / voltages[0] * 100
+        voltage_sag_pct = sag if voltage_sag_pct is None else max(voltage_sag_pct, sag)
+
+    return {
+        "vehicle": VEHICLE_TYPE_LABELS.get(data.get("meta", {}).get("vehicle_type", "")),
+        "duration_s": _flight_duration_seconds(batteries),
+        "voltage_min": min(all_voltage) if all_voltage else None,
+        "voltage_max": max(all_voltage) if all_voltage else None,
+        "current_min": min(all_current) if all_current else None,
+        "current_max": max(all_current) if all_current else None,
+        "energy_wh": _battery_energy_wh(measured) if measured else None,
+        "peak_power_w": _battery_peak_power_w(measured) if measured else None,
+        "capacity_used_mah": sum(capacities) if capacities else None,
+        "resistance_mohm": resistance[1] if resistance else None,
+        "voltage_sag_pct": voltage_sag_pct,
+        "warning_count": len(data.get("warnings", [])),
+    }
+
+
+def _format_comparison_value(key: str, metrics: dict) -> str:
+    """Bir özet metriğini tabloda gösterilecek metne çevirir; ölçülememiş
+    değerler "—" olur (bkz. _flight_summary_metrics)."""
+    if key == "voltage_range":
+        low, high = metrics["voltage_min"], metrics["voltage_max"]
+        return f"{low:.2f}–{high:.2f} V" if low is not None else "—"
+    if key == "current_range":
+        low, high = metrics["current_min"], metrics["current_max"]
+        return f"{low:.1f}–{high:.1f} A" if low is not None else "—"
+
+    value = metrics.get(key)
+    if value is None:
+        return "—"
+    if key == "vehicle":
+        return value
+    if key == "duration_s":
+        return f"{value:.1f} s"
+    if key == "energy_wh":
+        return f"{value:.2f} Wh"
+    if key == "peak_power_w":
+        return f"{value:.0f} W"
+    if key == "capacity_used_mah":
+        return f"{value:.0f} mAh"
+    if key == "resistance_mohm":
+        return f"{value:.0f} mΩ"
+    if key == "voltage_sag_pct":
+        return f"%{value:.1f}"
+    return str(value)
 
 
 def _draw_voltage_sag_line(ax, first_voltage: float, threshold: float, color: str):
@@ -1054,7 +1159,17 @@ class App(ctk.CTk):
             scrollbar_fg_color="#0c1e30", scrollbar_button_color=LANDING_ACCENT,
             scrollbar_button_hover_color=LANDING_ACCENT_BRIGHT,
         )
-        self._recent_sidebar_list.pack(fill="both", expand=True, padx=8, pady=(0, 16))
+        self._recent_sidebar_list.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        # Karşılaştırma girişi buraya konuldu, analiz ekranının toolbar'ına
+        # değil: karşılaştırılacak uçuşlar zaten bu listeden seçiliyor ve
+        # toolbar dolu (geçmişte taşma sorununa yol açmıştı).
+        self.compare_button = ctk.CTkButton(
+            sidebar, text="⇄ Uçuşları Karşılaştır", fg_color="transparent",
+            border_width=1, border_color=LANDING_ACCENT, text_color=LANDING_TEXT,
+            hover_color=LANDING_ACCENT, command=self._on_compare_click,
+        )
+        self.compare_button.pack(fill="x", padx=16, pady=(0, 20))
 
         self._refresh_recent_sidebar(self._load_recent_files())
 
@@ -1633,6 +1748,142 @@ class App(ctk.CTk):
             button_row, text="İptal", fg_color="transparent", border_width=1,
             border_color=AXIS_LINE, text_color=TEXT_SECONDARY, command=dialog.destroy,
         ).pack(side="left", padx=6)
+
+    def _on_compare_click(self):
+        """Geçmiş dosyalardan 2+ uçuş seçip özet metriklerini yan yana
+        gösteren pencereyi açar.
+
+        Neden grafik değil tablo: örnek loglar ölçüldüğünde uçuşların zaman
+        eksenleri hiç örtüşmüyordu (ilk damgalar 3 s ile 4014 s arasında) ve
+        batarya sınıfları farklıydı (3S/6S/12S). Aynı panele çizmek okunaksız
+        olurdu; özet metrikler ise ölçekten ve süreden bağımsız
+        karşılaştırılabiliyor."""
+        entries = self._load_recent_files()
+        if len(entries) < 2:
+            self.status_label.configure(
+                text="⚠ Karşılaştırma için en az iki geçmiş dosya gerekli.",
+                text_color=UI_COLOR_WARNING,
+            )
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Uçuşları Karşılaştır")
+        dialog.geometry("920x720")
+        dialog.transient(self)
+
+        ctk.CTkLabel(
+            dialog, text="Karşılaştırılacak uçuşları seç",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(pady=(16, 4))
+
+        # Düz bir frame (kaydırılabilir değil): geçmiş en fazla
+        # MAX_RECENT_FILES öğe tuttuğu için liste zaten kısa, kaydırılabilir
+        # yapmak sabit yükseklikte durmayıp tabloya ayrılan yeri yiyordu.
+        selection_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        selection_frame.pack(fill="x", padx=20)
+
+        checkboxes = []
+        for entry in entries:
+            variable = ctk.BooleanVar(value=False)
+            ctk.CTkCheckBox(
+                selection_frame, text=Path(entry["path"]).name, variable=variable,
+            ).pack(anchor="w", pady=3)
+            checkboxes.append((entry["path"], variable))
+
+        status = ctk.CTkLabel(dialog, text="", text_color=TEXT_MUTED)
+        status.pack(pady=(6, 0))
+
+        result_frame = ctk.CTkScrollableFrame(dialog, fg_color="transparent")
+        result_frame.pack(fill="both", expand=True, padx=20, pady=(8, 12))
+
+        def on_compare():
+            selected = [path for path, variable in checkboxes if variable.get()]
+            if len(selected) < 2:
+                status.configure(text="En az iki uçuş seçmelisin.", text_color=COLOR_WARNING)
+                return
+            status.configure(text="Uçuşlar işleniyor...", text_color=TEXT_MUTED)
+            compare_button.configure(state="disabled")
+            self._run_comparison(selected, result_frame, status, compare_button)
+
+        button_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        button_row.pack(pady=(0, 12))
+        compare_button = ctk.CTkButton(button_row, text="Karşılaştır", command=on_compare)
+        compare_button.pack(side="left", padx=6)
+        ctk.CTkButton(
+            button_row, text="Kapat", fg_color="transparent", border_width=1,
+            border_color=AXIS_LINE, text_color=TEXT_SECONDARY, command=dialog.destroy,
+        ).pack(side="left", padx=6)
+
+    def _run_comparison(self, paths: list, result_frame, status_label, compare_button):
+        """Seçilen logları arka planda backend'den geçirip tabloyu çizer.
+
+        Her log için ayrı bir backend çağrısı yapılıyor ve bu saniyeler
+        sürebildiğinden iş ayrı bir thread'de; sonuç Queue üzerinden ana
+        thread'e taşınıyor (Tkinter widget'ları başka thread'den güvenle
+        güncellenemez — bkz. _load_file'daki aynı desen)."""
+        result_queue: queue.Queue = queue.Queue()
+
+        def worker():
+            results, errors = [], []
+            for path in paths:
+                try:
+                    results.append((Path(path).name, _flight_summary_metrics(self._run_backend(path))))
+                except Exception as error:  # bir log bozuksa diğerleri yine gösterilsin
+                    errors.append(f"{Path(path).name}: {error}")
+            result_queue.put((results, errors))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        def poll():
+            try:
+                results, errors = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(100, poll)
+                return
+
+            if compare_button.winfo_exists():
+                compare_button.configure(state="normal")
+            if not result_frame.winfo_exists():
+                return  # kullanıcı pencereyi kapatmış
+
+            self._build_comparison_table(result_frame, results)
+            if errors:
+                status_label.configure(text="⚠ " + " | ".join(errors), text_color=COLOR_CRITICAL)
+            elif status_label.winfo_exists():
+                status_label.configure(
+                    text=f"{len(results)} uçuş karşılaştırıldı.", text_color=TEXT_MUTED
+                )
+
+        self.after(100, poll)
+
+    def _build_comparison_table(self, parent, results: list):
+        """Satır = metrik, sütun = uçuş olacak şekilde özet tabloyu çizer.
+        Ölçülemeyen değerler "—" gösterilir (bkz. _format_comparison_value)."""
+        for child in parent.winfo_children():
+            child.destroy()
+        if not results:
+            return
+
+        header_font = ctk.CTkFont(size=12, weight="bold")
+        ctk.CTkLabel(parent, text="", width=150).grid(row=0, column=0, padx=6, pady=4)
+        for column, (name, _metrics) in enumerate(results, start=1):
+            ctk.CTkLabel(
+                parent, text=name, font=header_font, text_color=TEXT_PRIMARY,
+                wraplength=210, justify="center",
+            ).grid(row=0, column=column, padx=6, pady=4, sticky="ew")
+
+        for row, (key, title) in enumerate(COMPARISON_ROWS, start=1):
+            ctk.CTkLabel(
+                parent, text=title, text_color=TEXT_SECONDARY, anchor="w",
+            ).grid(row=row, column=0, padx=6, pady=3, sticky="w")
+            for column, (_name, metrics) in enumerate(results, start=1):
+                ctk.CTkLabel(
+                    parent, text=_format_comparison_value(key, metrics),
+                    text_color=TEXT_PRIMARY, anchor="center",
+                ).grid(row=row, column=column, padx=6, pady=3, sticky="ew")
+
+        for column in range(1, len(results) + 1):
+            parent.grid_columnconfigure(column, weight=1)
 
     def _load_recent_files(self) -> list:
         """Kalıcı listeyi diskten okur; dosya yoksa/bozuksa boş liste döner

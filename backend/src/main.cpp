@@ -1079,13 +1079,27 @@ void writeBatteries(std::ostream& out, const std::map<int, std::vector<BatterySa
 
 // Tüm bataryalar arasında en son örneğin zamanını (uçuşun toplam süresi) bulur.
 double computeDuration(const std::map<int, std::vector<BatterySamplePoint>>& batteries) {
-    double duration = 0.0;
+    // İlk zaman damgası SIFIR OLMAYABİLİR: PX4 logları uçuş kontrolcüsünün
+    // açılışından beri geçen süreyi damgalıyor. Sadece son damgayı almak
+    // "px4_fixed_wing_flight.ulg" için 4104.7 s veriyordu — gerçek kayıt
+    // 90.8 saniye. Bu yüzden ilk ve son damga arasındaki FARK alınıyor.
+    bool haveSample = false;
+    double firstTime = 0.0;
+    double lastTime = 0.0;
     for (const auto& entry : batteries) {
         if (entry.second.empty()) continue;
-        double lastTime = entry.second.back().time_s;
-        if (lastTime > duration) duration = lastTime;
+        double entryFirst = entry.second.front().time_s;
+        double entryLast = entry.second.back().time_s;
+        if (!haveSample) {
+            firstTime = entryFirst;
+            lastTime = entryLast;
+            haveSample = true;
+            continue;
+        }
+        if (entryFirst < firstTime) firstTime = entryFirst;
+        if (entryLast > lastTime) lastTime = entryLast;
     }
-    return duration;
+    return haveSample ? lastTime - firstTime : 0.0;
 }
 
 // Kural tabanlı otomatik yorumlama eşikleri: gerçek loglarla kalibre edilene
