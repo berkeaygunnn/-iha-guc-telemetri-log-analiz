@@ -360,6 +360,14 @@ def _segmented_button_style() -> dict:
     }
 
 
+# Üst araç çubuğu yerleşimi (bkz. _build_toolbar / _layout_toolbar).
+TOOLBAR_GAP = 12  # bileşenler arası boşluk (px)
+# Dosya adı etiketine tek satır modunda ayrılan asgari yer. Tek satırın
+# sığıp sığmadığına bu sabitle karar veriliyor; etiketin gerçek genişliğiyle
+# karar verilseydi uzun bir dosya adı toolbar'ı gereksiz yere ikinci satıra
+# sarardı (etiket zaten kısaltılabiliyor, butonlar kısaltılamıyor).
+TOOLBAR_FILE_LABEL_MIN_WIDTH = 120
+
 EXPORT_MENU_LABEL = "Dışa Aktar"
 EXPORT_MENU_ACTIONS = {
     "Grafik (PNG)": "_on_export_png_click",
@@ -633,9 +641,10 @@ def _truncate_to_width(text: str, max_width_px: float, font) -> str:
     return text[:lo] + "..."
 
 
-def _add_toolbar_tooltip(widget, text: str):
+def _add_toolbar_tooltip(widget, text):
     """Bir araç çubuğu butonuna, fare üzerine gelince çıkan küçük bir ipucu
-    balonu bağlar.
+    balonu bağlar. `text` bir metin ya da metin döndüren bir fonksiyon
+    olabilir (fonksiyon, kısaltılmış dosya adı gibi değişen içerikler için).
 
     matplotlib'in kendi yardımcısı private bir modülde ve sürümden sürüme yer
     değiştiriyor (3.11'de `_backend_tk.add_tooltip`, daha eskilerde
@@ -648,13 +657,16 @@ def _add_toolbar_tooltip(widget, text: str):
     def show(_event=None):
         if state["window"] is not None:
             return
+        content = text() if callable(text) else text
+        if not content:  # dinamik ipucu boşsa balon hiç açılmasın
+            return
         window = tk.Toplevel(widget)
         window.wm_overrideredirect(True)  # çerçevesiz, başlıksız balon
         window.wm_geometry(
             f"+{widget.winfo_rootx()}+{widget.winfo_rooty() + widget.winfo_height() + 4}"
         )
         tk.Label(
-            window, text=text, background=GRIDLINE, foreground=TEXT_PRIMARY,
+            window, text=content, background=GRIDLINE, foreground=TEXT_PRIMARY,
             relief="solid", borderwidth=1, padx=6, pady=3,
         ).pack()
         state["window"] = window
@@ -1472,49 +1484,68 @@ class App(ctk.CTk):
 
     def _build_toolbar(self):
         """Üst kısımdaki dosya yükleme/dışa aktarma/temizle butonları, son
-        kullanılan dosyalar açılır listesi ve seçilen dosya etiketi."""
+        kullanılan dosyalar açılır listesi ve seçilen dosya etiketi.
+
+        Yerleşim ÜÇ PARÇA halinde kuruluyor: sol grup (dosya işlemleri), dosya
+        adı etiketi ve sağ grup (dışa aktarma/ayarlar). Butonlar doğrudan
+        toolbar'a değil kendi grup çerçevelerine konuyor, çünkü dar ekranda
+        sağ grup ikinci satıra iniyor (bkz. _layout_toolbar) — Tk'da bir
+        widget'ın ebeveyni sonradan değiştirilemediği için taşınan şey butonlar
+        değil, grup çerçevesinin ızgaradaki yeri oluyor."""
         toolbar = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
         toolbar.pack(side="top", fill="x", padx=16, pady=(16, 8))
+        self.toolbar = toolbar
+
+        left_group = ctk.CTkFrame(toolbar, fg_color="transparent")
+        right_group = ctk.CTkFrame(toolbar, fg_color="transparent")
+        self._toolbar_left_group = left_group
+        self._toolbar_right_group = right_group
 
         self.home_button = ctk.CTkButton(
-            toolbar, text="← Ana Sayfa", fg_color="transparent", border_width=1,
+            left_group, text="← Ana Sayfa", fg_color="transparent", border_width=1,
             border_color=UI_AXIS_LINE, text_color=UI_TEXT_SECONDARY, command=self._show_landing,
         )
-        self.home_button.pack(side="left", padx=(0, 12))
+        self.home_button.pack(side="left", padx=(0, TOOLBAR_GAP))
 
         self.load_button = ctk.CTkButton(
-            toolbar, text="Log Dosyası Yükle (Ctrl+O)", command=self._on_load_file_click
+            left_group, text="Log Dosyası Yükle (Ctrl+O)", command=self._on_load_file_click
         )
-        self.load_button.pack(side="left", padx=(0, 12))
+        self.load_button.pack(side="left", padx=(0, TOOLBAR_GAP))
 
         self._recent_label_to_path = {}
         self.recent_menu = ctk.CTkOptionMenu(
-            toolbar, values=["(yok)"], command=self._on_recent_file_selected, width=200,
+            left_group, values=["(yok)"], command=self._on_recent_file_selected, width=200,
         )
-        self.recent_menu.pack(side="left", padx=(0, 12))
+        self.recent_menu.pack(side="left")
         self._refresh_recent_menu(self._load_recent_files())
-
-        self.file_label = ctk.CTkLabel(
-            toolbar, text="Henüz dosya seçilmedi.", text_color=UI_TEXT_SECONDARY
-        )
-        self.file_label.pack(side="left")
 
         # Backend arka planda çalışırken gösterilir (bkz. _load_file);
         # varsayılan olarak paketlenmez, sadece yükleme sırasında görünür.
-        self.loading_progress = ctk.CTkProgressBar(toolbar, mode="indeterminate", width=120)
-
-        self.theme_button = ctk.CTkButton(
-            toolbar, text=("☀ Açık Tema" if ACTIVE_THEME == "dark" else "🌙 Koyu Tema"),
-            fg_color="transparent", border_width=1, border_color=UI_AXIS_LINE,
-            text_color=UI_TEXT_SECONDARY, command=self._on_theme_toggle_click,
+        self.loading_progress = ctk.CTkProgressBar(
+            left_group, mode="indeterminate", width=120
         )
-        self.theme_button.pack(side="right", padx=(0, 12))
 
-        self.settings_button = ctk.CTkButton(
-            toolbar, text="⚙ Ayarlar", fg_color="transparent", border_width=1,
-            border_color=UI_AXIS_LINE, text_color=UI_TEXT_SECONDARY, command=self._on_settings_click,
+        # Uzunluğu dosya adına bağlı olan TEK bileşen bu; ölçüldüğünde uzun bir
+        # ad 409px istiyor ve sağdaki butonları ekran dışına itiyordu. Bu yüzden
+        # etiket kalan boşluğa kısaltılarak sığdırılıyor (bkz. _fit_file_label),
+        # tam metin ise fare ipucunda duruyor.
+        self.file_label = ctk.CTkLabel(
+            toolbar, text="", text_color=UI_TEXT_SECONDARY, anchor="w",
         )
-        self.settings_button.pack(side="right", padx=(0, 12))
+        self._file_label_text = "Henüz dosya seçilmedi."
+        self._file_label_fit_key = None
+        _add_toolbar_tooltip(
+            self.file_label,
+            # Ancak kısaltılmışsa ipucu göster: tam metin zaten görünüyorsa
+            # balon gereksiz gürültü olurdu.
+            lambda: self._file_label_text if self.file_label.cget("text") != self._file_label_text else "",
+        )
+
+        self.clear_button = ctk.CTkButton(
+            right_group, text="Temizle", fg_color="transparent", border_width=1,
+            border_color=UI_AXIS_LINE, text_color=UI_TEXT_SECONDARY, command=self._on_clear_click,
+        )
+        self.clear_button.pack(side="left", padx=(0, TOOLBAR_GAP))
 
         # Üç ayrı dışa aktarma butonu yerine tek açılır menü: ölçüldü, üç
         # buton toolbar'ın istediği genişliği 1638px'e çıkarıyordu ve 1360px'lik
@@ -1526,17 +1557,116 @@ class App(ctk.CTk):
         # kullanılıyor: seçim kalıcı değil, her seçimden sonra etiket geri
         # dönüyor (recent_menu de aynı deseni kullanıyor).
         self.export_menu = ctk.CTkOptionMenu(
-            toolbar, values=list(EXPORT_MENU_ACTIONS), command=self._on_export_selected,
+            right_group, values=list(EXPORT_MENU_ACTIONS), command=self._on_export_selected,
             width=150,
         )
         self.export_menu.set(EXPORT_MENU_LABEL)
-        self.export_menu.pack(side="right", padx=(0, 12))
+        self.export_menu.pack(side="left", padx=(0, TOOLBAR_GAP))
 
-        self.clear_button = ctk.CTkButton(
-            toolbar, text="Temizle", fg_color="transparent", border_width=1,
-            border_color=UI_AXIS_LINE, text_color=UI_TEXT_SECONDARY, command=self._on_clear_click,
+        self.settings_button = ctk.CTkButton(
+            right_group, text="⚙ Ayarlar", fg_color="transparent", border_width=1,
+            border_color=UI_AXIS_LINE, text_color=UI_TEXT_SECONDARY, command=self._on_settings_click,
         )
-        self.clear_button.pack(side="right", padx=(0, 12))
+        self.settings_button.pack(side="left", padx=(0, TOOLBAR_GAP))
+
+        self.theme_button = ctk.CTkButton(
+            right_group, text=("☀ Açık Tema" if ACTIVE_THEME == "dark" else "🌙 Koyu Tema"),
+            fg_color="transparent", border_width=1, border_color=UI_AXIS_LINE,
+            text_color=UI_TEXT_SECONDARY, command=self._on_theme_toggle_click,
+        )
+        self.theme_button.pack(side="left")
+
+        self._toolbar_two_rows = None  # henüz yerleşmedi; _layout_toolbar dolduracak
+        self._layout_toolbar(two_rows=False)
+        toolbar.bind("<Configure>", self._on_toolbar_configure)
+
+    def _layout_toolbar(self, two_rows: bool, width: int = None):
+        """Grupları ızgaraya yerleştirir. `two_rows` ise sağ grup ikinci
+        satıra iner; boşluğu her zaman dosya adı sütunu yutar, böylece sağ
+        grup tek satır modunda sağ kenara yaslanır. `width` verilmezse
+        toolbar'ın o anki genişliği kullanılır (bkz. _toolbar_width)."""
+        if self._toolbar_two_rows == two_rows:
+            return
+        self._toolbar_two_rows = two_rows
+
+        self._toolbar_left_group.grid(row=0, column=0, sticky="w")
+        self.file_label.grid(row=0, column=1, sticky="ew", padx=(TOOLBAR_GAP, TOOLBAR_GAP))
+        self._toolbar_left_group.master.columnconfigure(1, weight=1)
+
+        if two_rows:
+            # Sağ grup satırın tamamını kaplasın ki sütun genişlikleri üstteki
+            # satırın butonlarıyla hizalanmaya zorlanmasın.
+            self._toolbar_right_group.grid(
+                row=1, column=0, columnspan=3, sticky="w", pady=(TOOLBAR_GAP, 0)
+            )
+        else:
+            self._toolbar_right_group.grid(row=0, column=2, sticky="e", pady=0)
+
+        self._fit_file_label(width)
+
+    def _toolbar_single_row_width(self) -> int:
+        """Tek satır yerleşimin istediği genişlik. Dosya adı için sabit bir
+        alt sınır kullanılıyor (etiketin GERÇEK genişliği değil): aksi halde
+        sırf uzun bir dosya adı yüzünden toolbar ikinci satıra sarardı."""
+        return (
+            self._toolbar_left_group.winfo_reqwidth()
+            + self._toolbar_right_group.winfo_reqwidth()
+            + TOOLBAR_FILE_LABEL_MIN_WIDTH
+            + 2 * TOOLBAR_GAP
+        )
+
+    def _toolbar_width(self, event=None) -> int:
+        """Toolbar'ın GÜNCEL genişliği.
+
+        `<Configure>` işlenirken `winfo_width()` hâlâ ESKİ genişliği döndürüyor;
+        yeni genişlik yalnızca olay nesnesinde var. Bu gözden kaçtığında dosya
+        adı etiketi bir adım geriden geliyordu — pencere genişletilse bile
+        etiket dar hâline göre kısaltılmış kalıyordu."""
+        return event.width if event is not None else self.toolbar.winfo_width()
+
+    def _on_toolbar_configure(self, event=None):
+        """Pencere yeniden boyutlandıkça yerleşimi seçer.
+
+        Karar HER ZAMAN tek satır ihtiyacına göre veriliyor; iki satır modunun
+        (daha dar olan) kendi ihtiyacına bakılsaydı yerleşim iki mod arasında
+        salınırdı."""
+        width = self._toolbar_width(event)
+        self._layout_toolbar(two_rows=width < self._toolbar_single_row_width(), width=width)
+        self._fit_file_label(width)
+
+    def _refresh_toolbar_layout(self):
+        """Bir bileşen gösterilip gizlendikten sonra yerleşimi yeniden hesaplar.
+
+        `after_idle` şart: `pack()`/`pack_forget()` hemen etkili olmuyor, Tk
+        geometri hesabını boşta kalınca yapıyor. Hemen okunduğunda grup
+        `winfo_reqwidth()`'i ESKİ değerini veriyordu — yükleme bittikten sonra
+        dosya adı etiketi, artık görünmeyen ilerleme çubuğunun 132 pikselini
+        hâlâ ayırıyor ve gereksiz yere kısa kalıyordu."""
+        self.after_idle(self._on_toolbar_configure)
+
+    def _set_file_label(self, text: str):
+        """Dosya adı etiketinin TAM metnini saklar ve görünen kısmı sığdırır.
+        Tam metin ayrıca saklanıyor çünkü PDF raporu dosya adını buradan
+        okuyor — kısaltılmış hali rapora düşmemeli."""
+        self._file_label_text = text
+        self._file_label_fit_key = None  # metin değişti, yeniden ölç
+        self._fit_file_label()
+
+    def _fit_file_label(self, width: int = None):
+        """Etiketi, sol/sağ grupların artığı kadar boşluğa kısaltarak sığdırır."""
+        if width is None:
+            width = self.toolbar.winfo_width()
+        available = width - self._toolbar_left_group.winfo_reqwidth() - 2 * TOOLBAR_GAP
+        if not self._toolbar_two_rows:
+            available -= self._toolbar_right_group.winfo_reqwidth() + TOOLBAR_GAP
+
+        key = (self._file_label_text, available)
+        if self._file_label_fit_key == key:
+            return  # her <Configure> olayında yeniden ölçmemek için
+        self._file_label_fit_key = key
+        self.file_label.configure(
+            text=_truncate_to_width(self._file_label_text, available, self.file_label.cget("font"))
+        )
 
     def _apply_titlebar_theme(self, mode: str):
         """Windows başlık çubuğunu (uygulama adının olduğu üst OS çubuğu) koyu/açık
@@ -2342,12 +2472,13 @@ class App(ctk.CTk):
         # Tam yol yerine sadece dosya adı gösterilir: uzun mutlak yollar
         # toolbar'daki diğer butonları (ör. "Grafiği Kaydet") ekran dışına
         # itip kesilmelerine yol açıyordu.
-        self.file_label.configure(text=Path(file_path).name)
+        self._set_file_label(Path(file_path).name)
         self.status_label.configure(text="İşleniyor...", text_color=UI_TEXT_SECONDARY)
         self.load_button.configure(state="disabled")
         self.recent_menu.configure(state="disabled")
-        self.loading_progress.pack(side="left", padx=(12, 0))
+        self.loading_progress.pack(side="left", padx=(TOOLBAR_GAP, 0))
         self.loading_progress.start()
+        self._refresh_toolbar_layout()  # çubuk sol grubu genişletti
         self._is_loading = True
 
         result_queue: queue.Queue = queue.Queue()
@@ -2370,6 +2501,7 @@ class App(ctk.CTk):
 
         self.loading_progress.stop()
         self.loading_progress.pack_forget()
+        self._refresh_toolbar_layout()
         self.load_button.configure(state="normal")
         self._is_loading = False
 
@@ -2459,7 +2591,9 @@ class App(ctk.CTk):
         fig.set_facecolor(SURFACE)
         fig.text(0.08, 0.93, "İHA Güç/Telemetri Uçuş Raporu", color=TEXT_PRIMARY,
                   fontsize=18, weight="bold")
-        fig.text(0.08, 0.89, f"Dosya: {self.file_label.cget('text')}", color=TEXT_SECONDARY, fontsize=11)
+        # Widget'ın metni değil saklanan TAM metin: etiket dar toolbar'da
+        # kısaltılabiliyor, rapora kısaltılmış ad düşmemeli.
+        fig.text(0.08, 0.89, f"Dosya: {self._file_label_text}", color=TEXT_SECONDARY, fontsize=11)
         fig.text(0.08, 0.86, f"Oluşturulma: {datetime.now():%Y-%m-%d %H:%M}",
                   color=TEXT_SECONDARY, fontsize=11)
 
@@ -2482,7 +2616,7 @@ class App(ctk.CTk):
     def _on_clear_click(self):
         """Yüklü veriyi ve tüm panelleri başlangıç (boş) durumuna döndürür;
         ikinci bir dosyayı temiz bir ekrandan yüklemek isteyenler için."""
-        self.file_label.configure(text="Henüz dosya seçilmedi.")
+        self._set_file_label("Henüz dosya seçilmedi.")
         self.status_label.configure(text="")
         self._update_warnings([])
         self._update_stats([])
@@ -2578,7 +2712,7 @@ class App(ctk.CTk):
         self._last_vehicle_type = meta.get("vehicle_type") or None
         label = VEHICLE_TYPE_LABELS.get(meta.get("vehicle_type", "unknown"))
         file_name = Path(self._last_loaded_path).name if self._last_loaded_path else ""
-        self.file_label.configure(text=f"{file_name} · {label}" if label else file_name)
+        self._set_file_label(f"{file_name} · {label}" if label else file_name)
 
     def _plot_voltage_panel(self, batteries: list):
         """Üst paneli seçili görünüme (voltaj/sıcaklık) göre çizer. Akım/motor
