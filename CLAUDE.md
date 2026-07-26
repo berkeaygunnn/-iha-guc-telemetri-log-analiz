@@ -118,6 +118,31 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   olurdu; özet metrikler ölçekten ve süreden bağımsız karşılaştırılabiliyor.
   Metrikler üst istatistik satırıyla AYNI yardımcıları kullanıyor ki iki
   yerde farklı sayı çıkmasın.
+- **Üst toolbar dar ekranda taşmıyor:** ölçüldü — butonlar 1280px istiyordu,
+  1100px'lik bir pencerede "Temizle"/"Dışa Aktar"/"Ayarlar"/"Koyu Tema"
+  görünmüyordu (tıklanamıyordu da). İki değişiklik:
+
+  (1) Butonlar artık doğrudan toolbar'a değil **sol/sağ grup çerçevelerine**
+  konuyor ve toolbar `grid` kullanıyor; yer kalmayınca sağ grup ikinci satıra
+  iniyor. Grup çerçevesi şart, çünkü Tk'da bir widget'ın ebeveyni sonradan
+  değiştirilemiyor — satır değiştiren şey butonlar değil, grubun ızgaradaki
+  yeri. Sağ grup ikinci satırda `columnspan` ile tüm satırı kaplıyor ki sütun
+  genişlikleri üstteki butonlarla hizalanmaya zorlanmasın (zorlansaydı 700px'de
+  yine 14px taşıyordu).
+
+  Sarma kararı **her zaman tek satır ihtiyacına** göre veriliyor; iki satır
+  modunun kendi (daha dar) ihtiyacına bakılsaydı yerleşim iki mod arasında
+  salınırdı.
+
+  (2) Uzunluğu içeriğe bağlı tek bileşen dosya adı etiketi (uzun bir ad 409px
+  istiyor) — o da kalan boşluğa kısaltılıyor, tam metin fare ipucunda. Tam
+  metin ayrıca saklanıyor çünkü **PDF raporu dosya adını oradan okuyor**;
+  kısaltılmış ad rapora düşmemeli.
+
+  İki Tk tuzağı yol boyunca çıktı: `<Configure>` işlenirken `winfo_width()`
+  hâlâ ESKİ genişliği veriyor (yeni genişlik yalnızca olay nesnesinde), ve
+  `pack_forget()` hemen etkili olmuyor (geometri hesabı boşta yapılıyor, bu
+  yüzden yerleşim yenilemesi `after_idle` ile).
 - **Isı haritalarında hover tooltip:** tooltip eskiden sadece çizgi
   grafiklerinde çalışıyordu, çünkü `_on_plot_hover` değeri eksenin
   `get_lines()`'ından okuyordu — ısı haritasında hiç çizgi yok. Artık her

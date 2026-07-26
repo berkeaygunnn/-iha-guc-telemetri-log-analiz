@@ -840,6 +840,116 @@ class SmokeTests(unittest.TestCase):
 
     # --- Toolbar "Sıfırla" butonu ---------------------------------------------
 
+    # --- Üst toolbar'ın dar ekrana uyumu ---------------------------------------
+
+    def _resize(self, width: int, height: int = 800):
+        """Pencereyi yeniden boyutlandırıp Tk'nin yerleşimi tamamlamasını
+        bekler (geometri hesabı boşta yapıldığı için update() şart)."""
+        self.app.geometry(f"{width}x{height}")
+        for _ in range(6):
+            self.app.update_idletasks()
+            self.app.update()
+
+    def _toolbar_buttons(self):
+        return {
+            "home": self.app.home_button, "load": self.app.load_button,
+            "recent": self.app.recent_menu, "clear": self.app.clear_button,
+            "export": self.app.export_menu, "settings": self.app.settings_button,
+            "theme": self.app.theme_button,
+        }
+
+    def _clipped_buttons(self):
+        """Toolbar'ın görünür alanının dışına taşan butonların adları."""
+        toolbar = self.app.toolbar
+        clipped = []
+        for name, widget in self._toolbar_buttons().items():
+            x = widget.winfo_rootx() - toolbar.winfo_rootx()
+            if x < 0 or x + widget.winfo_width() > toolbar.winfo_width() + 1:
+                clipped.append(name)
+        return clipped
+
+    def test_toolbar_buttons_stay_visible_down_to_minimum_window_width(self):
+        """Asıl hata buydu: 1100px altında "Temizle"/"Dışa Aktar"/"Ayarlar"/
+        "Koyu Tema" ekran dışında kalıyor ve tıklanamıyordu. Pencerenin
+        izin verilen en dar hâlinde bile hepsi görünür olmalı."""
+        self.app._show_analysis()
+        self.app._set_file_label("ArduCopter-MaxAltFence-00000067.BIN · Multirotor")
+        for width in (1920, 1400, 1200, 1100, 1000, 900, 800, 700):
+            self._resize(width)
+            self.assertEqual(self._clipped_buttons(), [], f"{width}px")
+
+    def test_toolbar_wraps_to_second_row_only_when_too_narrow(self):
+        self.app._show_analysis()
+        self._resize(1920)
+        self.assertFalse(self.app._toolbar_two_rows)
+        self._resize(900)
+        self.assertTrue(self.app._toolbar_two_rows)
+        self._resize(1920)
+        self.assertFalse(self.app._toolbar_two_rows)  # geri dönebilmeli
+
+    def test_toolbar_layout_does_not_oscillate_at_the_same_width(self):
+        """Yerleşim kararı, o anki moda göre değil HER ZAMAN tek satır
+        ihtiyacına göre veriliyor; iki satır modunun (daha dar olan) kendi
+        ihtiyacına bakılsaydı toolbar iki mod arasında titrerdi."""
+        self.app._show_analysis()
+        self._resize(1000)
+        first = self.app._toolbar_two_rows
+        for _ in range(5):
+            self.app.update()
+            self.assertEqual(self.app._toolbar_two_rows, first)
+
+    def test_long_file_name_is_shortened_instead_of_pushing_buttons_out(self):
+        """Uzunluğu dosya adına bağlı tek bileşen etiket; ölçüldüğünde uzun bir
+        ad 409px istiyor ve sağdaki butonları dışarı itiyordu. Artık etiket
+        kısalıyor, butonlar yerinde kalıyor."""
+        self.app._show_analysis()
+        self._resize(1400)
+        self.app._set_file_label("A" * 200 + ".BIN")
+        self._resize(1400)
+
+        self.assertEqual(self._clipped_buttons(), [])
+        self.assertLess(len(self.app.file_label.cget("text")), 204)
+        self.assertTrue(self.app.file_label.cget("text").endswith("..."))
+
+    def test_short_file_name_is_not_shortened(self):
+        self.app._show_analysis()
+        self._resize(1920)
+        self.app._set_file_label("kisa.BIN")
+        self._resize(1920)
+        self.assertEqual(self.app.file_label.cget("text"), "kisa.BIN")
+
+    def test_pdf_report_uses_the_full_file_name_not_the_shortened_one(self):
+        """Rapor dosya adını etiketten okuyordu; etiket kısaltılabildiği için
+        artık saklanan tam metinden okunmalı."""
+        self.app._show_analysis()
+        long_name = "ArduCopter-MaxAltFence-00000067.BIN · Multirotor"
+        self.app._set_file_label(long_name)
+        self._resize(700)
+        self.assertNotEqual(self.app.file_label.cget("text"), long_name)  # kısaldı
+        self.assertEqual(self.app._file_label_text, long_name)
+
+    def test_progress_bar_space_is_released_after_loading(self):
+        """İlerleme çubuğu gizlendikten sonra yerleşim onun 132 pikselini
+        ayırmayı bırakmalı. Tk geometri hesabını boşta yaptığı için
+        pack_forget() hemen etkili olmuyordu; etiket gereksiz yere kısa
+        kalıyordu (bkz. _refresh_toolbar_layout)."""
+        self.app._show_analysis()
+        self._resize(1500)
+        self.app._set_file_label("ArduCopter-MaxAltFence-00000067.BIN · Multirotor")
+        self._resize(1500)
+        text_before = self.app.file_label.cget("text")
+
+        self.app.loading_progress.pack(side="left", padx=(frontend_main.TOOLBAR_GAP, 0))
+        self.app._refresh_toolbar_layout()
+        for _ in range(4):
+            self.app.update()
+        self.app.loading_progress.pack_forget()
+        self.app._refresh_toolbar_layout()
+        for _ in range(4):
+            self.app.update()
+
+        self.assertEqual(self.app.file_label.cget("text"), text_before)
+
     # --- Araç tipi başına uyarı eşikleri ---------------------------------------
 
     def _write_vehicle_thresholds(self, vehicle_type: str, values: dict):
