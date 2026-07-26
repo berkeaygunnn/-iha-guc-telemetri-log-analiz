@@ -11,6 +11,11 @@ haritalarına ve otomatik uyarılara dönüştüren bir masaüstü uygulaması.
 Multirotor, sabit kanat, rover ve VTOL loglarıyla çalışır; akım sensörü
 bulunmayan araçlarda "ölçüm yok" ile "ölçüm sıfır"ı ayırt eder.
 
+![Analiz ekranı](docs/analiz-ekrani.png)
+
+*Gerçek bir PX4 hexarotor uçuşu: özet istatistikler, otomatik uyarılar ve
+ortak zaman eksenini paylaşan voltaj / toplam akım / motor akımı panelleri.*
+
 ## Özellikler
 
 ### Log okuma
@@ -29,6 +34,12 @@ bulunmayan araçlarda "ölçüm yok" ile "ölçüm sıfır"ı ayırt eder.
   kontrolcüsü alanı boş bırakmaz, her örneğe tam 0.0 yazar. Bu durum tespit
   edilir; ilgili paneller düz sıfır çizgisi yerine açık bir mesaj, istatistik
   kutucukları da `0` yerine `—` gösterir (bkz. `has_current_data`).
+
+![Akım sensörü olmayan araç](docs/akim-sensoru-yok.png)
+
+*Akım sensörü bulunmayan bir rover: akıma dayanan tüm kutucuklar `—`, akım
+paneli nedenini yazıyor — ama voltaj gerçek ölçüm olduğu için çiziliyor ve
+PWM çıkışı motorun ne yaptığını yine de gösteriyor.*
 
 ### Görselleştirme
 
@@ -53,6 +64,12 @@ bulunmayan araçlarda "ölçüm yok" ile "ölçüm sıfır"ı ayırt eder.
 - **Açık/koyu tema** arasında canlı geçiş — pencere kapanıp açılmaz, tercih
   kalıcıdır.
 
+![PWM sapma ısı haritası](docs/pwm-sapma.png)
+
+*PWM sapma görünümü: her kanalın, aynı çıkış rayındaki kanalların o andaki
+ortalamasından farkı. Mutlak PWM skalası denendi ve okunaksız çıktı — servo
+kanalları skalayı domine edip motorlar arasındaki farkı siliyordu.*
+
 ### Analiz ve uyarılar
 
 Kural tabanlı, gerçek loglarla kalibre edilmiş eşiklerle otomatik uyarılar
@@ -74,6 +91,12 @@ aynı değeri kullanır.
   kapasite, iç direnç, voltaj düşümü, uyarı sayısı) yan yana tabloda görülür.
 - **PNG** (grafik), **PDF** (istatistik + uyarı + grafik raporu) ve **CSV**
   (ham zaman serileri) olarak dışa aktarma.
+
+![Uçuş karşılaştırma](docs/ucus-karsilastirma.png)
+
+*Üç farklı aracın uçuşu yan yana. Grafik yerine tablo, çünkü logların zaman
+eksenleri örtüşmüyor ve batarya sınıfları farklı (3S/6S); özet metrikler ise
+ölçekten bağımsız karşılaştırılabiliyor.*
 
 ### Kullanım kolaylıkları
 
