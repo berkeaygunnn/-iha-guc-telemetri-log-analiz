@@ -8,6 +8,7 @@ xvfb altında çalıştırılmalı (bkz. .github/workflows/tests.yml).
 Kullanım: python test_smoke.py  (frontend/tests/ içinden)
 """
 
+import itertools
 import shutil
 import sys
 import tempfile
@@ -844,11 +845,28 @@ class SmokeTests(unittest.TestCase):
 
     def _resize(self, width: int, height: int = 800):
         """Pencereyi yeniden boyutlandırıp Tk'nin yerleşimi tamamlamasını
-        bekler (geometri hesabı boşta yapıldığı için update() şart)."""
+        bekler.
+
+        `deiconify` + gerçek genişliği bekleme ŞART: pencere haritalanmadan
+        tüm widget genişlikleri 1 kalıyor, o hâlde "hiçbir şey taşmıyor"
+        testleri hiçbir şey ölçmeden geçerdi."""
+        self.app.deiconify()
+        # Toolbar/istatistik satırı analiz ekranının içinde; giriş ekranı
+        # açıkken paketlenmemiş oluyorlar ve genişlikleri 1 kalıyor.
+        # (_load_and_plot, _show_analysis'i çağıran _load_file'ı atlıyor.)
+        self.app._show_analysis()
         self.app.geometry(f"{width}x{height}")
-        for _ in range(6):
+        expected = width - 32  # toolbar/stats satırı padx=16 ile paketleniyor
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
             self.app.update_idletasks()
             self.app.update()
+            if abs(self.app.toolbar.winfo_width() - expected) <= 4:
+                break
+        self.assertAlmostEqual(
+            self.app.toolbar.winfo_width(), expected, delta=4,
+            msg="pencere istenen genişliğe gelmedi; ölçüm anlamsız olurdu",
+        )
 
     def _toolbar_buttons(self):
         return {
@@ -858,15 +876,31 @@ class SmokeTests(unittest.TestCase):
             "theme": self.app.theme_button,
         }
 
-    def _clipped_buttons(self):
-        """Toolbar'ın görünür alanının dışına taşan butonların adları."""
+    @staticmethod
+    def _rects_overlap(a, b):
+        return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+    def _broken_buttons(self):
+        """Doğru yerleşmemiş toolbar butonlarının adları.
+
+        Üç bozulma biçimi de aranıyor, çünkü `grid` yer yetmediğinde butonları
+        dışarı İTMİYOR: önce sıkıştırıyor, sonra grupları ÜST ÜSTE bindiriyor.
+        Sadece "görünür alanın dışında mı" diye baksaydık test, yerleşim
+        tamamen bozukken bile geçerdi (ölçüldü)."""
         toolbar = self.app.toolbar
-        clipped = []
+        broken, rects = [], {}
         for name, widget in self._toolbar_buttons().items():
             x = widget.winfo_rootx() - toolbar.winfo_rootx()
-            if x < 0 or x + widget.winfo_width() > toolbar.winfo_width() + 1:
-                clipped.append(name)
-        return clipped
+            y = widget.winfo_rooty() - toolbar.winfo_rooty()
+            rects[name] = (x, y, x + widget.winfo_width(), y + widget.winfo_height())
+            if x < 0 or y < 0 or rects[name][2] > toolbar.winfo_width() + 1:
+                broken.append(name)
+            elif widget.winfo_width() < widget.winfo_reqwidth():
+                broken.append(f"{name} (sıkışmış)")
+        for first, second in itertools.combinations(sorted(rects), 2):
+            if self._rects_overlap(rects[first], rects[second]):
+                broken.append(f"{first}+{second} (üst üste)")
+        return broken
 
     def test_toolbar_buttons_stay_visible_down_to_minimum_window_width(self):
         """Asıl hata buydu: 1100px altında "Temizle"/"Dışa Aktar"/"Ayarlar"/
@@ -876,7 +910,7 @@ class SmokeTests(unittest.TestCase):
         self.app._set_file_label("ArduCopter-MaxAltFence-00000067.BIN · Multirotor")
         for width in (1920, 1400, 1200, 1100, 1000, 900, 800, 700):
             self._resize(width)
-            self.assertEqual(self._clipped_buttons(), [], f"{width}px")
+            self.assertEqual(self._broken_buttons(), [], f"{width}px")
 
     def test_toolbar_wraps_to_second_row_only_when_too_narrow(self):
         self.app._show_analysis()
@@ -907,7 +941,7 @@ class SmokeTests(unittest.TestCase):
         self.app._set_file_label("A" * 200 + ".BIN")
         self._resize(1400)
 
-        self.assertEqual(self._clipped_buttons(), [])
+        self.assertEqual(self._broken_buttons(), [])
         self.assertLess(len(self.app.file_label.cget("text")), 204)
         self.assertTrue(self.app.file_label.cget("text").endswith("..."))
 
@@ -949,6 +983,78 @@ class SmokeTests(unittest.TestCase):
             self.app.update()
 
         self.assertEqual(self.app.file_label.cget("text"), text_before)
+
+    # --- İstatistik satırının dar ekrana uyumu ---------------------------------
+
+    def _clipped_stat_tiles(self):
+        """İstatistik satırının görünür alanının dışına taşan kutucuklar."""
+        row = self.app.stats_row
+        clipped = []
+        for tile, (_key, title) in zip(self.app._stat_tiles,
+                                       frontend_main.STAT_TILE_DEFINITIONS):
+            x = tile.winfo_rootx() - row.winfo_rootx()
+            y = tile.winfo_rooty() - row.winfo_rooty()
+            if x < 0 or x + tile.winfo_width() > row.winfo_width() + 1:
+                clipped.append(title)
+            elif y + tile.winfo_height() > row.winfo_height() + 1:
+                clipped.append(title + " (dikey)")
+        return clipped
+
+    def test_stat_tiles_stay_visible_down_to_minimum_window_width(self):
+        """Dokuz kutucuk dar pencereye sığmıyordu: 1000px'de sonuncusu,
+        720px'de son üçü kesiliyordu. Artık alt satıra iniyorlar."""
+        self._load_and_plot("ArduCopter-MaxAltFence-00000067.BIN")
+        for width in (1920, 1400, 1200, 1000, 900, 800, 700):
+            self._resize(width)
+            self.assertEqual(self._clipped_stat_tiles(), [], f"{width}px")
+
+    def test_stat_tiles_use_one_row_when_there_is_room(self):
+        self._load_and_plot("ArduCopter-MaxAltFence-00000067.BIN")
+        self._resize(1920)
+        self.assertEqual(self.app._stat_columns, len(frontend_main.STAT_TILE_DEFINITIONS))
+        self._resize(800)
+        self.assertLess(self.app._stat_columns, len(frontend_main.STAT_TILE_DEFINITIONS))
+        self._resize(1920)
+        self.assertEqual(self.app._stat_columns, len(frontend_main.STAT_TILE_DEFINITIONS))
+
+    def test_stat_tiles_are_spread_evenly_when_wrapped(self):
+        """Sığan en fazla sütun 8 olduğunda yerleşim 8+1 oluyordu ve tek
+        başına kalan kutucuk hata gibi duruyordu; aynı iki satırda 5+4 hem
+        dengeli hem daha dar."""
+        widths = [80] * 9
+        # 9 kutucuk 8 sütuna sığacak kadar yer var ama 9'a yetmiyor.
+        available = 8 * (80 + frontend_main.STATS_TILE_GAP)
+        self.assertEqual(self.app._stat_columns_that_fit(widths, available), 5)
+
+    def test_stat_column_count_never_drops_below_one(self):
+        """Alan hiçbir sütuna yetmese bile (ör. pencere henüz çizilmemişken
+        genişlik 1) yerleşim çökmemeli."""
+        self.assertEqual(self.app._stat_columns_that_fit([200] * 9, 1), 1)
+        self.assertEqual(self.app._stat_columns_that_fit([200] * 9, 0), 1)
+
+    def test_stat_row_layout_does_not_oscillate_at_the_same_width(self):
+        self._load_and_plot("ArduCopter-MaxAltFence-00000067.BIN")
+        self._resize(1000)
+        first = self.app._stat_columns
+        for _ in range(5):
+            self.app.update()
+            self.assertEqual(self.app._stat_columns, first)
+
+    def test_stat_row_relayouts_after_values_change_width(self):
+        """Kutucuk metinleri değişince genişlikleri de değişiyor; yerleşim
+        eski genişliklere göre kalırsa dar pencerede yine taşardı. Tk genişlik
+        hesabını boşta yaptığı için yenileme after_idle ile (bkz.
+        _refresh_stats_layout)."""
+        self._resize(900)
+        self._load_and_plot("ArduCopter-MaxAltFence-00000067.BIN")
+        self._resize(900)
+        self.assertEqual(self._clipped_stat_tiles(), [])
+        columns_with_values = self.app._stat_columns
+
+        self.app._on_clear_click()  # kutucuklar "—"ye döner, daralırlar
+        self._resize(900)
+        self.assertEqual(self._clipped_stat_tiles(), [])
+        self.assertGreaterEqual(self.app._stat_columns, columns_with_values)
 
     # --- Araç tipi başına uyarı eşikleri ---------------------------------------
 

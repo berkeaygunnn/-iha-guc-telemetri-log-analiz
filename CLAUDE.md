@@ -118,6 +118,25 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   olurdu; özet metrikler ölçekten ve süreden bağımsız karşılaştırılabiliyor.
   Metrikler üst istatistik satırıyla AYNI yardımcıları kullanıyor ki iki
   yerde farklı sayı çıkmasın.
+- **İstatistik satırı dar ekranda sarıyor:** dokuz kutucuk 1100px altında
+  sığmıyordu (1000px'de sonuncusu, 720px'de son üçü kesiliyordu). Kutucuklar
+  artık `grid` ile yerleşiyor ve sığan sütun sayısı pencere genişliğinden
+  hesaplanıyor.
+
+  Sütun sayısı basit bir bölmeyle bulunamıyor: grid'de sütun genişliği o
+  sütundaki en geniş kutucuk kadar olur ve kutucuklar eşit değil ("Süre" 79px,
+  "Voltaj Aralığı" 133px). Bu yüzden aday sütun sayıları en genişten başlayarak
+  deneniyor. Sarma gerektiğinde sütunlar satırlara **eşit dağıtılıyor**: sığan
+  en fazla sütun 8 olduğunda yerleşim 8+1 çıkıyordu ve tek başına kalan
+  kutucuk hata gibi duruyordu; aynı iki satırda 5+4 hem dengeli hem daha dar.
+
+  **Testler önce boşa geçiyordu:** pencere haritalanmadan tüm widget
+  genişlikleri 1 kalıyor, yani "hiçbir şey taşmıyor" iddiası hiçbir şey ölçmeden
+  doğrulanıyordu. Test yardımcısı artık `deiconify` edip gerçek genişliği
+  bekliyor ve gelmezse testi düşürüyor. Ayrıca `grid`, yer yetmediğinde
+  butonları dışarı İTMİYOR — önce sıkıştırıp sonra grupları üst üste
+  bindiriyor; dedektör üç bozulma biçimini de arıyor. İkisi de yerleşim
+  kasıtlı bozularak (mutasyon) doğrulandı.
 - **Üst toolbar dar ekranda taşmıyor:** ölçüldü — butonlar 1280px istiyordu,
   1100px'lik bir pencerede "Temizle"/"Dışa Aktar"/"Ayarlar"/"Koyu Tema"
   görünmüyordu (tıklanamıyordu da). İki değişiklik:
