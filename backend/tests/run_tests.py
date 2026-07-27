@@ -8,6 +8,7 @@ Kullanım: python run_tests.py  (backend/tests/ içinden ya da repo kökünden)
 """
 
 import json
+import shutil
 import struct
 import subprocess
 import sys
@@ -1204,6 +1205,56 @@ class VehicleTypeTests(unittest.TestCase):
         finally:
             path.unlink(missing_ok=True)
 
+    def test_ardupilot_submarine_firmware_name_recognized(self):
+        """"ArduSub" -> "submarine" eşlemesi main.cpp'de var ama hiç sentetik
+        ya da gerçek bir log ile doğrulanmamıştı (bkz. proje test kapsamı
+        taraması)."""
+        MSG_TYPE = 103
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(MSG_TYPE, "MSG", "QZ", "TimeUS,Message")
+        out += bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, MSG_TYPE])
+        out += struct.pack("<Q", int(0.5 * 1e6)) + b"ArduSub V4.1.0".ljust(64, b"\x00")
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(1.0, 0, 12.6, 5.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            self.assertEqual(run_backend(path)["meta"]["vehicle_type"], "submarine")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_px4_airship_vehicle_type_detected(self):
+        """PX4_VEHICLE_TYPE_AIRSHIP (4) -> "airship" eşlemesi kodda var ama
+        hiç doğrulanmamıştı (rotary_wing/fixed_wing/rover/vtol'un aksine)."""
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float voltage_v;float current_a;"
+        )
+        out += make_synthetic_ulog.build_format_message(
+            "vehicle_status:uint64_t timestamp;uint8_t vehicle_type;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += make_synthetic_ulog.build_subscription_message(2, "vehicle_status", multi_id=0)
+        out += make_synthetic_ulog.build_battery_data_message(1, 1.0, 16.0, 5.0)
+
+        timestamp_us = int(1.0 * 1e6)
+        payload = struct.pack("<H", 2) + struct.pack("<Q", timestamp_us) + struct.pack("<B", 4)  # AIRSHIP
+        out += make_synthetic_ulog.build_message(make_synthetic_ulog.MSG_DATA, payload)
+
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            self.assertEqual(run_backend(path)["meta"]["vehicle_type"], "airship")
+        finally:
+            path.unlink(missing_ok=True)
+
 
 class HasCurrentDataTests(unittest.TestCase):
     """has_current_data bayrağı: akım sensörü bağlı değilken ArduPilot/PX4 bu
@@ -1492,6 +1543,235 @@ class ArduRoverRealLogTests(unittest.TestCase):
     def test_healthy_log_produces_no_warnings(self):
         """12.53–12.60 V arası ~%0.6'lık bir düşüm; eşiğin (%15) çok altında."""
         self.assertEqual(self.data["warnings"], [])
+
+
+class ArduPlaneRealLogTests(unittest.TestCase):
+    """data/ArduPlane-GpsSensorPreArmEAHRS-00000115.BIN — gerçek akım sensörü
+    olan bir sabit kanat logu. Bu tur öncesinde ne ArduPilot ne PX4 tarafında
+    böyle bir log yoktu: px4_fixed_wing_flight.ulg'de esc_status hiç yok ve
+    ArduCopter-*.BIN örnekleri multirotor. Aynı autotest.ardupilot.org
+    arşivinden (Rover-Scripting-00000036.BIN ile aynı kaynak) seçildi;
+    firmware satırı "ArduPlane V4.8.0-dev"."""
+
+    LOG = "ArduPlane-GpsSensorPreArmEAHRS-00000115.BIN"
+
+    def setUp(self):
+        self.data = run_backend(DATA_DIR / self.LOG)
+
+    def test_format_and_vehicle_type(self):
+        self.assertEqual(self.data["meta"]["format"], "ardupilot")
+        self.assertEqual(self.data["meta"]["vehicle_type"], "fixed_wing")
+
+    def test_battery_has_real_varying_current(self):
+        battery = battery_by_id(self.data, 1)
+        self.assertTrue(battery["has_current_data"])
+        self.assertEqual(len(battery["time_s"]), 567)
+        self.assertGreater(max(battery["current_a"]), 40.0)
+
+    def test_esc_telemetry_present(self):
+        """Rover'ın aksine bu logda ESC telemetrisi de var — akım sensörü
+        ve motor akımı burada BİRLİKTE mevcut (bkz. Rover'da ikisi ayrıydı)."""
+        self.assertEqual(len(self.data["motors"]), 1)
+        self.assertTrue(self.data["motors"][0]["has_current_data"])
+
+    def test_healthy_log_produces_no_warnings(self):
+        self.assertEqual(self.data["warnings"], [])
+
+
+class BackendCorrectnessFixTests(unittest.TestCase):
+    """Genel tarama turunda bulunan dört backend düzeltmesinin regresyon
+    testleri (bkz. CLAUDE.md 'Genel tarama' bölümü)."""
+
+    def test_locate_field_stops_at_unrecognized_format_character(self):
+        """FMT'de Volt/Curr'dan ÖNCE tanınmayan bir format karakteri (bit
+        hatasıyla bozulmuş bir format string'ini simüle eder) varsa, artık
+        sonraki alanların offset'i KAYMIYOR — Volt/Curr "bulunamadı" sayılıp
+        örnek atlanıyor. Düzeltmeden önce offset kayar, "Bad" alanının
+        gerçek baytları yanlışlıkla voltaj diye okunup JSON'a yazılırdı.
+
+        Backend en az bir batarya örneği şart koştuğu için (aksi halde
+        tamamen başarısız olur), bozuk "BAT" mesajının yanına AYRI bir tip
+        id'siyle ("CURR" adında, temiz bir formatla) geçerli bir örnek de
+        ekleniyor; asıl kontrol o geçerli örneğin voltajının 16.0 kalması
+        ve zehir değerinin (999.0) hiçbir yerde görünmemesi."""
+        BAD_BAT_TYPE = 104
+        # '?' fieldByteSize'da tanımsız (default: return 0) — bit hatasıyla
+        # bozulmuş bir format karakterini simüle ediyor. "length" alanı
+        # GERÇEK bayt düzenine göre elle hesaplanıyor: TimeUS(8)+Bad(4,
+        # gerçekte bir float)+Volt(4)+Curr(4) = 20 bayt + 3 bayt header.
+        fmt_message = (
+            bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, make_synthetic_log.FMT_MSG_ID])
+            + struct.pack("<BB", BAD_BAT_TYPE, 3 + 20)
+            + b"BAT".ljust(4, b"\x00")
+            + b"Q?ff".ljust(16, b"\x00")
+            + b"TimeUS,Bad,Volt,Curr".ljust(64, b"\x00")
+        )
+        # "Bad" alanına gerçek voltajdan (16.0) açıkça farklı bir zehir değeri
+        # (999.0) yazılıyor: hata geri gelirse bu değer "voltaj" diye okunur.
+        bad_bat_message = (
+            bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, BAD_BAT_TYPE])
+            + struct.pack("<Qfff", int(1.0 * 1e6), 999.0, 12.0, 3.0)
+        )
+        # Ayrı, bozulmamış bir mesaj tipi ("CURR" adıyla ama BAT_TYPE (100) id'siyle,
+        # bu sayede make_synthetic_log.build_bat_message doğrudan kullanılabiliyor).
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "CURR", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += fmt_message + bad_bat_message
+        out += make_synthetic_log.build_bat_message(2.0, 0, 16.0, 5.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            # Sadece gecerli "CURR" ornegi bir batarya uretmeli; bozuk "BAT"
+            # mesaji ne kendi bataryasini uretmeli ne de baska bir bataryaya
+            # zehir degerini (999.0) sizdirmali.
+            self.assertEqual(len(data["batteries"]), 1)
+            battery = data["batteries"][0]
+            self.assertEqual(battery["voltage_v"], [16.0])
+            self.assertNotIn(999.0, battery["voltage_v"])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_esc_array_over_32_elements_does_not_crash(self):
+        """escArrayField.field->arrayLength ('esc_report[N] esc' format
+        string'inden) hiçbir yerde 32'ye kırpılmıyor; N>32 olduğunda eski kod
+        "onlineMask >> i" ile i>=32 için tanımsız davranışa girerdi (shift
+        genişliği >= operand genişliği). 33 elemanlı bir dizi, ilk 32'si
+        online-mask (0xFFFFFFFF) ile, 33'üncüsü ise maskeyle ifade
+        EDİLEMEDİĞİ için maskeye hiç sokulmadan (bkz. i<32 koruması) işleniyor
+        — önemli olan çökme/tanımsız davranış olmadan tamamlanması."""
+        ESC_COUNT = 33
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float voltage_v;float current_a;"
+        )
+        out += make_synthetic_ulog.build_format_message(
+            f"esc_status:uint64_t timestamp;uint8_t esc_count;uint32_t esc_online_flags;"
+            f"esc_report[{ESC_COUNT}] esc;"
+        )
+        out += make_synthetic_ulog.build_format_message(
+            "esc_report:uint64_t timestamp;float esc_current;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += make_synthetic_ulog.build_subscription_message(2, "esc_status", multi_id=0)
+        out += make_synthetic_ulog.build_battery_data_message(1, 3.0, 16.5, 12.0)
+
+        timestamp_us = int(3.0 * 1e6)
+        payload = struct.pack("<H", 2) + struct.pack("<Q", timestamp_us)
+        payload += struct.pack("<B", 0)             # esc_count kullanılmıyor
+        payload += struct.pack("<I", 0xFFFFFFFF)    # esc_online_flags: alt 32 bit tamamı 1
+        for i in range(ESC_COUNT):
+            payload += struct.pack("<Qf", timestamp_us, float(i + 1))
+        out += make_synthetic_ulog.build_message(make_synthetic_ulog.MSG_DATA, payload)
+
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)  # çökerse/UB'ye girerse burada patlar
+            motor_ids = sorted(m["id"] for m in data["motors"])
+            self.assertEqual(motor_ids, list(range(1, ESC_COUNT + 1)))
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_out_of_order_samples_still_produce_correct_duration(self):
+        """Ayrıştırma sırasında bir id'nin örnekleri kronolojik sırada gelmek
+        ZORUNDA değil (bozuk dosya, birleştirilmiş kayıt). parseLog artık
+        her diziyi zamana göre sıralı tutuyor (sortSamplesByTime); bu
+        olmasaydı duration_s, dosyaya EKLENME sırasındaki ilk/son örneği
+        gerçek min/max sanıp yanlış hesaplardı."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        # Dosyaya eklenme sırası KASITLI olarak kronolojik değil: 5s, 1s, 9s.
+        # Sıralama olmasaydı "son eklenen - ilk eklenen" = 9-5 = 4s dönerdi;
+        # gerçek aralık 9-1 = 8s.
+        for t in (5.0, 1.0, 9.0):
+            out += make_synthetic_log.build_bat_message(t, 0, 16.0, 5.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            self.assertAlmostEqual(data["meta"]["duration_s"], 8.0, places=3)
+            self.assertEqual(data["batteries"][0]["time_s"], [1.0, 5.0, 9.0])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_oversized_file_is_rejected_without_reading_into_memory(self):
+        """Dosyanın tamamı okunmadan önce boyutu kontrol ediliyor; çok
+        büyük/bozuk bir dosya bellek taşmasına yol açmadan reddedilmeli.
+        Gerçekten 1 GB+ yazmak yerine SEYREK (sparse) bir dosya kullanılıyor:
+        mantıksal boyut sınırı aşıyor ama fiziksel disk/bellek kullanımı
+        neredeyse sıfır — test hızlı ve taşınabilir kalıyor."""
+        max_log_file_bytes = 1024 ** 3  # main.cpp'deki MAX_LOG_FILE_BYTES ile aynı değer
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            path = Path(f.name)
+            f.seek(max_log_file_bytes + 4096 - 1)
+            f.write(b"\0")
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                run_backend(path)
+            self.assertIn("buyuk", str(ctx.exception).lower())
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class NonAsciiPathTests(unittest.TestCase):
+    """Projenin kendi çalışma dizini her gün Türkçe karakter taşıyor
+    ("İHA UYG", "istinye üniversitesi") ama hiçbir test bir log dosyasının
+    YOLUNU Türkçe karakterli denemiyordu — main.cpp'deki özel Windows UTF-8
+    kodu (wideToUtf8, CommandLineToArgvW satır ~1360, u8path satır 36) şu ana
+    kadar hiç doğrulanmamıştı."""
+
+    def test_backend_parses_a_log_from_a_turkish_character_path(self):
+        tmp_dir = Path(tempfile.mkdtemp(prefix="İHA Loğ Testi çğşü "))
+        try:
+            log_path = tmp_dir / "örnek kayıt İ.BIN"
+            log_path.write_bytes(make_synthetic_log.generate())
+            data = run_backend(log_path)
+            self.assertGreater(len(data["batteries"]), 0)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+class MultiBatteryThreeOrMoreTests(unittest.TestCase):
+    """Şu ana kadar her çoklu-batarya testi tam 2 batarya kullanıyordu;
+    dengesizlik kuralı ve karşılaştırma tablosu 3+ seriyle hiç denenmedi
+    (bkz. proje test kapsamı taraması)."""
+
+    def test_three_batteries_are_all_parsed_and_flagged_for_imbalance(self):
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        # Üçüncü batarya belirgin şekilde daha az akım çekiyor (genel
+        # dengesizlik eşiği %20'yi aşsın diye); süre MIN_DURATION_FOR_WARNINGS_S
+        # (5s) eşiğini geçsin diye örnekler 0/4/8. saniyelerde.
+        currents = {0: 10.0, 1: 10.0, 2: 2.0}
+        for t in (0.0, 4.0, 8.0):
+            for inst, curr in currents.items():
+                out += make_synthetic_log.build_bat_message(t, inst, 16.0, curr)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            self.assertEqual(sorted(b["id"] for b in data["batteries"]), [1, 2, 3])
+            for battery_id in (1, 2, 3):
+                self.assertEqual(len(battery_by_id(data, battery_id)["time_s"]), 3)
+            self.assertTrue(any(w.startswith("Batarya 3") for w in data["warnings"]))
+        finally:
+            path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

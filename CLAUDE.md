@@ -208,6 +208,59 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   frontend `_flight_duration_seconds`). Aynı hata kalan-süre tahminine de
   taşınıyordu — orada süreyle çarpıldığı için sonuç ~45 kat şişiyordu.
 
+- **Genel tarama: hata düzeltmeleri, yeni testler, görsel cila.** Üç paralel
+  araştırma (frontend görsel, backend hata avı, test kapsamı) ~34 bulgu
+  çıkardı; kullanıcıyla önceliklendirilip en değerli/en düşük riskli alt
+  küme uygulandı.
+
+  **Backend'de dört gerçek düzeltme** (`backend/src/main.cpp`):
+  (1) `locateField`'e, `locateUlogField`'de zaten var olan sıfır-boyut
+  koruması eklendi — bozuk bir FMT'de Volt/Curr'dan önceki tanınmayan bir
+  format karakteri artık offset'i kaydırıp yanlış veri okumak yerine örneği
+  güvenle atlıyor. (2) `extractUlogEscSamples`'ta `escCount>32` için
+  `onlineMask >> i` tanımsız davranışına `i<32` koruması eklendi. (3) Hiçbir
+  yerde zaman sıralaması garanti edilmiyordu (`computeDuration` vb. hep
+  `front()`/`back()`'in gerçek min/max olduğunu varsayıyordu); `parseLog()`
+  artık her diziyi ayrıştırma bitince `sortSamplesByTime` ile sıralıyor.
+  (4) Dosya boyutu okumadan önce kontrol ediliyor (üst sınır 1 GB) —
+  sınırsız bellek okumasına karşı.
+
+  Üçü (1, 2, 3) yerleşim kasıtlı bozularak (mutasyon) doğrulandı; (2) UB
+  olduğu için bu derleyicide gözlemlenebilir bir fark üretmedi (x86'da
+  shift-by-32 donanım düzeyinde shift-by-0 gibi davranıyor) — düzeltme
+  yine de doğru, sadece bu ortamda mutasyonla kanıtlanamadı.
+
+  **Yeni testler:** Türkçe/ASCII-dışı karakterli dosya yolu (`İHA UYG`
+  projenin kendi çalışma dizini olmasına rağmen hiç test edilmemişti — artık
+  hem backend hem frontend'de var), 3+ bataryalı log (dengesizlik/ısı
+  haritası/karşılaştırma tablosu hep 2 batarya ile test ediliyordu),
+  ArduSub→submarine ve PX4 airship araç tipi eşlemeleri (kodda vardı,
+  doğrulanmamıştı). Backend 76→88, frontend 109→115 test.
+
+  **`data/ArduPlane-GpsSensorPreArmEAHRS-00000115.BIN` eklendi** — gerçek
+  akım sensörü olan bir sabit kanat logu (`Rover-Scripting-00000036.BIN` ile
+  aynı autotest.ardupilot.org kaynağı). Bu turdan önce ne ArduPilot ne PX4
+  tarafında böyle bir log yoktu (`px4_fixed_wing_flight.ulg`'de esc_status
+  hiç yok, `ArduCopter-*.BIN` örnekleri multirotor). Firmware satırı
+  "ArduPlane V4.8.0-dev"; akım 0–49.999 A arası gerçekten değişiyor, ESC
+  telemetrisi de var (sabit 0.8 A — SITL'de placeholder olduğu biliniyor,
+  bkz. rover notu).
+
+  **Frontend cila** (`frontend/main.py`): geçmiş dosya kartları ve format
+  rozeti artık yuvarlak köşeli (`_rounded_rect_points`, `_blade_polygon`
+  ile aynı yöntem — Canvas'ın yerleşik böyle bir ilkeli yok), karşılaştırma
+  tablosuna stat kutucuklarıyla aynı dilde (`UI_GRIDLINE`) satır bandı
+  eklendi, landing footer'ın adsız rengi `LANDING_FOOTER_TEXT`'e taşındı,
+  `warnings_label`/`status_label` artık toolbar/stats-row'daki gibi
+  `<Configure>`'da yeniden hesaplanan bir wraplength kullanıyor (öncesinde
+  `warnings_label`'ın hiç wraplength'i yoktu).
+
+  **Ölçülüp uygulanmayan bir madde:** tema butonundaki ☀/🌙 emoji'nin diğer
+  ikonlarla (⚙ gibi) tutarsız renkli göründüğü varsayılmıştı; ekran
+  görüntüsüyle test edildiğinde bu ortamda (CustomTkinter'ın varsayılan
+  fontu) ikisi de zaten aynı monokrom çizgi stilinde render oluyor — kod
+  değişikliği yapılmadı.
+
 ## Kapsam dışı bırakılan fikirler
 
 - **Yapay zeka / makine öğrenmesi entegrasyonu:** Değerlendirildi, KESİN
