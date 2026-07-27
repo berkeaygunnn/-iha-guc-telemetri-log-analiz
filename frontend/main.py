@@ -275,6 +275,9 @@ LANDING_TEXT_SECONDARY = "#a9c3de"   # geçmiş kartlarındaki "az önce · 1544
                                      # temada neredeyse hiç kontrastı kalmazdı (koyu gri/koyu lacivert)
 LANDING_FOOTER_TEXT = "#3a5a78"      # alt bilgi satırı ("... MIT Lisansı ile açık kaynak ...") — bilerek
                                      # soluk: sayfanın en az önemli metni, dikkat çekmemeli
+LANDING_SIDEBAR_WIDTH = 290          # _build_recent_sidebar'daki sabit genişlik; başlık/açıklama
+                                     # metinlerinin kalan alana göre ne zaman sarması gerektiğini
+                                     # hesaplayabilmek için burada da adlandırılmış halde tutuluyor
 
 # Birden fazla batarya/motor olduğunda her birine sabit sırada, kategorik bir
 # renk atamak için (kategori kimliği). Bir bataryanın voltaj ve akım çizgisi
@@ -1124,6 +1127,21 @@ class App(ctk.CTk):
         renk paleti kullanır (bkz. LANDING_* sabitleri)."""
         self._build_recent_sidebar()
 
+        # Footer, "center" çerçevesinden ÖNCE side="bottom" ile pack ediliyor.
+        # Sıra önemli: pack cavity'yi çağrı sırasına göre bölüyor; footer
+        # center'dan SONRA eklenirse (center zaten expand=True ile kalan tüm
+        # genişliği aldıktan sonra), footer'a ayrılan pay center'ın genişliğini
+        # de daraltıyor (ölçüldü: center 700px pencerede 410 yerine 200px
+        # kalıyordu, başlık/açıklama bu yüzden sidebar'ın altına gömülüp
+        # sağdan taşıyordu). Önce ayrılırsa footer tüm genişlikte bir şerit
+        # alır, center kalan yüksekliğin TAMAMINI (ve doğru genişliği) alır.
+        self.landing_footer_label = ctk.CTkLabel(
+            self.landing_frame,
+            text=f"İHA Güç/Telemetri Log Analiz Aracı · MIT Lisansı ile açık kaynak · v{APP_VERSION}",
+            text_color=LANDING_FOOTER_TEXT, font=ctk.CTkFont(size=11), justify="center",
+        )
+        self.landing_footer_label.pack(side="bottom", pady=12)
+
         center = ctk.CTkFrame(self.landing_frame, fg_color="transparent")
         center.pack(side="left", fill="both", expand=True)
 
@@ -1143,14 +1161,16 @@ class App(ctk.CTk):
         icon_canvas.pack(pady=(0, 12))
         self._draw_drone_icon(icon_canvas, scale=0.86)
 
-        ctk.CTkLabel(
+        self.landing_title_label = ctk.CTkLabel(
             content_block, text="İHA Güç/Telemetri Analiz", text_color=LANDING_TEXT,
-            font=ctk.CTkFont(size=32, weight="bold"),
-        ).pack(pady=(0, 8))
-        ctk.CTkLabel(
+            font=ctk.CTkFont(size=32, weight="bold"), justify="center",
+        )
+        self.landing_title_label.pack(pady=(0, 8))
+        self.landing_desc_label = ctk.CTkLabel(
             content_block, text="Uçuş logunu yükleyip güç/telemetri analizine başla",
-            text_color=LANDING_ACCENT_BRIGHT, font=ctk.CTkFont(size=14),
-        ).pack(pady=(0, 28))
+            text_color=LANDING_ACCENT_BRIGHT, font=ctk.CTkFont(size=14), justify="center",
+        )
+        self.landing_desc_label.pack(pady=(0, 28))
 
         ctk.CTkButton(
             content_block, text="Dosya Yükle (Ctrl+O)", command=self._on_load_file_click,
@@ -1181,11 +1201,23 @@ class App(ctk.CTk):
             sample_link.bind("<Enter>", lambda _e: sample_link.configure(text_color=LANDING_ACCENT_BRIGHT))
             sample_link.bind("<Leave>", lambda _e: sample_link.configure(text_color=TEXT_MUTED))
 
-        ctk.CTkLabel(
-            self.landing_frame,
-            text=f"İHA Güç/Telemetri Log Analiz Aracı · MIT Lisansı ile açık kaynak · v{APP_VERSION}",
-            text_color=LANDING_FOOTER_TEXT, font=ctk.CTkFont(size=11),
-        ).pack(side="bottom", pady=12)
+        self.landing_frame.bind("<Configure>", self._on_landing_frame_configure)
+
+    def _on_landing_frame_configure(self, event=None):
+        """content_block, sidebar'dan arta kalan alanın (relx=0.56 ile) hafif
+        sağına ortalanıyor. Pencere `minsize` kadar (700px) daraldığında başlık/
+        açıklama bu ofsetten dolayı sağ kenardan taşabiliyordu (sol kenar sidebar
+        sınırıyla zaten güvenli); wraplength'i anchor noktasının HER İKİ yanındaki
+        en dar mesafenin iki katına göre hesaplamak, hangi relx seçilirse seçilsin
+        metni taşmadan sığdırır. Footer tüm pencere genişliğinde, ayrı hesaplanır."""
+        frame_width = event.width if event is not None else self.landing_frame.winfo_width()
+        center_width = max(1, frame_width - LANDING_SIDEBAR_WIDTH)
+        anchor_x = center_width * 0.56
+        fit_width = 2 * min(anchor_x, center_width - anchor_x) - 24
+        content_wraplength = max(160, int(fit_width))
+        self.landing_title_label.configure(wraplength=content_wraplength)
+        self.landing_desc_label.configure(wraplength=content_wraplength)
+        self.landing_footer_label.configure(wraplength=max(160, frame_width - 32))
 
     def _pick_sample_data_file(self):
         """Onboarding için: takım arkadaşı kendi log dosyası olmadan da
@@ -1208,7 +1240,8 @@ class App(ctk.CTk):
 
     def _build_recent_sidebar(self):
         """Giriş ekranının sol tarafındaki 'Geçmiş Dosyalar' paneli."""
-        sidebar = ctk.CTkFrame(self.landing_frame, fg_color="#0c1e30", corner_radius=0, width=290)
+        sidebar = ctk.CTkFrame(self.landing_frame, fg_color="#0c1e30", corner_radius=0,
+                                width=LANDING_SIDEBAR_WIDTH)
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
 
