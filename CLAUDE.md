@@ -260,6 +260,30 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   görüntüsüyle test edildiğinde bu ortamda (CustomTkinter'ın varsayılan
   fontu) ikisi de zaten aynı monokrom çizgi stilinde render oluyor — kod
   değişikliği yapılmadı.
+- **Giriş ekranı minsize (700px) genişlikte metin taşıyordu:** kök neden
+  pack sırasıydı — footer, `expand=True` olan orta çerçeveden (`center`)
+  *sonra* `pack(side="bottom")` ile ekleniyordu; Tk'nin pack cavity'si çağrı
+  sırasına göre bölündüğü için bu, `center`'ın payını 410px yerine 200px'e
+  düşürüyordu (ölçüldü). Footer artık `center`'dan önce pack ediliyor;
+  ayrıca başlık/açıklama/footer için toolbar/stats-row'daki gibi
+  `<Configure>` tabanlı dinamik `wraplength` eklendi. Regresyon testi
+  mutasyonla doğrulandı (pack sırası eski haline döndürülüp testin kırmızı
+  çıktığı teyit edildi, sonra düzeltme geri getirildi).
+- **Ayarlar/Karşılaştırma dialoglarında küçük spacing tutarlılığı +
+  gruplama:** `hint_label`/`error_label`/`status` etiketleri kardeşi olan
+  satırların hepsinde var olan `padx=20`'yi almıyordu, eklendi. Ayarlar
+  dialogunda 3 eşik alanı artık "Hangi araç için?" seçiciden görsel olarak
+  ayrı, tonlu bir çerçevede (`GRIDLINE`, stat kutucuklarıyla aynı dil) —
+  öncesinde hepsi düz bir yığın gibi durup seçicinin üçünü de etkileyen bir
+  kapsam kontrolü olduğu belli olmuyordu.
+
+  **Uygulama geneli bir spacing sabit skalası (4/8/12/16/24 gibi) bilerek
+  YAPILMADI:** ölçüldü, `main.py`'de 60+ satırda `padx`/`pady` var, değerler
+  0-24 arasında dağınık (3, 6, 20 gibi temiz bir skalaya oturmayan ara
+  değerler dahil). Ama tek seferde tüm dosyayı değiştirmek büyük bir diff
+  olur ve projenin "küçük, test edilebilir adımlar" ilkesine ters düşer —
+  bilinçli olarak kapsam dışı bırakıldı, sadece dokunulan alanlarda (yukarı
+  bakınız) düzeltiliyor.
 
 ## Kapsam dışı bırakılan fikirler
 
