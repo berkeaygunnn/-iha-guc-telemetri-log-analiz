@@ -8,6 +8,7 @@
 //
 // Kaynak: https://github.com/ArduPilot/ardupilot/blob/master/libraries/AP_Logger/LogStructure.h
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -207,6 +208,12 @@ FieldLocator locateField(const FormatDef& def, const std::string& fieldName, siz
             if (offset + fieldSize > payloadSize) return FieldLocator{};
             return FieldLocator{true, offset, def.format[i]};
         }
+        // Tanınmayan bir format karakteri (fieldByteSize'ın "default: return 0"
+        // dalı) burada durdurulmazsa sonraki tüm alanların offset'i sessizce
+        // kayar — yanlış bayt aralığı okunur ama yine de payload sınırları
+        // içinde kalabileceği için found=true dönerdi. locateUlogField'deki
+        // eşdeğer korumayla (bkz. aşağısı) aynı mantık.
+        if (fieldSize == 0) break;
         offset += fieldSize;
     }
     return FieldLocator{};
@@ -748,7 +755,13 @@ void extractUlogEscSamples(const uint8_t* payload, const ULogFormatDef& escStatu
     }
 
     for (int i = 0; i < escCount; ++i) {
-        if (haveOnlineMask && !((onlineMask >> i) & 1u)) continue;  // bu dizi elemanında bağlı ESC yok
+        // onlineMask 32 bitlik; i>=32 için "onlineMask >> i" tanımsız davranış
+        // olurdu (shift genişliği >= operand genişliği). Gerçek PX4 firmware'i
+        // 32 ESC'yi aşmıyor ama Format string'indeki arrayLength'e üst sınır
+        // konmadığı için özel/uydurma bir log bu yolu tetikleyebilir; 32'yi
+        // aşan indeksler haveOnlineMask=false durumundaki gibi (maskeye
+        // bakmadan) işlenir.
+        if (haveOnlineMask && i < 32 && !((onlineMask >> i) & 1u)) continue;  // bu dizi elemanında bağlı ESC yok
         const uint8_t* elementPtr = payload + escArrayField.byteOffset + static_cast<size_t>(i) * elementSize;
         double curr = readUlogFieldAsDouble(elementPtr + currField.byteOffset, currField.field->elementType);
         if (!std::isfinite(curr)) continue;
@@ -901,9 +914,40 @@ ParsedLog parseUlogBuffer(const std::vector<uint8_t>& buffer) {
     return result;
 }
 
+// computeDuration, computeWarnings (voltaj-düşümü başlangıcı) ve
+// MIN_DURATION_FOR_WARNINGS_S kapısı hep front()/back()'in gerçek min/max
+// zaman damgası olduğunu varsayıyor. Hiçbir yerde sıralama garantisi yok;
+// bozuk bir dosyada ya da birleştirilmiş bir kayıtta bir id'nin örnekleri
+// zaman sırasıyla gelmezse bu varsayım sessizce bozulur. Ayrıştırma
+// bittikten hemen sonra her diziyi zamana göre sıralamak front()/back()'i
+// otomatik olarak gerçek min/max yapar; computeDuration vb. hiç değişmeden
+// doğru çalışmaya devam eder.
+template <typename SampleMap>
+void sortSamplesByTime(SampleMap& samples) {
+    for (auto& [id, points] : samples) {
+        std::stable_sort(points.begin(), points.end(),
+                          [](const auto& a, const auto& b) { return a.time_s < b.time_s; });
+    }
+}
+
+// Dosya tamamı ayrıştırma başlamadan önce belleğe okunuyor; boyut kontrolü
+// olmadan çok büyük/bozuk bir dosya std::bad_alloc ile çökmeye ya da bellek
+// tükenmesine yol açabilirdi. Üst sınır bolca pay bırakacak şekilde
+// seçildi: en büyük gerçek örnek log ~14 MB, çok saatlik bir kayıt için bile
+// 1 GB fazlasıyla yeterli.
+constexpr std::uintmax_t MAX_LOG_FILE_BYTES = 1024ull * 1024 * 1024;
+
 // Dosyayı okuyup ilk baytlarına (magic number) göre ArduPilot ya da PX4
 // parser'ına yönlendirir.
 ParsedLog parseLog(const std::string& logPath) {
+    std::error_code sizeError;
+    std::uintmax_t fileSize = fs::file_size(toPath(logPath), sizeError);
+    if (!sizeError && fileSize > MAX_LOG_FILE_BYTES) {
+        std::cerr << "Log dosyasi cok buyuk (" << fileSize << " bayt, sinir "
+                   << MAX_LOG_FILE_BYTES << " bayt): " << logPath << std::endl;
+        return {};
+    }
+
     std::ifstream in(toPath(logPath), std::ios::binary);
     if (!in.is_open()) {
         std::cerr << "Log dosyasi acilamadi: " << logPath << std::endl;
@@ -913,10 +957,11 @@ ParsedLog parseLog(const std::string& logPath) {
     std::vector<uint8_t> buffer((std::istreambuf_iterator<char>(in)),
                                  std::istreambuf_iterator<char>());
 
-    if (isUlogFile(buffer)) {
-        return parseUlogBuffer(buffer);
-    }
-    return parseArduPilotBuffer(buffer);
+    ParsedLog result = isUlogFile(buffer) ? parseUlogBuffer(buffer) : parseArduPilotBuffer(buffer);
+    sortSamplesByTime(result.batteries);
+    sortSamplesByTime(result.motors);
+    sortSamplesByTime(result.pwmOutputs);
+    return result;
 }
 
 // JSON'da " ve \ karakterleri kaçışlanmalı; aksi halde geçersiz JSON üretilir.

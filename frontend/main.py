@@ -273,6 +273,8 @@ LANDING_TEXT_SECONDARY = "#a9c3de"   # geçmiş kartlarındaki "az önce · 1544
                                      # KASITLI olarak kullanılmıyor: o tema değişince (koyu/açık) değişen bir
                                      # sabit, LANDING_CARD'ın her zaman koyu lacivert kalan zeminiyle açık
                                      # temada neredeyse hiç kontrastı kalmazdı (koyu gri/koyu lacivert)
+LANDING_FOOTER_TEXT = "#3a5a78"      # alt bilgi satırı ("... MIT Lisansı ile açık kaynak ...") — bilerek
+                                     # soluk: sayfanın en az önemli metni, dikkat çekmemeli
 
 # Birden fazla batarya/motor olduğunda her birine sabit sırada, kategorik bir
 # renk atamak için (kategori kimliği). Bir bataryanın voltaj ve akım çizgisi
@@ -1176,7 +1178,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(
             self.landing_frame,
             text=f"İHA Güç/Telemetri Log Analiz Aracı · MIT Lisansı ile açık kaynak · v{APP_VERSION}",
-            text_color="#3a5a78", font=ctk.CTkFont(size=11),
+            text_color=LANDING_FOOTER_TEXT, font=ctk.CTkFont(size=11),
         ).pack(side="bottom", pady=12)
 
     def _pick_sample_data_file(self):
@@ -1298,14 +1300,16 @@ class App(ctk.CTk):
             if width <= 1:
                 return
             canvas.delete("all")
-            canvas.create_rectangle(
-                0, 0, width - 1, card_height - 1,
-                fill=state["color"], outline=LANDING_CARD_BORDER, width=1,
+            canvas.create_polygon(
+                self._rounded_rect_points(0, 0, width - 1, card_height - 1, radius=10),
+                smooth=True, fill=state["color"], outline=LANDING_CARD_BORDER, width=1,
             )
             badge_y = card_height / 2
-            canvas.create_rectangle(
-                10, badge_y - badge_h / 2, 10 + badge_w, badge_y + badge_h / 2,
-                fill=badge_color, outline="",
+            canvas.create_polygon(
+                self._rounded_rect_points(
+                    10, badge_y - badge_h / 2, 10 + badge_w, badge_y + badge_h / 2, radius=6
+                ),
+                smooth=True, fill=badge_color, outline="",
             )
             canvas.create_text(10 + badge_w / 2, badge_y, text=badge_text, fill=LANDING_BG, font=badge_font)
 
@@ -1342,6 +1346,32 @@ class App(ctk.CTk):
         canvas.bind("<Enter>", on_enter)
         canvas.bind("<Leave>", on_leave)
         canvas.bind("<Button-1>", on_click)
+
+    @staticmethod
+    def _rounded_rect_points(x0: float, y0: float, x1: float, y1: float, radius: float,
+                              segments_per_corner: int = 6) -> list:
+        """Yuvarlak köşeli bir dikdörtgenin çokgen noktalarını üretir.
+
+        Canvas'ın yerleşik bir "rounded rectangle" ilkeli yok; geçmiş dosya
+        kartları ve rozeti eskiden `create_rectangle` ile keskin köşeli
+        çiziliyordu — oysa hero buton/format pilleri/stat kutucukları hep
+        yuvarlak (`corner_radius`). Dört köşeye çeyrek daire yayı yerleştirip
+        `create_polygon(..., smooth=True)` ile birleştirmek aynı görünümü
+        veriyor; yöntem `_blade_polygon`'daki yerel açı tarama + döndürme
+        tekniğiyle aynı aileden."""
+        radius = min(radius, (x1 - x0) / 2, (y1 - y0) / 2)
+        corners = (
+            (x1 - radius, y0 + radius, 270, 360),  # sağ üst
+            (x1 - radius, y1 - radius, 0, 90),     # sağ alt
+            (x0 + radius, y1 - radius, 90, 180),   # sol alt
+            (x0 + radius, y0 + radius, 180, 270),  # sol üst
+        )
+        points = []
+        for cx, cy, start_deg, end_deg in corners:
+            for i in range(segments_per_corner + 1):
+                angle = math.radians(start_deg + (end_deg - start_deg) * i / segments_per_corner)
+                points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+        return points
 
     @staticmethod
     def _blade_polygon(cx: float, cy: float, angle_deg: float, length: float, width: float,
@@ -2077,15 +2107,22 @@ class App(ctk.CTk):
                 wraplength=210, justify="center",
             ).grid(row=0, column=column, padx=6, pady=4, sticky="ew")
 
+        # Tek/çift satırlara stat kutucuklarıyla aynı dil (UI_GRIDLINE) ile bant
+        # uygulanıyor — bu tablo uygulamanın tek gerçek tablo verisiydi ve tek
+        # stilsiz kalan yerdi (bkz. genel tarama bulguları). pady sıfıra yakın
+        # tutuluyor ki bant KESİNTİSİZ görünsün; nefes payı ipady ile veriliyor.
         for row, (key, title) in enumerate(COMPARISON_ROWS, start=1):
+            row_color = UI_GRIDLINE if row % 2 == 0 else "transparent"
             ctk.CTkLabel(
                 parent, text=title, text_color=TEXT_SECONDARY, anchor="w",
-            ).grid(row=row, column=0, padx=6, pady=3, sticky="w")
+                fg_color=row_color, corner_radius=0,
+            ).grid(row=row, column=0, padx=(6, 2), pady=1, ipady=4, sticky="nsew")
             for column, (_name, metrics) in enumerate(results, start=1):
                 ctk.CTkLabel(
                     parent, text=_format_comparison_value(key, metrics),
                     text_color=TEXT_PRIMARY, anchor="center",
-                ).grid(row=row, column=column, padx=6, pady=3, sticky="ew")
+                    fg_color=row_color, corner_radius=0,
+                ).grid(row=row, column=column, padx=2, pady=1, ipady=4, sticky="nsew")
 
         for column in range(1, len(results) + 1):
             parent.grid_columnconfigure(column, weight=1)
@@ -2263,7 +2300,8 @@ class App(ctk.CTk):
         motor akım dengesizliği) gösteren satır. Uyarı yoksa boş kalır, ekstra
         yer kaplamaz."""
         self.warnings_label = ctk.CTkLabel(
-            self.analysis_frame, text="", text_color=UI_COLOR_WARNING, justify="left", anchor="w"
+            self.analysis_frame, text="", text_color=UI_COLOR_WARNING, justify="left", anchor="w",
+            wraplength=1000,
         )
         self.warnings_label.pack(side="top", fill="x", padx=16, pady=(0, 4))
 
@@ -2278,11 +2316,28 @@ class App(ctk.CTk):
         """Hata mesajları için ayrı bir durum satırı (dosya etiketiyle karışmasın diye)."""
         # wraplength: uzun backend hata mesajları (ör. system_power mesajı
         # birkaç cümle) pencere genişliğinde kesilmesin, alt satıra sarsın.
+        # Başlangıç değeri (1000) sadece ilk <Configure> olayına kadar geçerli
+        # bir yer tutucu; gerçek genişlik _on_analysis_frame_configure'da
+        # toolbar/stats-row'daki ile AYNI desenle yeniden hesaplanıyor —
+        # warnings_label da aynı sorunu yaşıyordu (hiç wraplength'i yoktu),
+        # o yüzden ikisi birlikte tek bir <Configure> bağıyla güncelleniyor.
         self.status_label = ctk.CTkLabel(
             self.analysis_frame, text="", text_color=UI_COLOR_CRITICAL, justify="left", anchor="w",
             wraplength=1000,
         )
         self.status_label.pack(side="top", fill="x", padx=16, pady=(0, 4))
+        self.analysis_frame.bind("<Configure>", self._on_analysis_frame_configure)
+
+    def _on_analysis_frame_configure(self, event=None):
+        """Dar pencerede uzun bir uyarı/hata metni görünür genişlikten daha
+        geniş bir noktada sarmasın diye wraplength'i güncel genişliğe göre
+        yeniden hesaplar (bkz. _toolbar_width — aynı `<Configure>` sırasında
+        `winfo_width()` eski değeri verme tuzağı burada da geçerli, bu yüzden
+        olay nesnesinin genişliği kullanılıyor)."""
+        width = event.width if event is not None else self.analysis_frame.winfo_width()
+        wraplength = max(1, width - 32)  # padx=16 iki yandan
+        self.warnings_label.configure(wraplength=wraplength)
+        self.status_label.configure(wraplength=wraplength)
 
     def _build_plot_area(self):
         """Voltaj / toplam akım / motor akımını ayrı panellerde (ortak zaman

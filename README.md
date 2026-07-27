@@ -121,7 +121,7 @@ eksenleri örtüşmüyor ve batarya sınıfları farklı (3S/6S); özet metrikle
 | `backend/` | C++ (CMake). Log dosyasını parse edip `shared/` şemasına uygun JSON üretir. |
 | `frontend/` | Python + CustomTkinter + Matplotlib. Dosya seçimi, backend'i çalıştırma, grafik çizimi. |
 | `shared/` | Backend ↔ frontend arasındaki JSON veri sözleşmesi (şema + örnek). |
-| `data/` | Test için örnek/sentetik uçuş logları (ArduCopter, ArduRover, PX4 hexarotor/rover/sabit kanat/VTOL). |
+| `data/` | Test için örnek/sentetik uçuş logları (ArduCopter, ArduRover, ArduPlane, PX4 hexarotor/rover/sabit kanat/VTOL). |
 
 Backend ve frontend bağımsız çalışır; aralarında doğrudan bir çağrı yoktur,
 sadece dosya üzerinden JSON alışverişi vardır.

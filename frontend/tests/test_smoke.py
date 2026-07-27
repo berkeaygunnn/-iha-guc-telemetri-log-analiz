@@ -22,8 +22,12 @@ from unittest.mock import patch
 FRONTEND_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = FRONTEND_DIR.parent / "data"
 sys.path.insert(0, str(FRONTEND_DIR))
+# backend testleriyle AYNI sentetik .bin üretici — 3+ batarya gibi fixture'lar
+# için byte inşa mantığını burada tekrar yazmamak adına yeniden kullanılıyor.
+sys.path.insert(0, str(FRONTEND_DIR.parent / "backend" / "tests"))
 
 import main as frontend_main
+import make_synthetic_log
 
 
 class SmokeTests(unittest.TestCase):
@@ -1114,6 +1118,21 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(self._clipped_stat_tiles(), [])
         self.assertGreaterEqual(self.app._stat_columns, columns_with_values)
 
+    # --- Uyarı/hata etiketlerinin dar ekrana uyumu ------------------------------
+
+    def test_warning_and_status_wraplength_follows_window_width(self):
+        """warnings_label hiç wraplength taşımıyordu, status_label'ınki ise
+        sabit 1000px'ti — toolbar/stats-row'daki gibi <Configure>'da yeniden
+        hesaplanmıyordu. Dar pencerede ikisi de görünür genişliğe göre
+        güncellenmeli (padx=16 iki yandan, bkz. _on_analysis_frame_configure)."""
+        self._resize(1400)
+        self.assertEqual(self.app.warnings_label.cget("wraplength"), 1400 - 32)
+        self.assertEqual(self.app.status_label.cget("wraplength"), 1400 - 32)
+
+        self._resize(700)
+        self.assertEqual(self.app.warnings_label.cget("wraplength"), 700 - 32)
+        self.assertEqual(self.app.status_label.cget("wraplength"), 700 - 32)
+
     # --- Araç tipi başına uyarı eşikleri ---------------------------------------
 
     def _write_vehicle_thresholds(self, vehicle_type: str, values: dict):
@@ -1624,6 +1643,100 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(len(self.app.ax_current.get_lines()), 1)
         self.assertEqual(self.app.ax_current.get_lines()[0].get_label(), "Batarya 1")
         self.assertEqual(len(self.app.ax_current.texts), 0)  # "veri yok" mesajı çıkmamalı
+
+    # --- Türkçe/ASCII-dışı karakterli dosya yolu ---------------------------
+
+    def test_loads_a_log_from_a_turkish_character_path(self):
+        """Projenin kendi çalışma dizini her gün Türkçe karakter taşıyor
+        ("İHA UYG", "istinye üniversitesi") ama hiçbir test bunu GUI'nin
+        gerçek subprocess çağrı yolundan (_load_file -> _run_backend ->
+        backend .exe) denemiyordu — backend testindeki eşdeğerinden
+        (NonAsciiPathTests) AYRI bir kod yolu, çünkü burada Python'ın
+        subprocess.run çağrısı ve Tk'nin dosya iş parçacığı da devrede."""
+        tmp_dir = Path(tempfile.mkdtemp(prefix="İHA Loğ Testi çğşü "))
+        try:
+            log_path = tmp_dir / "örnek kayıt İ.BIN"
+            log_path.write_bytes(make_synthetic_log.generate())
+            self._load_file_and_wait(str(log_path))
+            self.assertEqual(self.app.status_label.cget("text"), "")
+            self.assertGreater(len(self.app.ax_voltage.get_lines()), 0)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # --- 3+ bataryalı log ----------------------------------------------------
+
+    def _write_three_battery_log(self) -> Path:
+        """Şu ana kadar her çoklu-batarya testi tam 2 batarya kullanıyordu;
+        dengesizlik bandı, karşılaştırma tablosu ve ısı haritası y-ekseni 3+
+        seriyle hiç denenmedi (bkz. proje test kapsamı taraması). Üçüncü
+        batarya belirgin şekilde daha az akım çekiyor (genel dengesizlik
+        eşiği %20'yi aşsın diye)."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        currents = {0: 10.0, 1: 10.0, 2: 2.0}
+        for t in (0.0, 4.0, 8.0):
+            for inst, curr in currents.items():
+                out += make_synthetic_log.build_bat_message(t, inst, 16.0, curr)
+        path = Path(tempfile.mkdtemp()) / "uc_batarya.BIN"
+        path.write_bytes(bytes(out))
+        return path
+
+    def test_three_batteries_render_as_three_lines_with_imbalance_band(self):
+        path = self._write_three_battery_log()
+        try:
+            data = self.app._run_backend(str(path))
+            self.app._plot_battery_currents(data["batteries"])
+            self.assertEqual(len(self.app.ax_current.get_lines()), 3)
+            self.assertEqual(len(self.app.ax_current.patches), 1)  # dengesizlik bandı
+        finally:
+            shutil.rmtree(path.parent, ignore_errors=True)
+
+    def test_three_batteries_render_as_three_rows_in_heatmap(self):
+        path = self._write_three_battery_log()
+        try:
+            data = self.app._run_backend(str(path))
+            self.app.battery_view_toggle.set("Isı Haritası")
+            self.app._on_battery_view_change("Isı Haritası")
+            self.app._plot_battery_currents(data["batteries"])
+            self.assertEqual(len(self.app.ax_current.get_images()), 1)
+            self.assertEqual(
+                [t.get_text() for t in self.app.ax_current.get_yticklabels()],
+                ["Batarya 1", "Batarya 2", "Batarya 3"],
+            )
+        finally:
+            shutil.rmtree(path.parent, ignore_errors=True)
+
+    def test_three_batteries_appear_in_comparison_table(self):
+        """Karşılaştırma tablosu satır=metrik/sütun=uçuş şeklinde; burada tek
+        bir 3 bataryalı uçuşun kendi metrikleri (akım aralığı vb.) 3
+        bataryanın birleşimini yansıtmalı ve çökmemeli."""
+        path = self._write_three_battery_log()
+        try:
+            data = self.app._run_backend(str(path))
+            metrics = frontend_main._flight_summary_metrics(data)
+            self.assertEqual(metrics["current_min"], 2.0)
+            self.assertEqual(metrics["current_max"], 10.0)
+        finally:
+            shutil.rmtree(path.parent, ignore_errors=True)
+
+    # --- Gerçek akım sensörlü sabit kanat logu --------------------------------
+
+    def test_real_fixed_wing_log_with_current_sensor_draws_both_panels(self):
+        """data/ArduPlane-GpsSensorPreArmEAHRS-00000115.BIN: bu turdan önce
+        gerçek akım verisi olan bir sabit kanat logu yoktu (px4_fixed_wing_
+        flight.ulg'de esc_status hiç yok, ArduCopter örnekleri multirotor).
+        Burada hem batarya hem motor akımı gerçek veri, mesaj yerine çizgi
+        çizilmeli."""
+        data = self._load_and_plot("ArduPlane-GpsSensorPreArmEAHRS-00000115.BIN")
+        self.assertEqual(data["meta"]["vehicle_type"], "fixed_wing")
+        self.assertEqual(len(self.app.ax_current.get_lines()), 1)
+        self.assertEqual(len(self._data_lines(self.app.ax_current)), 1)
+
+        self.app._plot_motor_currents(data["motors"])
+        self.assertEqual(len(self.app.ax_motors.get_lines()), 1)
+        self.assertEqual(len(self.app.ax_motors.texts), 0)  # "veri yok" mesajı çıkmamalı
 
 
 if __name__ == "__main__":
