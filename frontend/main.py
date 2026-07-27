@@ -1935,16 +1935,23 @@ class App(ctk.CTk):
             ("negative_current_a", "Negatif Akım Eşiği (A)"),
         ]
         entries = {}
+        # 3 eşik alanı, üstteki "Hangi araç için?" seçicisinden görsel olarak
+        # ayrılsın diye tonlu bir çerçeveye alınıyor (stat kutucuklarıyla aynı
+        # GRIDLINE dili, bkz. _build_stats_row) — aksi halde hepsi tek bir düz
+        # yığın gibi görünüp seçicinin "üçünü de etkileyen" bir kapsam kontrolü
+        # olduğu görsel olarak belli olmuyordu.
+        thresholds_group = ctk.CTkFrame(dialog, fg_color=GRIDLINE, corner_radius=8)
+        thresholds_group.pack(fill="x", padx=20, pady=(4, 8))
         for key, label in fields:
-            row = ctk.CTkFrame(dialog, fg_color="transparent")
-            row.pack(fill="x", padx=20, pady=6)
+            row = ctk.CTkFrame(thresholds_group, fg_color="transparent")
+            row.pack(fill="x", padx=12, pady=6)
             ctk.CTkLabel(row, text=label, text_color=TEXT_SECONDARY, anchor="w").pack(side="top", fill="x")
             entry = ctk.CTkEntry(row)
             entry.pack(side="top", fill="x", pady=(4, 0))
             entries[key] = entry
 
         hint_label = ctk.CTkLabel(dialog, text="", text_color=TEXT_MUTED, font=ctk.CTkFont(size=11))
-        hint_label.pack(pady=(2, 0))
+        hint_label.pack(padx=20, pady=(2, 0))
 
         def fill_fields(scope_label: str):
             """Seçilen kapsamın kayıtlı değerlerini alanlara yazar. O kapsam
@@ -1974,7 +1981,7 @@ class App(ctk.CTk):
         scope_menu.configure(command=fill_fields)
 
         error_label = ctk.CTkLabel(dialog, text="", text_color=COLOR_CRITICAL)
-        error_label.pack(pady=(4, 0))
+        error_label.pack(padx=20, pady=(4, 0))
 
         def on_save():
             try:
@@ -2064,7 +2071,7 @@ class App(ctk.CTk):
             checkboxes.append((entry["path"], variable))
 
         status = ctk.CTkLabel(dialog, text="", text_color=TEXT_MUTED)
-        status.pack(pady=(6, 0))
+        status.pack(padx=20, pady=(6, 0))
 
         result_frame = ctk.CTkScrollableFrame(dialog, fg_color="transparent")
         result_frame.pack(fill="both", expand=True, padx=20, pady=(8, 12))
