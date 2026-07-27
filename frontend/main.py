@@ -1151,7 +1151,7 @@ class App(ctk.CTk):
         # daraltılmış bir pencerede) içerik her zaman "center" alanının tam
         # ortasında kalacak şekilde otomatik yeniden hesaplanır.
         content_block = ctk.CTkFrame(center, fg_color="transparent")
-        content_block.place(relx=0.56, rely=0.5, anchor="center")
+        content_block.place(relx=0.5, rely=0.5, anchor="center")
 
         # Logo en üstte: önceki sürümde başlığın altındaydı, üstte olması
         # bir "marka" imzası gibi okunuyor (bkz. kullanıcı geri bildirimi).
@@ -1204,15 +1204,15 @@ class App(ctk.CTk):
         self.landing_frame.bind("<Configure>", self._on_landing_frame_configure)
 
     def _on_landing_frame_configure(self, event=None):
-        """content_block, sidebar'dan arta kalan alanın (relx=0.56 ile) hafif
-        sağına ortalanıyor. Pencere `minsize` kadar (700px) daraldığında başlık/
-        açıklama bu ofsetten dolayı sağ kenardan taşabiliyordu (sol kenar sidebar
-        sınırıyla zaten güvenli); wraplength'i anchor noktasının HER İKİ yanındaki
-        en dar mesafenin iki katına göre hesaplamak, hangi relx seçilirse seçilsin
-        metni taşmadan sığdırır. Footer tüm pencere genişliğinde, ayrı hesaplanır."""
+        """content_block, sidebar'dan arta kalan alanın (relx=0.5 ile) tam
+        ortasına yerleşiyor. Pencere `minsize` kadar (700px) daraldığında
+        başlık/açıklama kenarlardan taşabiliyordu; wraplength'i anchor
+        noktasının HER İKİ yanındaki en dar mesafenin iki katına göre
+        hesaplamak, relx değişse bile metni taşmadan sığdırır. Footer tüm
+        pencere genişliğinde, ayrı hesaplanır."""
         frame_width = event.width if event is not None else self.landing_frame.winfo_width()
         center_width = max(1, frame_width - LANDING_SIDEBAR_WIDTH)
-        anchor_x = center_width * 0.56
+        anchor_x = center_width * 0.5
         fit_width = 2 * min(anchor_x, center_width - anchor_x) - 24
         content_wraplength = max(160, int(fit_width))
         self.landing_title_label.configure(wraplength=content_wraplength)
