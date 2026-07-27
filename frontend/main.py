@@ -1562,6 +1562,7 @@ class App(ctk.CTk):
         self._recent_label_to_path = {}
         self.recent_menu = ctk.CTkOptionMenu(
             left_group, values=["(yok)"], command=self._on_recent_file_selected, width=200,
+            anchor="center",
         )
         self.recent_menu.pack(side="left")
         self._refresh_recent_menu(self._load_recent_files())
@@ -1605,7 +1606,7 @@ class App(ctk.CTk):
         # dönüyor (recent_menu de aynı deseni kullanıyor).
         self.export_menu = ctk.CTkOptionMenu(
             right_group, values=list(EXPORT_MENU_ACTIONS), command=self._on_export_selected,
-            width=150,
+            width=150, anchor="center",
         )
         self.export_menu.set(EXPORT_MENU_LABEL)
         self.export_menu.pack(side="left", padx=(0, TOOLBAR_GAP))
