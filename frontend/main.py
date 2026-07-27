@@ -1343,62 +1343,77 @@ class App(ctk.CTk):
         canvas.bind("<Leave>", on_leave)
         canvas.bind("<Button-1>", on_click)
 
-    def _draw_drone_icon(self, canvas: Canvas, scale: float = 1.0):
-        """Orijinal, sade bir çeyrek-kanat (quadcopter) ikonu çizer: Canvas
-        ilkelleriyle (çizgi + daire) oluşturulmuş vektörel bir siluet, bir
-        fotoğraf DEĞİL — telif riski yok, her boyutta net görünür.
+    @staticmethod
+    def _blade_polygon(cx: float, cy: float, angle_deg: float, length: float, width: float,
+                        points: int = 14) -> list:
+        """Bir pervane bıçağını (uzun, ince bir elips) çokgen noktaları olarak
+        üretir — Canvas'ın döndürülmüş elips çizme yeteneği yok, bu yüzden
+        yerel eksende bir elips üretilip döndürülüyor. Aynı yöntem uygulama
+        ikonunu üreten `scripts/generate_icon.py`'deki `_draw_rotor` ile
+        birebir aynı; ikisi tutarlı görünsün diye bilerek aynı teknik."""
+        angle = math.radians(angle_deg)
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+        result = []
+        for i in range(points):
+            t = 2 * math.pi * i / points
+            ex, ey = length * math.cos(t), width * math.sin(t)
+            result.append((cx + ex * cos_a - ey * sin_a, cy + ex * sin_a + ey * cos_a))
+        return result
 
-        Önceki sürüme göre daha net okunsun diye: kalın, yuvarlak uçlu kollar,
-        pervane detayını belirtmek için rotor dairelerinin içinde çapraz
-        kanatçıklar, gövdenin altında iki iniş ayağı eklendi.
+    def _draw_drone_icon(self, canvas: Canvas, scale: float = 1.0):
+        """Uygulama ikonuyla (frontend/assets/icon.png, bkz.
+        scripts/generate_icon.py) aynı görsel dile sahip bir quadcopter çizer:
+        dolgulu X biçimli pervane bıçakları, ince koyu kollar, dikey oval
+        gövde. Canvas ilkelleriyle (çokgen + daire) oluşturulmuş vektörel bir
+        siluet, bir fotoğraf DEĞİL — telif riski yok, her boyutta net görünür.
 
         `scale`, aynı çizimi giriş ekranının üstündeki küçük bir logo olarak
         da kullanabilmek için (bkz. `_build_landing_screen`) tüm boyutları
         orantılı küçültüp büyütüyor."""
         cx, cy = 110 * scale, 85 * scale
-        arm_len = 68 * scale
-        rotor_r = 22 * scale
-        leg_w = max(1, round(3 * scale))
-        arm_w = max(1, round(6 * scale))
-        rotor_outline_w = max(1, round(3 * scale))
-        blade_w = max(1, round(2 * scale))
-        body_outline_w = max(1, round(2 * scale))
+        # Kanvas (190x146 @ scale=0.86) genişten kısa; pervaneler dikeyde
+        # yataydan daha az açılıyor ki ikon dikdörtgen çerçeveye tam otursun.
+        rotor_offset_x, rotor_offset_y = 74 * scale, 42 * scale
+        rotor_r = 20 * scale
+        arm_w = max(2, round(7 * scale))
+        rotor_outline_w = max(1, round(2.5 * scale))
+        body_outline_w = max(1, round(2.5 * scale))
 
-        # İniş ayakları (gövdenin arkasında kalsın diye kollardan/gövdeden önce çizilir).
-        for dx in (-1, 1):
+        directions = ((-1, -1), (1, -1), (-1, 1), (1, 1))
+        rotor_centers = [
+            (cx + dx * rotor_offset_x, cy + dy * rotor_offset_y) for dx, dy in directions
+        ]
+
+        # Kollar: koyu, gövdenin arkasında kalacak şekilde önce çizilir.
+        # LANDING_BADGE_ULOG (koyu lacivert) burada da kullanılıyor — hem
+        # kollar hem format rozeti için "vurgudan koyu ama zeminden açık" aynı
+        # renk ihtiyacı var.
+        for ex, ey in rotor_centers:
             canvas.create_line(
-                cx + dx * 14 * scale, cy + 10 * scale, cx + dx * 20 * scale, cy + 34 * scale,
-                fill=LANDING_ACCENT_BRIGHT, width=leg_w, capstyle="round",
+                cx, cy, ex, ey, fill=LANDING_BADGE_ULOG, width=arm_w, capstyle="round",
             )
 
-        for dx, dy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
-            end_x, end_y = cx + dx * arm_len, cy + dy * arm_len * 0.55
-            canvas.create_line(
-                cx, cy, end_x, end_y, fill=LANDING_ACCENT_BRIGHT, width=arm_w, capstyle="round",
-            )
+        for ex, ey in rotor_centers:
             canvas.create_oval(
-                end_x - rotor_r, end_y - rotor_r, end_x + rotor_r, end_y + rotor_r,
+                ex - rotor_r, ey - rotor_r, ex + rotor_r, ey + rotor_r,
                 outline=LANDING_ACCENT_BRIGHT, width=rotor_outline_w,
             )
-            # Pervane kanatçıkları: rotor dairesinin içinde çapraz iki çizgi.
-            canvas.create_line(
-                end_x - rotor_r + 4 * scale, end_y, end_x + rotor_r - 4 * scale, end_y,
-                fill=LANDING_ACCENT_BRIGHT, width=blade_w, capstyle="round",
-            )
-            canvas.create_line(
-                end_x, end_y - rotor_r + 4 * scale, end_x, end_y + rotor_r - 4 * scale,
-                fill=LANDING_ACCENT_BRIGHT, width=blade_w, capstyle="round",
+            for angle in (45, 135):
+                canvas.create_polygon(
+                    self._blade_polygon(ex, ey, angle, rotor_r * 0.78, rotor_r * 0.24),
+                    fill=LANDING_ACCENT_BRIGHT,
+                )
+            hub = rotor_r * 0.22
+            canvas.create_oval(
+                ex - hub, ey - hub, ex + hub, ey + hub, fill=LANDING_BG, outline="",
             )
 
-        # Gövde (kollardan sonra çizilir ki kolların gövdeye giriş noktaları temiz görünsün).
+        # Gövde: dikey oval (kollardan sonra çizilir ki giriş noktaları temiz
+        # görünsün), uygulama ikonundaki gövdeyle aynı oran.
+        body_w, body_h = 17 * scale, 30 * scale
         canvas.create_oval(
-            cx - 30 * scale, cy - 18 * scale, cx + 30 * scale, cy + 18 * scale,
-            fill=LANDING_ACCENT, outline=LANDING_ACCENT_BRIGHT, width=body_outline_w,
-        )
-        # Ön sensör/kamera noktası — gövdeye küçük bir karakter/detay katar.
-        canvas.create_oval(
-            cx - 6 * scale, cy - 6 * scale, cx + 6 * scale, cy + 6 * scale,
-            fill=LANDING_BG, outline=LANDING_ACCENT_BRIGHT, width=body_outline_w,
+            cx - body_w, cy - body_h, cx + body_w, cy + body_h,
+            fill=LANDING_CARD, outline=LANDING_ACCENT_BRIGHT, width=body_outline_w,
         )
 
     def _build_voltage_view_toggle(self):
