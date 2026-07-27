@@ -866,7 +866,13 @@ class _PanPreviewToolbar(NavigationToolbar2Tk):
         image = Image.new("RGBA", (source, source), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
 
-        margin, thickness = 18, 10
+        # Ölçüldü: butonun kendisi (20p x 20p) diğer ikon butonlarıyla zaten
+        # birebir aynı, ama bu glifin dolgun (kalın kavis + dolu ok başı,
+        # mavi renk) görünümü onu diğerlerinden (ince, çoğu gri çizgi)
+        # görsel olarak "daha büyük" gösteriyordu. margin/thickness/ok
+        # boyutları biraz küçültülüp incelterek diğer ikonlarla aynı görsel
+        # ağırlığa getirildi.
+        margin, thickness = 22, 8
         center = source / 2
         radius = center - margin
         # Yay tam çember değil: kalan boşluk ok başına ayrılıyor.
@@ -886,7 +892,7 @@ class _PanPreviewToolbar(NavigationToolbar2Tk):
         cos_end, sin_end = math.cos(end_rad), math.sin(end_rad)
         tangent_x, tangent_y = -sin_end, cos_end
         base_x, base_y = center + radius * cos_end, center + radius * sin_end
-        half_width, tip_length = 16.0, 28.0
+        half_width, tip_length = 14.0, 24.0
         draw.polygon(
             [
                 (base_x + half_width * cos_end, base_y + half_width * sin_end),
