@@ -243,6 +243,37 @@ class SmokeTests(unittest.TestCase):
         self.assertTrue(self.app.landing_frame.winfo_ismapped())
         self.assertFalse(self.app.analysis_frame.winfo_ismapped())
 
+    def test_landing_screen_text_stays_within_window_at_minimum_width(self):
+        """Regresyon: footer, "center" çerçevesinden SONRA pack edildiğinde
+        (side="bottom"), pack cavity center'ın expand=True ile alacağı payı
+        daraltıyordu (700px pencerede center 410 yerine 200px kalıyordu) —
+        başlık/açıklama sidebar'ın altına gömülüp pencere kenarından taşıyordu.
+        minsize (700px) genişlikte hiçbir metin ne sidebar'ın altında ne de
+        pencere dışında kalmamalı (bkz. _build_landing_screen, _on_landing_frame_configure)."""
+        self.app.deiconify()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            self.app.geometry("700x750")
+            self.app.update_idletasks()
+            self.app.update()
+            if abs(self.app.landing_frame.winfo_width() - 700) <= 4:
+                break
+        self.app.update()
+
+        window_x = self.app.winfo_rootx()
+        window_width = self.app.landing_frame.winfo_width()
+
+        for label in (self.app.landing_title_label, self.app.landing_desc_label,
+                      self.app.landing_footer_label):
+            left = label.winfo_rootx() - window_x
+            right = left + label.winfo_width()
+            self.assertGreaterEqual(
+                left, frontend_main.LANDING_SIDEBAR_WIDTH,
+                f"{label.cget('text')!r} sidebar'ın altına gömülmüş (left={left})")
+            self.assertLessEqual(
+                right, window_width,
+                f"{label.cget('text')!r} pencere kenarından taşıyor (right={right}, width={window_width})")
+
     def test_heatmap_toggle_does_not_shift_plot_position(self):
         """Isı haritası colorbar'ı eskiden ana ekseni ax=... ile kucultuyordu,
         bu da cizgi/isi haritasi arasinda gecince panelin sag/sola kaymis
