@@ -272,6 +272,28 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   şişirip dağıtımı karmaşıklaştıracağından tercih edilmedi — zaten mevcut
   kural tabanlı uyarı sistemi aynı pratik değeri sıfır maliyetle sağlıyor.
   Bu konu kapanmıştır, tekrar gündeme getirilmeyecek.
+- **Eski ArduPilot `CURR2`/`CURR3` mesaj adı desteği ve PX4'ün iki geçişli
+  format-yeniden-tanımlama kırılganlığı:** ikisi de "Genel tarama" turunda
+  gerçek bir logla doğrulanamadığı için ertelenmişti; bu turda web'de
+  araştırıldı, ikisi de KAPATILDI.
+
+  `CURR2`/`CURR3` — ArduPilot'un GitHub'daki güncel `AP_BattMonitor/
+  LogStructure.h` ve `AP_Logger/LogStructure.h` dosyalarında böyle bir mesaj
+  adı yok (sadece `BAT`, `Inst` alanıyla çoklu batarya destekliyor); resmi
+  log mesajı dokümantasyonunda da geçmiyor. Backend'in zaten desteklediği
+  `"CURR"` adının nereden geldiği belirsiz (çok eski bir sürümden kalma
+  olabilir) ama `CURR2`/`CURR3`'ün gerçekten var olduğuna dair hiçbir iz
+  bulunamadı — bulunsa bile o kadar eski bir logun indirilebilir bir
+  kopyasını bulmak gerçekçi görünmüyor. Kod yazmak için gereken "gerçek log"
+  şartı bu maddede muhtemelen hiç karşılanamayacak.
+
+  PX4 format-yeniden-tanımlama — ULog dosya formatı spesifikasyonu bu konuda
+  sessiz (ne izin veriyor ne yasaklıyor); ne PX4'ün resmi dokümantasyonunda
+  ne `pyulog` deposunda buna karşılık gelen bir hata/issue bulundu. Normal
+  tek-uçuşluk loglama akışında bir mesaj tipinin formatı logun başında bir
+  kere yazılır, yeniden tanımlanmaz — bu risk gerçek bir log değil, kod
+  okurken çıkarılan teorik bir senaryo. Tetikleyecek gerçek bir dosya
+  bulunamadığı sürece kapsam dışı kalacak.
 
 ## Kodlama tercihleri / notlar
 
