@@ -127,6 +127,44 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(len(set(colors)), 6)  # hepsi farklı renkte
         self.assertTrue(all(line.get_linestyle() == "-" for line in lines))
 
+    def test_series_palette_is_per_theme(self):
+        """SERIES_COLORS tek liste olarak iki temada da kullanılıyordu; koyu
+        zemine göre seçilmiş tonlar açık temada soluk kalıp birbirine
+        karışıyordu (kullanıcı geri bildirimi). Artık PWM_DEVIATION_COLORS
+        deseniyle tema başına ayrı: açık palet daha koyu/doygun, slot
+        kimliği korunur (Batarya 1 iki temada da mavi)."""
+        light = frontend_main.LIGHT_PALETTE["SERIES_COLORS"]
+        dark = frontend_main.DARK_PALETTE["SERIES_COLORS"]
+        self.assertEqual(len(light), 8)
+        self.assertEqual(len(dark), 8)
+        self.assertEqual(len(set(light)), 8)  # açık palette tekrar yok
+        self.assertNotEqual(light, dark)  # asıl hata: tek ortak liste
+
+    def test_heatmap_colors_are_per_theme(self):
+        """HEATMAP_COLORS'ın düşük ucu (#141a22) koyu yüzeye göre seçilmişti
+        ve import zamanında sabitlenip tema geçişinde hiç güncellenmiyordu —
+        açık temada ısı haritasının 'düşük' bölgesi siyah bir leke gibi
+        görünüyordu. Artık tema başına tanımlı ve toggle'da rebind ediliyor."""
+        light = frontend_main.LIGHT_PALETTE["HEATMAP_COLORS"]
+        dark = frontend_main.DARK_PALETTE["HEATMAP_COLORS"]
+        self.assertEqual(len(light), 3)
+        self.assertEqual(len(dark), 3)
+        self.assertNotEqual(light[0], "#141a22")  # açık düşük uç koyu-yüzey tonu olamaz
+
+    def test_series_style_follows_rebound_palette(self):
+        """_series_style modül globalini ÇAĞRI ANINDA okumalı — tema toggle'ı
+        SERIES_COLORS'ı yeniden bağladığında ilk serinin rengi yeni paletten
+        gelmeli (gelecekte birinin _series_style içine renkleri sabitlemesine
+        karşı bekçi)."""
+        original = frontend_main.SERIES_COLORS
+        try:
+            frontend_main.SERIES_COLORS = frontend_main.LIGHT_PALETTE["SERIES_COLORS"]
+            self.assertEqual(frontend_main._series_style(0)[0], "#2a78d6")
+            frontend_main.SERIES_COLORS = frontend_main.DARK_PALETTE["SERIES_COLORS"]
+            self.assertEqual(frontend_main._series_style(0)[0], "#3987e5")
+        finally:
+            frontend_main.SERIES_COLORS = original
+
     def test_load_file_adds_to_recent_menu(self):
         file_path = str(DATA_DIR / "synthetic_test_log.BIN")
         self._load_file_and_wait(file_path)
