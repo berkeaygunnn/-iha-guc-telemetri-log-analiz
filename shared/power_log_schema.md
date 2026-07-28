@@ -76,6 +76,23 @@ beri geçen süreyi damgalıyor, sıfırdan başlamıyor.
 `data/px4_fixed_wing_flight.ulg`'de ilk örnek 4013.9 s'de, son örnek
 4104.7 s'de; süre 90.8 saniyedir, 4104.7 değil.
 
+`batteries` boşsa (aşağıdaki "Batarya verisi hiç yoksa" bölümüne bakın)
+süre `motors`'tan, o da boşsa `pwm_outputs`'tan hesaplanır — aksi halde
+`duration_s` her zaman `0` kalırdı.
+
+## Batarya verisi hiç yoksa
+
+`batteries` boş dizi (`[]`) olabilir — bu, `has_current_data: false` ile
+KARIŞTIRILMAMALI: o durumda batarya kaydı var ama akımı sıfır; burada
+batarya kaydının (BAT/CURR ya da battery_status) kendisi hiç loglanmamış.
+Gerçek bir örnek: ArduPilot QuadPlane SITL testlerinin çoğu güç izleme
+simüle etmiyor, ama gerçek çok motorlu ESC telemetrisi VE PWM verisi
+taşıyor (`data/ArduPlane-FlyEachFrame-00000182.BIN`).
+
+Backend bu durumu artık reddetmiyor — `motors` ya da `pwm_outputs`'tan
+en az biri doluysa log yine işlenir. Sadece HİÇBİR kullanılabilir veri
+yoksa (ne batarya ne motor ne PWM) log reddedilir.
+
 ## `has_current_data` alanı
 
 Akım sensörü bağlı **değilse** ArduPilot/PX4 `current_a` alanını boş

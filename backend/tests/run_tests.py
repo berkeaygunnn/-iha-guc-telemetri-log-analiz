@@ -158,10 +158,15 @@ class UntestedCodePathTests(unittest.TestCase):
         finally:
             path.unlink(missing_ok=True)
 
-    def test_ardupilot_esc_only_no_battery_fails_with_clear_error(self):
-        """Sadece ESC mesajı içeren (hiç BAT/CURR yok) bir log, batarya
-        verisi olmadığı için net bir hatayla başarısız olmalı (main.cpp:843
-        yolunun regresyon testi — şu ana kadar hiç tetiklenmemişti)."""
+    def test_ardupilot_esc_only_no_battery_still_succeeds(self):
+        """Sadece ESC mesajı içeren (hiç BAT/CURR yok) bir log ESKİDEN net
+        bir hatayla başarısız oluyordu (main.cpp:843 yolu) — gerçek bir
+        ArduPilot QuadPlane SITL logunda (data/ArduPlane-FlyEachFrame-
+        00000182.BIN, bkz. ArduPlaneQuadPlaneRealLogTests) bunun gerçekten
+        olduğu görüldü: birçok QuadPlane testi güç izleme simüle etmiyor
+        ama gerçek çok motorlu ESC verisi taşıyor. Backend artık batarya
+        yoksa da motor/PWM varsa başarıyla devam ediyor; batteries boş
+        dizi olarak kalır."""
         out = bytearray()
         out += make_synthetic_log.build_fmt_message(
             make_synthetic_log.ESC_TYPE, "ESC", "QBf", "TimeUS,Instance,Curr"
@@ -172,8 +177,9 @@ class UntestedCodePathTests(unittest.TestCase):
             f.write(bytes(out))
             path = Path(f.name)
         try:
-            with self.assertRaises(RuntimeError):
-                run_backend(path)
+            data = run_backend(path)
+            self.assertEqual(data["batteries"], [])
+            self.assertEqual(len(data["motors"]), 1)
         finally:
             path.unlink(missing_ok=True)
 
@@ -1576,6 +1582,58 @@ class ArduPlaneRealLogTests(unittest.TestCase):
 
     def test_healthy_log_produces_no_warnings(self):
         self.assertEqual(self.data["warnings"], [])
+
+
+class ArduPlaneQuadPlaneRealLogTests(unittest.TestCase):
+    """data/ArduPlane-FlyEachFrame-00000182.BIN — gerçek bir ArduPilot
+    QuadPlane (VTOL) SITL logu. ArduPilot'un "FlyEachFrame" testi Plane
+    firmware'ini vehicleinfo.json'daki TÜM çerçeve tiplerinde (quadplane
+    dahil onlarca VTOL varyantı) uçuruyor; bu, o testlerden biri
+    (autotest.ardupilot.org, Rover/ArduPlane loglarıyla aynı kaynak —
+    "QuadPlane" CI işi kendisi hiç .BIN yayınlamıyor, bu yüzden önceki
+    aramalar bulamamıştı).
+
+    Bu logun asıl değeri: batarya (BAT/CURR) verisi HİÇ yok (SITL bu
+    testte güç izleme simüle etmiyor) ama 5 motorun ESC telemetrisi VE
+    8 PWM kanalının bir kısmı net bir VTOL kalkış-motoru geçiş deseni
+    (~1000µs boşta <-> ~1950µs aktif) gösteriyor. Bu senaryo backend'in
+    "en az bir batarya" kuralını gevşetmesine yol açtı (bkz.
+    writePowerLogJson) — düzeltmeden önce bu log tamamen reddediliyordu."""
+
+    LOG = "ArduPlane-FlyEachFrame-00000182.BIN"
+
+    def setUp(self):
+        self.data = run_backend(DATA_DIR / self.LOG)
+
+    def test_format_and_vehicle_type(self):
+        self.assertEqual(self.data["meta"]["format"], "ardupilot")
+        # ArduPilot firmware adı quadplane çerçeve sınıfını ayırt etmiyor
+        # (Q_ENABLE bir parametre, firmware string'i değil) -- bu yüzden
+        # "vtol" değil "fixed_wing" kalır. Bilinen bir sınırlama, bu testin
+        # kapsamı dışında.
+        self.assertEqual(self.data["meta"]["vehicle_type"], "fixed_wing")
+
+    def test_no_battery_data_but_processing_succeeds(self):
+        self.assertEqual(self.data["batteries"], [])
+
+    def test_duration_computed_from_motor_fallback(self):
+        # Batarya olmadığı için süre motor zaman damgalarından hesaplanıyor.
+        self.assertGreater(self.data["meta"]["duration_s"], 200.0)
+
+    def test_multiple_motors_with_esc_telemetry(self):
+        self.assertEqual(len(self.data["motors"]), 5)
+        for motor in self.data["motors"]:
+            self.assertTrue(motor["has_current_data"])
+
+    def test_pwm_shows_vtol_transition_pattern(self):
+        """En az bir PWM kanalı, kalkış motorlarına tipik boşta (~1000us)
+        ile aktif (~1900us+) arasında geniş bir aralıkta hareket etmeli --
+        VTOL fazları arasındaki geçişin görünür kanıtı."""
+        wide_range_channels = [
+            output for output in self.data["pwm_outputs"]
+            if max(output["pwm_us"]) - min(output["pwm_us"]) > 800
+        ]
+        self.assertGreaterEqual(len(wide_range_channels), 1)
 
 
 class SchemaConformanceTests(unittest.TestCase):
