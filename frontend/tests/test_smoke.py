@@ -121,7 +121,9 @@ class SmokeTests(unittest.TestCase):
         düz çizgi stilinde olmalı."""
         data = self._load_and_plot("px4_hexarotor_flight.ulg")
         self.assertEqual(len(data["motors"]), 6)
-        lines = self.app.ax_motors.get_lines()
+        # _data_lines: bu logda negatif akım örneği var, ham get_lines() artık
+        # negatif eşik çizgisini de sayar (bkz. _draw_negative_current_threshold).
+        lines = self._data_lines(self.app.ax_motors)
         self.assertEqual(len(lines), 6)
         colors = [line.get_color() for line in lines]
         self.assertEqual(len(set(colors)), 6)  # hepsi farklı renkte
@@ -1987,6 +1989,56 @@ class SmokeTests(unittest.TestCase):
         metrics_ok = {"current_min": 0.0, "current_max": 23.0}
         self.assertFalse(
             frontend_main._format_comparison_value("current_range", metrics_ok).startswith("⚠"))
+
+    def test_overlay_battery_for_flight_picks_first_with_voltage(self):
+        empty = {"id": 1, "voltage_v": []}
+        real = {"id": 2, "voltage_v": [12.0, 11.8]}
+        self.assertIs(frontend_main._overlay_battery_for_flight([empty, real]), real)
+        self.assertIsNone(frontend_main._overlay_battery_for_flight([empty]))
+        self.assertIsNone(frontend_main._overlay_battery_for_flight([]))
+
+    def test_comparison_chart_draws_one_line_per_flight_with_voltage_data(self):
+        results = []
+        chart_series = []
+        for name in ("ArduCopter-MaxAltFence-00000067.BIN", "px4_hexarotor_flight.ulg"):
+            data = self.app._run_backend(str(DATA_DIR / name))
+            results.append((name, frontend_main._flight_summary_metrics(data)))
+            chart_series.append((name, data["batteries"]))
+
+        frame = frontend_main.ctk.CTkFrame(self.app)
+        next_row = self.app._build_comparison_table(frame, results)
+        self.app._build_comparison_chart(frame, next_row, chart_series)
+
+        canvases = [
+            w for w in frame.winfo_children()
+            if isinstance(w, frontend_main.tk.Canvas)
+        ]
+        self.assertEqual(len(canvases), 1)
+
+    def test_comparison_chart_skips_flights_without_voltage_data(self):
+        """Hiçbir uçuşta voltaj yoksa (ör. tüm bataryalar boş) grafik hiç
+        çizilmemeli -- boş bir Figure eklemek kafa karıştırıcı olurdu."""
+        frame = frontend_main.ctk.CTkFrame(self.app)
+        self.app._build_comparison_chart(frame, 0, [("a", []), ("b", [])])
+        canvases = [w for w in frame.winfo_children() if isinstance(w, frontend_main.tk.Canvas)]
+        self.assertEqual(len(canvases), 0)
+
+    def test_negative_current_threshold_line_only_when_negative_samples_exist(self):
+        """Eşik çizgisi SADECE negatif örnek varsa çizilir -- her uçuşta sabit
+        bir çizgi eklemek, negatif akım nadir olduğu için gürültü olurdu
+        (mutasyon bekçisi: kapı kaldırılınca ikinci assert kırmızı çıkar)."""
+        threshold = -0.1
+        with_negative = [{"id": 1, "current_a": [1.0, -0.5, 2.0], "time_s": [0, 1, 2]}]
+        all_positive = [{"id": 1, "current_a": [1.0, 0.5, 2.0], "time_s": [0, 1, 2]}]
+
+        ax1 = self.app.figure.add_subplot(111)
+        frontend_main._draw_negative_current_threshold(ax1, with_negative, threshold)
+        self.assertEqual(len(ax1.get_lines()), 1)
+        self.assertEqual(ax1.get_lines()[0].get_label(), "_negative_current_threshold")
+
+        ax2 = self.app.figure.add_subplot(111)
+        frontend_main._draw_negative_current_threshold(ax2, all_positive, threshold)
+        self.assertEqual(len(ax2.get_lines()), 0)
 
     # --- Tıklanabilir uyarılar → seri vurgulama --------------------------------
 

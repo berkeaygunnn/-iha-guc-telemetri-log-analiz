@@ -769,6 +769,18 @@ def _comparison_notable_cells(results: list) -> list:
     return notable
 
 
+def _overlay_battery_for_flight(batteries: list) -> dict:
+    """Karşılaştırma dialogundaki voltaj overlay grafiği için, bir uçuşun
+    bataryalarından TEK birini seçer (ilk voltaj örneği olan). 5 uçuş × N
+    batarya çizmek okunmaz olurdu; uçuş başına tek çizgi grafiği tablo gibi
+    ölçekten bağımsız okunabilir tutuyor. Hiçbir bataryada voltaj örneği
+    yoksa None döner (çağıran o uçuşu atlar)."""
+    for battery in batteries:
+        if battery.get("voltage_v"):
+            return battery
+    return None
+
+
 def _draw_voltage_sag_line(ax, first_voltage: float, threshold: float, color: str,
                            alpha_factor: float = 1.0):
     """Backend'in voltaj düşümü kuralıyla (ilk örneğe göre %eşik düşüş) aynı
@@ -802,6 +814,30 @@ def _draw_imbalance_band(ax, series_means: list, threshold: float):
     if overall_mean <= 0:
         return
     ax.axhspan(overall_mean * (1 - threshold), overall_mean * (1 + threshold), color=COLOR_WARNING, alpha=0.08, zorder=0)
+    # Bandın ne olduğu etiketsiz belirsizdi (kullanıcı geri bildirimi) — tek
+    # satır açıklama, panel köşesinde, ölçeği/veriyi etkilemeyen transAxes'te.
+    ax.text(
+        0.99, 0.02, f"bant: ortalama ±%{threshold * 100:.0f} dengesizlik eşiği",
+        transform=ax.transAxes, ha="right", va="bottom", fontsize=7, color=TEXT_MUTED,
+    )
+
+
+def _draw_negative_current_threshold(ax, series: list, threshold: float):
+    """Negatif akım eşiğini kesikli bir çizgiyle görünür kılar — eskiden
+    eşik sadece stat kartındaki "⚠" önekiyle vardı, grafikte hiç işaretli
+    değildi. Gerçekten negatif örnek YOKSA çizilmez: her panelde sabit bir
+    çizgi, çoğu uçuşta (negatif akım nadir) gereksiz gürültü olurdu.
+    label alttan çizgi konvansiyonuyla aynı ("_" ile başlıyor -> legend'e
+    girmiyor, bkz. _voltage_sag_threshold)."""
+    has_negative = any(
+        c < 0 for item in _with_current_data(series) for c in item["current_a"]
+    )
+    if not has_negative:
+        return
+    ax.axhline(
+        threshold, color=COLOR_WARNING, linestyle="--", linewidth=1, alpha=0.5,
+        label="_negative_current_threshold",
+    )
 
 
 def _format_relative_time(when: datetime) -> str:
@@ -2307,7 +2343,9 @@ class App(ctk.CTk):
         # geri bildirimi, bkz. LANDING_ROW_STRIPE'ın yorumu).
         dialog = ctk.CTkToplevel(self, fg_color=LANDING_BG)
         dialog.title("Uçuşları Karşılaştır")
-        dialog.geometry("920x720")
+        # Tablo altına voltaj overlay grafiği eklendiğinde eski 920x720
+        # yetersiz kaldı (grafik result_frame'in dışına taşıp kırpılıyordu).
+        dialog.geometry("960x860")
         dialog.transient(self)
         dialog.grab_set()  # Ayarlar dialoguyla aynı: açıkken ana pencere
         # etkileşilebilir kalmasın (aksi halde tema değiştirilebiliyordu ve
@@ -2374,19 +2412,22 @@ class App(ctk.CTk):
         result_queue: queue.Queue = queue.Queue()
 
         def worker():
-            results, errors = [], []
+            results, chart_series, errors = [], [], []
             for path in paths:
                 try:
-                    results.append((Path(path).name, _flight_summary_metrics(self._run_backend(path))))
+                    data = self._run_backend(path)
+                    name = Path(path).name
+                    results.append((name, _flight_summary_metrics(data)))
+                    chart_series.append((name, data.get("batteries", [])))
                 except Exception as error:  # bir log bozuksa diğerleri yine gösterilsin
                     errors.append(f"{Path(path).name}: {error}")
-            result_queue.put((results, errors))
+            result_queue.put((results, chart_series, errors))
 
         threading.Thread(target=worker, daemon=True).start()
 
         def poll():
             try:
-                results, errors = result_queue.get_nowait()
+                results, chart_series, errors = result_queue.get_nowait()
             except queue.Empty:
                 self.after(100, poll)
                 return
@@ -2398,7 +2439,8 @@ class App(ctk.CTk):
             if not result_frame.winfo_exists():
                 return  # kullanıcı pencereyi kapatmış
 
-            self._build_comparison_table(result_frame, results)
+            next_row = self._build_comparison_table(result_frame, results)
+            self._build_comparison_chart(result_frame, next_row, chart_series)
             if errors:
                 status_label.configure(text="⚠ " + " | ".join(errors), text_color=LANDING_CRITICAL)
             else:
@@ -2408,15 +2450,17 @@ class App(ctk.CTk):
 
         self.after(100, poll)
 
-    def _build_comparison_table(self, parent, results: list):
+    def _build_comparison_table(self, parent, results: list) -> int:
         """Satır = metrik, sütun = uçuş olacak şekilde özet tabloyu çizer.
         Ölçülemeyen değerler "—" gösterilir (bkz. _format_comparison_value).
         Renkler LANDING paleti: dialog temayı takip etmiyor (bkz.
-        _on_compare_click'teki açıklama)."""
+        _on_compare_click'teki açıklama). Kullandığı son grid satırının bir
+        altını döner ki _build_comparison_chart aynı parent'a alt satırdan
+        devam edebilsin."""
         for child in parent.winfo_children():
             child.destroy()
         if not results:
-            return
+            return 0
 
         next_row = 0
         # Multirotor ile sabit kanatı yan yana koymak "34 W vs 541 W" gibi
@@ -2480,6 +2524,48 @@ class App(ctk.CTk):
 
         for column in range(1, len(results) + 1):
             parent.grid_columnconfigure(column, weight=1)
+        return next_row
+
+    def _build_comparison_chart(self, parent, row: int, chart_series: list):
+        """Tablo altına, uçuş başına tek çizgi olacak şekilde voltaj overlay
+        grafiği çizer (bkz. _overlay_battery_for_flight). Zaman ekseni her
+        uçuşta zaten t=0'dan başlıyor (_normalize_time_axis), bu yüzden ek
+        hizalama gerekmiyor. Dialog hep LANDING paletinde olduğu için renkler
+        DARK_PALETTE'ten sabit alınıyor -- tema-takip eden modül singles'ı
+        açık temada bu koyu zemine karşı yanlış olurdu."""
+        overlays = [
+            (name, battery) for name, batteries in chart_series
+            for battery in [_overlay_battery_for_flight(batteries)] if battery is not None
+        ]
+        if not overlays:
+            return
+
+        figure = Figure(figsize=(8.6, 2.6), dpi=100, facecolor=LANDING_BG)
+        ax = figure.add_subplot(111)
+        ax.set_facecolor(LANDING_BG)
+        colors = DARK_PALETTE["SERIES_COLORS"]
+        for i, (name, battery) in enumerate(overlays):
+            ax.plot(
+                battery["time_s"], battery["voltage_v"],
+                color=colors[i % len(colors)], linewidth=1.5, label=_middle_ellipsis(name),
+            )
+        ax.set_xlabel("Zaman (s)", color=LANDING_TEXT_SECONDARY, fontsize=9)
+        ax.set_ylabel("Voltaj (V)", color=LANDING_TEXT_SECONDARY, fontsize=9)
+        ax.tick_params(colors=LANDING_TEXT_SECONDARY, labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_color(LANDING_CARD_BORDER)
+        ax.grid(True, color=LANDING_CARD_BORDER, alpha=0.3)
+        ax.legend(
+            loc="upper right", facecolor=LANDING_CARD, edgecolor=LANDING_CARD_BORDER,
+            labelcolor=LANDING_TEXT_SECONDARY, fontsize=8,
+        )
+        figure.tight_layout()
+
+        canvas = FigureCanvasTkAgg(figure, master=parent)
+        canvas.draw()
+        canvas.get_tk_widget().grid(
+            row=row, column=0, columnspan=len(chart_series) + 1, sticky="nsew", pady=(14, 4),
+        )
 
     def _load_recent_files(self) -> list:
         """Kalıcı listeyi diskten okur; dosya yoksa/bozuksa boş liste döner
@@ -3427,6 +3513,10 @@ class App(ctk.CTk):
             self.ax_current, means,
             _get_warning_thresholds(self._last_vehicle_type)["current_imbalance_threshold"],
         )
+        _draw_negative_current_threshold(
+            self.ax_current, batteries,
+            _get_warning_thresholds(self._last_vehicle_type)["negative_current_threshold"],
+        )
 
     def _plot_battery_heatmap(self, batteries: list):
         """Batarya/busbar x zaman ısı haritası: renk = o andaki toplam akım.
@@ -3549,6 +3639,10 @@ class App(ctk.CTk):
         _draw_imbalance_band(
             self.ax_motors, means,
             _get_warning_thresholds(self._last_vehicle_type)["current_imbalance_threshold"],
+        )
+        _draw_negative_current_threshold(
+            self.ax_motors, motors,
+            _get_warning_thresholds(self._last_vehicle_type)["negative_current_threshold"],
         )
 
     def _plot_pwm_lines(self, pwm_outputs: list):
