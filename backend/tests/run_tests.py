@@ -1578,6 +1578,52 @@ class ArduPlaneRealLogTests(unittest.TestCase):
         self.assertEqual(self.data["warnings"], [])
 
 
+class SchemaConformanceTests(unittest.TestCase):
+    """shared/power_log_schema.md'de dokümante edilen alanların gerçekten
+    üretildiğini doğrudan kontrol eder. Öncesinde şemayla backend'in çıktısı
+    arasındaki bağ sadece kod içi yorumlardı ("bkz. shared/power_log_schema.md")
+    — dokümanda tanımlı bir alan backend'den sessizce düşebilir ve hiçbir test
+    bunu yakalamazdı. İki farklı formattan (ArduPilot + PX4), hem batarya hem
+    motor hem PWM verisi olan gerçek loglarla çalıştırılıyor ki üç dizinin de
+    şeması aynı anda doğrulansın."""
+
+    BATTERY_FIELDS = {
+        "id", "time_s", "voltage_v", "current_a", "has_current_data",
+        "capacity_used_mah", "remaining_pct", "temperature_c",
+    }
+    MOTOR_FIELDS = {"id", "time_s", "current_a", "has_current_data"}
+    PWM_FIELDS = {"id", "label", "time_s", "pwm_us"}
+    META_FIELDS = {"source_file", "format", "vehicle_type", "duration_s"}
+
+    def _assert_schema(self, data: dict):
+        self.assertEqual(set(data["meta"].keys()), self.META_FIELDS)
+        self.assertIn("batteries", data)
+        self.assertIn("motors", data)
+        self.assertIn("pwm_outputs", data)
+        self.assertIn("warnings", data)
+        for battery in data["batteries"]:
+            self.assertEqual(set(battery.keys()), self.BATTERY_FIELDS)
+            self.assertEqual(len(battery["time_s"]), len(battery["voltage_v"]))
+            self.assertEqual(len(battery["time_s"]), len(battery["current_a"]))
+        for motor in data["motors"]:
+            self.assertEqual(set(motor.keys()), self.MOTOR_FIELDS)
+            self.assertEqual(len(motor["time_s"]), len(motor["current_a"]))
+        for output in data["pwm_outputs"]:
+            self.assertEqual(set(output.keys()), self.PWM_FIELDS)
+            self.assertEqual(len(output["time_s"]), len(output["pwm_us"]))
+
+    def test_px4_log_matches_schema(self):
+        data = run_backend(DATA_DIR / "px4_hexarotor_flight.ulg")
+        self.assertTrue(data["batteries"])
+        self.assertTrue(data["motors"])
+        self._assert_schema(data)
+
+    def test_ardupilot_log_matches_schema(self):
+        data = run_backend(DATA_DIR / "ArduCopter-MaxAltFence-00000067.BIN")
+        self.assertTrue(data["batteries"])
+        self._assert_schema(data)
+
+
 class BackendCorrectnessFixTests(unittest.TestCase):
     """Genel tarama turunda bulunan dört backend düzeltmesinin regresyon
     testleri (bkz. CLAUDE.md 'Genel tarama' bölümü)."""
@@ -1677,6 +1723,75 @@ class BackendCorrectnessFixTests(unittest.TestCase):
             data = run_backend(path)  # çökerse/UB'ye girerse burada patlar
             motor_ids = sorted(m["id"] for m in data["motors"])
             self.assertEqual(motor_ids, list(range(1, ESC_COUNT + 1)))
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_json_output_preserves_subsecond_precision_for_large_timestamps(self):
+        """Backend hiçbir yerde setprecision ayarlamıyordu; ostream'in
+        varsayılan hassasiyeti (6 anlamlı basamak) uzun uçuşlarda time_s'i
+        yuvarlayıp alt-saniye çözünürlüğünü kaybediyordu (örnek:
+        123456.789012 -> "123457"). JSON çıktısı artık double'ın
+        taşıyabildiği kadar (setprecision(15)) basamak koruyor."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(123456.789012, 0, 16.0, 5.0)
+        out += make_synthetic_log.build_bat_message(123457.123456, 0, 16.0, 5.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            time_values = data["batteries"][0]["time_s"]
+            self.assertAlmostEqual(time_values[0], 123456.789012, places=5)
+            self.assertAlmostEqual(time_values[1], 123457.123456, places=5)
+            # Eski (6 anlamlı basamak) davranışta ikisi de tam sayıya
+            # yuvarlanıp AYNI değere ("123457") çarpışırdı.
+            self.assertNotEqual(time_values[0], time_values[1])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_ulog_negative_array_length_does_not_crash_or_leak_garbage(self):
+        """Bozuk bir ULog format string'i ("float[-5] voltage_v" gibi)
+        negatif bir arrayLength üretiyordu; size_t'e cast edilince dev bir
+        sayıya sarıp offset hesaplamalarını bozabilirdi. Düzeltmeden sonra
+        bu alan boyutu 0 (çözülemeyen alan) sayılıyor — parseUlogField'in
+        güvenli tarafta kalması yeterli, kesin bir OOB senaryosu değil
+        (bkz. CLAUDE.md). voltage_v çözülemez olunca ondan sonraki
+        current_a'nın offset'i de hesaplanamıyor, yani bu tek mesajlık log
+        hiç batarya üretmeden KONTROLLÜ bir hatayla ("batarya verisi
+        bulunamadı") çıkıyor — asıl kontrol bunun bir çökme/donma/UB DEĞİL,
+        var olan "veri bulunamadı" hata yoluyla aynı şekilde sonlanması.
+
+        Mutasyonla denendi (guard kaldırılıp yeniden derlendi): bu spesifik
+        senaryoda (-5 * 4 bayt) size_t sarması, `offset + fieldSize >
+        payloadSize` sınır kontrolünü zaten HER durumda geçiyor (dev sayı
+        her zaman payload'dan büyük), yani downstream bounds-check bu
+        girdide guard olmadan da aynı sonucu üretiyor — escCount>32 UB
+        durumundaki gibi, bu test guard'ın gerekliliğini bu ortamda
+        kanıtlayamadı. Guard yine de doğru: bounds-check'in HER zaman
+        yakalayacağına (sarma sonucu offset'in payload'dan büyük kalacağına)
+        güvenmek yerine negatif girdiyi kaynağında reddediyor."""
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float[-5] voltage_v;float current_a;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += make_synthetic_ulog.build_battery_data_message(1, 3.0, 16.5, 12.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            # Cökme/donma/UB olsaydı burası patlardı ya da zaman aşımına
+            # uğrardı; beklenen tek şey mevcut "veri bulunamadı" hata yolu.
+            with self.assertRaises(RuntimeError) as ctx:
+                run_backend(path)
+            self.assertIn("bulunamadi", str(ctx.exception).lower())
         finally:
             path.unlink(missing_ok=True)
 
