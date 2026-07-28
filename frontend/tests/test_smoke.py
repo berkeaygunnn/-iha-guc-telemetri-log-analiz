@@ -1790,6 +1790,26 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(len(self.app.ax_motors.get_lines()), 1)
         self.assertEqual(len(self.app.ax_motors.texts), 0)  # "veri yok" mesajı çıkmamalı
 
+    def test_real_quadplane_log_with_no_battery_data_does_not_crash(self):
+        """data/ArduPlane-FlyEachFrame-00000182.BIN: gerçek bir ArduPilot
+        QuadPlane SITL logu, hiç batarya (BAT/CURR) verisi yok ama 5
+        motorun ESC telemetrisi var (bkz. backend'in ArduPlaneQuadPlaneRealLogTests'i
+        — bu senaryo backend'in "en az bir batarya" kuralını gevşetmesine
+        yol açtı). Voltaj paneli eskiden bu durumda hiçbir mesaj göstermeden
+        boş kalıyordu — artık diğer "veri yok" panelleriyle tutarlı."""
+        data = self._load_and_plot("ArduPlane-FlyEachFrame-00000182.BIN")
+        self.assertEqual(data["batteries"], [])
+        self.assertEqual(len(data["motors"]), 5)
+
+        voltage_texts = [t.get_text() for t in self.app.ax_voltage.texts]
+        self.assertIn(frontend_main.NO_BATTERY_MESSAGE, voltage_texts)
+
+        current_texts = [t.get_text() for t in self.app.ax_current.texts]
+        self.assertIn(frontend_main.NO_BATTERY_CURRENT_MESSAGE, current_texts)
+
+        self.app._plot_motor_currents(data["motors"])
+        self.assertEqual(len(self.app.ax_motors.get_lines()), 5)
+
 
 if __name__ == "__main__":
     unittest.main()

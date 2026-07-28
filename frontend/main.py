@@ -333,6 +333,11 @@ NO_BATTERY_CURRENT_MESSAGE = "Bu logda akım sensörü verisi yok."
 NO_MOTOR_TOPIC_MESSAGE = "Bu logda motor (ESC) akım verisi yok."
 NO_MOTOR_CURRENT_MESSAGE = "ESC telemetrisi var ama akım bildirilmiyor."
 NO_PWM_DATA_MESSAGE = "Bu logda PWM çıkış verisi yok."
+# Backend artık batarya (BAT/CURR) hiç yoksa da motor/PWM varsa logu kabul
+# ediyor (bkz. gerçek bir ArduPilot QuadPlane SITL logu, data/ArduPlane-
+# FlyEachFrame-00000182.BIN) — bu durumda voltaj paneli boş kalıp hiçbir
+# açıklama göstermiyordu, diğer "veri yok" panelleriyle tutarsızdı.
+NO_BATTERY_MESSAGE = "Bu logda batarya verisi yok."
 
 # Alt panelin görünüm modu ile seçicideki etiketi arasındaki eşleme. İki mod
 # arasında geçiş yapan eski if/else, üçüncü mod (PWM) eklenince okunaksız
@@ -2954,6 +2959,13 @@ class App(ctk.CTk):
 
     def _plot_voltage_lines(self, batteries: list):
         self._style_axes(self.ax_voltage, "Voltaj (V)")
+
+        if not batteries:
+            self.ax_voltage.text(
+                0.5, 0.5, NO_BATTERY_MESSAGE, transform=self.ax_voltage.transAxes,
+                ha="center", va="center", color=TEXT_MUTED,
+            )
+            return
 
         voltage_sag_threshold = _get_warning_thresholds(
             self._last_vehicle_type)["voltage_sag_threshold"]
