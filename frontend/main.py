@@ -439,6 +439,34 @@ def _flight_duration_seconds(batteries: list):
     return max(end for _, end in spans) - min(start for start, _ in spans)
 
 
+def _normalize_time_axis(data: dict) -> dict:
+    """Tüm zaman serilerini (batarya/motor/PWM) ortak en erken damgaya göre
+    kaydırıp ekseni 0'dan başlatır.
+
+    Neden: PX4 zaman damgaları kontrolcünün AÇILIŞINDAN itibaren sayılıyor;
+    px4_hexarotor_flight.ulg'de ilk örnek 1453.5 s'de. Süre kartı ilk-son
+    farkını (doğru: 90.0 s) gösterirken grafik ekseni mutlak değerleri
+    (1450-1545) gösteriyordu — ikisi tutarsız görünüyor ve "regresyon mu var?"
+    sorusuna yol açıyordu. Kaydırma TEK ortak t0 ile yapılır ki seriler arası
+    hizalama (ör. akım çekimi ile PWM hareketinin örtüşmesi) bozulmasın;
+    süre/enerji/kapasite gibi tüm istatistikler zaman FARKLARINA dayandığı
+    için kaydırmadan etkilenmez. Backend JSON'ına dokunulmaz (şemadaki
+    time_s mutlak kalır); bu sadece görüntüleme katmanının normalizasyonu."""
+    series_keys = ("batteries", "motors", "pwm_outputs")
+    starts = [series["time_s"][0]
+              for key in series_keys
+              for series in data.get(key, []) if series.get("time_s")]
+    if not starts:
+        return data
+    t0 = min(starts)
+    if t0 <= 0:
+        return data
+    for key in series_keys:
+        for series in data.get(key, []):
+            series["time_s"] = [t - t0 for t in series["time_s"]]
+    return data
+
+
 def _battery_energy_wh(batteries: list) -> float:
     """Her bataryanın voltaj*akım eğrisini zamana göre integre ederek (Ws)
     toplam tüketilen enerjiyi Wh cinsinden döner."""
@@ -2902,7 +2930,11 @@ class App(ctk.CTk):
                 raise RuntimeError(message)
 
             with open(output_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                # Zaman ekseni burada, veri uygulamaya girer girmez
+                # normalize edilir — böylece grafikler, tooltip'ler, ısı
+                # haritaları ve CSV dışa aktarımı hepsi aynı (0'dan
+                # başlayan) ekseni görür, süre kartıyla çelişki kalmaz.
+                return _normalize_time_axis(json.load(f))
 
     def _plot_power_data(self, data: dict):
         """Her bataryanın voltajı/akımı ve motor akımlarını, ortak zaman

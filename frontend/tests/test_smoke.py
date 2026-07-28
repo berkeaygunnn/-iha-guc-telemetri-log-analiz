@@ -1810,6 +1810,34 @@ class SmokeTests(unittest.TestCase):
         self.app._plot_motor_currents(data["motors"])
         self.assertEqual(len(self.app.ax_motors.get_lines()), 5)
 
+    def test_time_axis_starts_at_zero_and_matches_duration_card(self):
+        """PX4 zaman damgaları kontrolcünün açılışından itibaren sayılıyor;
+        px4_hexarotor_flight.ulg'de ilk örnek ~1453.5 s'deydi. Süre kartı
+        ilk-son farkını (doğru: ~90 s) gösterirken grafik ekseni mutlak
+        1450-1545 aralığını gösteriyordu — kullanıcı bunu haklı olarak
+        tutarsızlık (hatta regresyon) sanıyordu. Zaman ekseni artık veri
+        girişinde ortak t0'a göre normalize ediliyor (_normalize_time_axis):
+        eksen 0'dan başlar, son örnek = süre kartındaki değer."""
+        data = self._load_and_plot("px4_hexarotor_flight.ulg")
+
+        all_times = [t for battery in data["batteries"] for t in battery["time_s"]]
+        first, last = min(all_times), max(all_times)
+        self.assertAlmostEqual(first, 0.0, places=6)
+        # Kayıt ~90 s; normalizasyon olmasaydı last ~1543.5 olurdu.
+        self.assertLess(last, 200.0)
+
+        duration_text = self.app.stat_labels["duration"].cget("text")
+        self.assertEqual(duration_text, f"{last - first:.1f} s")
+
+        # Seriler arası hizalama korunmalı: motor serileri de AYNI t0 ile
+        # kaymalı, kendi ilk örneklerine göre ayrı ayrı sıfırlanmamalı.
+        motor_first = min(t for motor in data["motors"] for t in motor["time_s"])
+        self.assertGreaterEqual(motor_first, 0.0)
+        self.assertLess(motor_first, last)
+
+        line = self._data_lines(self.app.ax_voltage)[0]
+        self.assertAlmostEqual(float(line.get_xdata()[0]), first, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

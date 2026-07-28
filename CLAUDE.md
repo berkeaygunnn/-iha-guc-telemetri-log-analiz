@@ -391,6 +391,18 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   `Q_ENABLE` parametresinin değerini okumayı gerektirir — ayrı bir iş,
   bu turun kapsamı dışında.
 
+- **Zaman ekseni artık 0'dan başlıyor (görüntüleme katmanı normalizasyonu):**
+  kullanıcı haklı bir tutarsızlık yakaladı — süre kartı 90.0 s derken
+  grafik ekseni 1450–1545 gösteriyordu (PX4 damgaları kontrolcünün
+  açılışından itibaren sayar; 1543.5 s ise `duration_s` düzeltmesinden
+  önceki ESKİ hatalı değerdi, regresyon değil). `_run_backend`, JSON'u
+  okur okumaz tüm serileri (batarya/motor/PWM) ortak en erken damgaya
+  göre kaydırıyor (`_normalize_time_axis`) — TEK ortak t0 ile, seriler
+  arası hizalama bozulmasın diye. Süre/enerji/kapasite hesapları zaman
+  FARKLARINA dayandığı için etkilenmiyor; backend JSON'ı ve şema mutlak
+  kalıyor (bu sadece frontend'in görüntüleme normalizasyonu). Mutasyonla
+  doğrulandı (normalizasyon kapatılınca test 1453.5 != 0.0 ile kırmızı).
+
 ## Kapsam dışı bırakılan fikirler
 
 - **Yapay zeka / makine öğrenmesi entegrasyonu:** Değerlendirildi, KESİN
