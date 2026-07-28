@@ -120,6 +120,18 @@ DARK_PALETTE = {
     # (COLOR_WARNING/CRITICAL) bilerek aynı tonlar seçilmedi — bu bir ölçüm
     # skalası, "uyarı" değil.
     "PWM_DEVIATION_COLORS": ("#5aa9f0", "#2c2c2a", "#eb9b4f"),
+    # Seri (batarya/motor/PWM kanalı) renkleri — kategori kimliği. Koyu
+    # zeminde parlaklığı yüksek tonlar; açık temada bunlar soluk kaldığı
+    # için LIGHT_PALETTE kendi (daha koyu/doygun) sürümünü taşır. Slot
+    # sırası iki temada da AYNI varlığa denk gelir (Batarya 1 hep mavi).
+    "SERIES_COLORS": (
+        "#3987e5", "#008300", "#d55181", "#c98500",
+        "#8a5fd1", "#1fada4", "#e0574a", "#b8b83c",
+    ),
+    # Isı haritası ardışık skalası: koyu yüzeyden markaya ait maviden (seri
+    # slot 1 ile aynı ton) açık uca — düşük değer yüzeyde erir, yüksek değer
+    # parlar.
+    "HEATMAP_COLORS": ("#141a22", "#3987e5", "#cde2fb"),
 }
 LIGHT_PALETTE = {
     "SURFACE": "#f4f5f2",
@@ -143,6 +155,23 @@ LIGHT_PALETTE = {
     # okuması korunsun. (Ardışık HEATMAP_COLORS'ın aksine bu skala temaya göre
     # değişiyor; orta noktanın zeminle uyumlu kalması buna bağlı.)
     "PWM_DEVIATION_COLORS": ("#1f6fb8", "#e1e1db", "#c2701a"),
+    # Koyu temadaki tonların açık zemin (#f4f5f2) için koyulaştırılmış/
+    # doygunlaştırılmış halleri — koyu paletteki değerler açık zeminde soluk
+    # kalıp birbirine karışıyordu (kullanıcı geri bildirimi). Slot başına ton
+    # kimliği korunur (Batarya 1 iki temada da mavi). Değerler ölçülerek
+    # seçildi: her renk zemine karşı yeterli kontrast taşıyor ve ardışık
+    # çiftler renk körlüğü simülasyonunda da ayrışıyor; 7. (kırmızı) bilerek
+    # daha koyu, 8. (zeytin) bilerek daha açık — naif koyulaştırılmış çift
+    # protanopide birbirinin aynısı çıkıyordu.
+    "SERIES_COLORS": (
+        "#2a78d6", "#006f00", "#c13d6c", "#9c6a00",
+        "#6d44b8", "#147d77", "#b03225", "#8f9422",
+    ),
+    # Açık zeminde yön ters (PWM_DEVIATION_COLORS'daki açık-tema notuyla aynı
+    # mantık): düşük uç zemine karışacak kadar açık, yüksek uç koyulaşarak
+    # öne çıkar — "düşük değer erir, yüksek değer belirginleşir" okuması
+    # iki temada da korunur.
+    "HEATMAP_COLORS": ("#dce8f7", "#2a78d6", "#0d366b"),
 }
 
 # Tema tercihi yeniden başlatınca uygulanır (canlı geçiş değil — bkz. tema
@@ -164,6 +193,8 @@ AXIS_LINE = _ACTIVE_PALETTE["AXIS_LINE"]
 COLOR_CRITICAL = _ACTIVE_PALETTE["COLOR_CRITICAL"]
 COLOR_WARNING = _ACTIVE_PALETTE["COLOR_WARNING"]
 PWM_DEVIATION_COLORS = _ACTIVE_PALETTE["PWM_DEVIATION_COLORS"]
+SERIES_COLORS = _ACTIVE_PALETTE["SERIES_COLORS"]
+HEATMAP_COLORS = _ACTIVE_PALETTE["HEATMAP_COLORS"]
 
 # CustomTkinter widget'ları için (AÇIK, KOYU) renk ÇİFTLERİ. Yukarıdaki tekil
 # sabitlerle (SURFACE, ...) FARKI ve NEDEN ikisi de gerekli:
@@ -285,13 +316,11 @@ LANDING_SIDEBAR_WIDTH = 290          # _build_recent_sidebar'daki sabit genişli
 # eşleştirilebilsin. 8 renk hexa/octokopterin tüm motorlarını (6/8) tek
 # döngüde ayrı renkte tutmaya yetiyor; bunun ötesine geçilirse (nadir) renk
 # döngüsü _series_style()'daki çizgi stiliyle birlikte tekrar başa sarılır.
-SERIES_COLORS = [
-    "#3987e5", "#008300", "#d55181", "#c98500",
-    "#8a5fd1", "#1fada4", "#e0574a", "#b8b83c",
-]
-# Renk paleti tükenip (>8 seri) baştan sarıldığında ikinci "tur"un çizgi
-# stilini değiştirerek (ör. motor 1 ve motor 9 aynı renkte ama biri düz,
-# diğeri kesikli çizgi) yine de ayırt edilebilir kalmasını sağlar.
+#
+# SERIES_COLORS ve HEATMAP_COLORS artık TEMA BAŞINA paletlerde tanımlı
+# (yukarıda, PWM_DEVIATION_COLORS deseniyle) ve tekil sabitler olarak burada
+# değil, modül singles bloğunda unpack ediliyor; tema toggle'ı ikisini de
+# yeniden bağlıyor. Çizgi stilleri tema bağımsız, paylaşımlı kalır.
 SERIES_LINESTYLES = ["-", "--", ":", "-."]
 
 
@@ -301,13 +330,6 @@ def _series_style(index: int) -> tuple:
     color = SERIES_COLORS[index % len(SERIES_COLORS)]
     linestyle = SERIES_LINESTYLES[(index // len(SERIES_COLORS)) % len(SERIES_LINESTYLES)]
     return color, linestyle
-
-# Isı haritası için ardışık (sequential) renk skalası: koyu yüzeyden başlayıp
-# markaya ait maviden geçip açık bir tona çıkar (düşük değer yüzeyde erir,
-# yüksek değer parlar) — koyu temada okunaklı olması için bu yönde. Hem motor
-# hem batarya/busbar ısı haritası aynı skalayı kullanıyor (ikisi de "akım
-# yoğunluğu" anlamında aynı şeyi gösteriyor, aynı anda ekranda olmuyorlar).
-HEATMAP_COLORS = ["#141a22", SERIES_COLORS[0], "#cde2fb"]
 
 # Üst istatistik satırı VE PDF raporunun özet sayfası aynı kutucukları
 # gösterir; tek bir yerden tanımlanır ki biri güncellenip diğeri unutulmasın.
@@ -1840,6 +1862,7 @@ class App(ctk.CTk):
         yeniden çizilir."""
         global ACTIVE_THEME, SURFACE, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED
         global GRIDLINE, AXIS_LINE, COLOR_CRITICAL, COLOR_WARNING, PWM_DEVIATION_COLORS
+        global SERIES_COLORS, HEATMAP_COLORS
 
         new_theme = "dark" if ACTIVE_THEME == "light" else "light"
         settings = _load_settings()
@@ -1860,6 +1883,8 @@ class App(ctk.CTk):
         COLOR_CRITICAL = palette["COLOR_CRITICAL"]
         COLOR_WARNING = palette["COLOR_WARNING"]
         PWM_DEVIATION_COLORS = palette["PWM_DEVIATION_COLORS"]
+        SERIES_COLORS = palette["SERIES_COLORS"]
+        HEATMAP_COLORS = palette["HEATMAP_COLORS"]
 
         # (2) Tüm pencereyi HEDEF renkte tek bir opak dikdörtgenle (örtü) kapla.
         # Neden: Windows, tema değişiminde her widget'ı (kutuyu) AYRI bir bölge
