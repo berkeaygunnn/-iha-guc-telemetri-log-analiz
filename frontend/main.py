@@ -345,6 +345,27 @@ STAT_TILE_DEFINITIONS = [
     ("remaining_time", "Tahmini Kalan Süre"),
 ]
 
+# Kutucuk başına, fare üzerine gelince gösterilen kısa açıklama. Ayrı bir
+# sözlük (STAT_TILE_DEFINITIONS'a üçüncü öğe olarak eklemek yerine): tanım
+# listesini PDF raporu da paylaşıyor, oradaki tüketiciyi değiştirmemek için.
+# "B2: 39 mΩ" gibi kısaltmalı değerlerin ne anlama geldiğini yeni kullanıcıya
+# anlatan tek yer burası (kullanıcı geri bildirimi).
+STAT_TILE_TOOLTIPS = {
+    "duration": "Kaydın ilk ve son örneği arasında geçen süre.",
+    "samples": "Tüm bataryaların toplam ölçüm (örnek) sayısı.",
+    "voltage_range": "Tüm bataryaların ortak en düşük–en yüksek voltajı.",
+    "current_range": "Ölçüm yapan bataryaların ortak akım aralığı; negatif değer\n"
+                     "genellikle sensör gürültüsüne işaret eder (⚠ ile işaretlenir).",
+    "energy_wh": "Voltaj × akım eğrisinin zaman integrali —\nuçuş boyunca çekilen toplam enerji.",
+    "peak_power_w": "Anlık voltaj × akım çarpımının en yüksek değeri.",
+    "resistance_est": "Voltaj düşümü / akım ilişkisinden (regresyon eğimi) tahmin\n"
+                      "edilen iç direnç; B = batarya numarası. Uçuştan uçuşa\n"
+                      "artış, yaşlanan bataryaya işaret eder.",
+    "capacity_used": "Uçuş kontrolcüsünün raporladığı tüketilen kapasite\n(akım integralinden).",
+    "remaining_time": "Kalan % ve şu ana kadarki tüketim hızından kaba tahmin;\n"
+                      "uçuş geneli ile son bölümün hızları farklıysa aralık gösterilir.",
+}
+
 
 # Akım ölçümü olmayan panellerde, sessiz/boş bir grafik yerine gösterilen
 # açıklamalar (sıcaklık panelindeki "Bu logda sıcaklık verisi yok." ile aynı
@@ -529,6 +550,42 @@ def _battery_internal_resistance_estimate(batteries: list):
         if best is None or resistance_mohm > best[1]:
             best = (battery["id"], resistance_mohm)
     return best
+
+
+def _remaining_time_range_min(duration_s, remaining_pct, current_a):
+    """Tahmini kalan uçuş süresi için (alt, üst) dakika aralığı; hesap
+    yapılamıyorsa None. Tek sayı ("~5 dk") tahmin belirsizliğini gizleyip
+    olduğundan iddialı duruyordu (kullanıcı geri bildirimi) — aralık daha
+    dürüst.
+
+    İki tahmin üretilir:
+    - Taban: mevcut doğrusal ekstrapolasyon (uçuş genelinin ortalama tüketim
+      hızı sabit varsayılır) — eski tek-değerli formülün kendisi.
+    - İkinci: son 1/3 pencerenin ortalama akımı uçuş genelinden farklıysa,
+      taban o oranla ölçeklenir (son bölümde çekiş yüksekse kalan süre
+      kısalır: base * genel / son).
+    İkisi %10 içinde ise (ya da ikinci tahmin hesaplanamıyorsa) aralık
+    üretmek sahte hassasiyet olurdu — tek değer (lo == hi) döner."""
+    if remaining_pct is None or remaining_pct >= 100 or not duration_s or duration_s <= 0:
+        return None
+    base_min = duration_s * remaining_pct / (100 - remaining_pct) / 60
+
+    recent_start = len(current_a) - len(current_a) // 3
+    recent = current_a[recent_start:]
+    # 10 örnekten kısa pencere gürültüye açık; ortalamalardan biri <= 0 ise
+    # oran anlamsız (akım sensörü olmayan/duran araç) — tek değere düş.
+    if len(recent) < 10:
+        return (base_min, base_min)
+    overall_mean = sum(current_a) / len(current_a)
+    recent_mean = sum(recent) / len(recent)
+    if overall_mean <= 0 or recent_mean <= 0:
+        return (base_min, base_min)
+
+    scaled_min = base_min * overall_mean / recent_mean
+    lo, hi = sorted((base_min, scaled_min))
+    if hi <= lo * 1.10:
+        return (base_min, base_min)
+    return (lo, hi)
 
 
 # Karşılaştırma tablosunun satırları: (anahtar, başlık, birim biçimi).
@@ -742,6 +799,46 @@ def _add_toolbar_tooltip(widget, text):
     widget.bind("<Enter>", show, add="+")
     widget.bind("<Leave>", hide, add="+")
     widget.bind("<ButtonPress>", hide, add="+")
+
+
+def _add_tile_tooltip(tile, text):
+    """Bir istatistik kutucuğuna (çerçeve + içindeki başlık/değer etiketleri)
+    ipucu balonu bağlar. _add_toolbar_tooltip tek widget'a bağlanıyor; kutucuk
+    üç widget'tan oluştuğu için imleç çerçeveden etikete geçerken Enter/Leave
+    olayları art arda tetikleniyor. Balonu hangi widget açtıysa açsın konum
+    hep ÇERÇEVEYE göre hesaplanıyor ve Leave yalnızca imleç kutucuğun sınırları
+    tamamen dışına çıkınca kapatıyor — böylece balon etiket geçişlerinde
+    titremiyor."""
+    state = {"window": None}
+
+    def show(_event=None):
+        if state["window"] is not None:
+            return
+        window = tk.Toplevel(tile)
+        window.wm_overrideredirect(True)
+        window.wm_geometry(
+            f"+{tile.winfo_rootx()}+{tile.winfo_rooty() + tile.winfo_height() + 4}"
+        )
+        tk.Label(
+            window, text=text, background=GRIDLINE, foreground=TEXT_PRIMARY,
+            relief="solid", borderwidth=1, padx=6, pady=3, justify="left",
+        ).pack()
+        state["window"] = window
+
+    def hide_if_outside(_event=None):
+        if state["window"] is None:
+            return
+        x, y = tile.winfo_pointerxy()
+        inside = (tile.winfo_rootx() <= x < tile.winfo_rootx() + tile.winfo_width()
+                  and tile.winfo_rooty() <= y < tile.winfo_rooty() + tile.winfo_height())
+        if not inside:
+            state["window"].destroy()
+            state["window"] = None
+
+    for widget in (tile, *tile.winfo_children()):
+        widget.bind("<Enter>", show, add="+")
+        widget.bind("<Leave>", hide_if_outside, add="+")
+        widget.bind("<ButtonPress>", hide_if_outside, add="+")
 
 
 class _PanPreviewToolbar(NavigationToolbar2Tk):
@@ -2348,6 +2445,9 @@ class App(ctk.CTk):
             value_label.pack(fill="x", anchor="center", padx=12, pady=(0, 8))
             self.stat_labels[key] = value_label
             self._stat_tiles.append(tile)
+            # "B2: 39 mΩ" gibi kısaltmalı değerlerin ne olduğunu yeni
+            # kullanıcıya anlatan tek yer (kullanıcı geri bildirimi).
+            _add_tile_tooltip(tile, STAT_TILE_TOOLTIPS[key])
 
         self._stat_columns = None  # henüz yerleşmedi
         self._layout_stats_row()
@@ -3451,8 +3551,10 @@ class App(ctk.CTk):
         # durumu grafiğe bakmadan da fark ettirir.
         all_current = [c for battery in measured for c in battery["current_a"]]
         min_current = min(all_current)
+        # ⚠ öneki, kartla uyarı listesi arasındaki bağı renk körü kullanıcılar
+        # için de kurar (yalnız renk değişimi yeterince fark edilmiyordu).
         self.stat_labels["current_range"].configure(
-            text=f"{min_current:.1f}–{max(all_current):.1f} A",
+            text=("⚠ " if min_current < 0 else "") + f"{min_current:.1f}–{max(all_current):.1f} A",
             text_color=UI_COLOR_WARNING if min_current < 0 else UI_TEXT_PRIMARY,
         )
 
@@ -3485,18 +3587,20 @@ class App(ctk.CTk):
             text=f"{sum(capacities):.0f} mAh" if capacities else "—"
         )
 
-        remaining_pcts = [b["remaining_pct"] for b in measured if b.get("remaining_pct") is not None]
         duration = _flight_duration_seconds(batteries)
         remaining_text = "—"
-        if remaining_pcts and duration:
-            # En az kalanı olan batarya belirleyici (en kritik senaryo).
-            remaining_pct = min(remaining_pcts)
-            if remaining_pct < 100:
-                # Sabit ortalama tüketim hızı varsayımıyla kaba doğrusal
-                # ekstrapolasyon: şu ana kadar geçen sürede bu kadar % tüketildi,
-                # aynı hızla devam edilirse kalan % ne kadar sürede biter.
-                remaining_min = duration * remaining_pct / (100 - remaining_pct) / 60
-                remaining_text = f"~{remaining_min:.0f} dk"
+        # En az kalanı olan batarya belirleyici (en kritik senaryo) — akım
+        # serisi de AYNI bataryadan alınır ki hız tahmini tutarlı olsun.
+        with_pct = [b for b in measured if b.get("remaining_pct") is not None]
+        if with_pct and duration:
+            critical = min(with_pct, key=lambda b: b["remaining_pct"])
+            estimate = _remaining_time_range_min(
+                duration, critical["remaining_pct"], critical["current_a"])
+            if estimate is not None:
+                lo, hi = round(estimate[0]), round(estimate[1])
+                # Yuvarlama SONRASI karşılaştırma: 9.6 ve 9.9 "10–10 dk"
+                # diye yazılmasın.
+                remaining_text = f"~{lo:.0f} dk" if lo == hi else f"~{lo:.0f}–{hi:.0f} dk"
         self.stat_labels["remaining_time"].configure(text=remaining_text)
 
 
