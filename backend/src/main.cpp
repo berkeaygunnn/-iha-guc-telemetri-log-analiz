@@ -1143,15 +1143,17 @@ void writeBatteries(std::ostream& out, const std::map<int, std::vector<BatterySa
 }
 
 // Tüm bataryalar arasında en son örneğin zamanını (uçuşun toplam süresi) bulur.
-double computeDuration(const std::map<int, std::vector<BatterySamplePoint>>& batteries) {
-    // İlk zaman damgası SIFIR OLMAYABİLİR: PX4 logları uçuş kontrolcüsünün
-    // açılışından beri geçen süreyi damgalıyor. Sadece son damgayı almak
-    // "px4_fixed_wing_flight.ulg" için 4104.7 s veriyordu — gerçek kayıt
-    // 90.8 saniye. Bu yüzden ilk ve son damga arasındaki FARK alınıyor.
+// Verilen örnek dizisinin (batarya/motor/PWM, hepsi bir time_s alanı taşır)
+// ilk ve son zaman damgası arasındaki FARKI döner — son damganın kendisini
+// DEĞİL: PX4 logları uçuş kontrolcüsünün açılışından beri geçen süreyi
+// damgalıyor. Sadece son damgayı almak "px4_fixed_wing_flight.ulg" için
+// 4104.7 s veriyordu — gerçek kayıt 90.8 saniye.
+template <typename KeyType, typename SamplePoint>
+double computeTimeRange(const std::map<KeyType, std::vector<SamplePoint>>& samples) {
     bool haveSample = false;
     double firstTime = 0.0;
     double lastTime = 0.0;
-    for (const auto& entry : batteries) {
+    for (const auto& entry : samples) {
         if (entry.second.empty()) continue;
         double entryFirst = entry.second.front().time_s;
         double entryLast = entry.second.back().time_s;
@@ -1165,6 +1167,10 @@ double computeDuration(const std::map<int, std::vector<BatterySamplePoint>>& bat
         if (entryLast > lastTime) lastTime = entryLast;
     }
     return haveSample ? lastTime - firstTime : 0.0;
+}
+
+double computeDuration(const std::map<int, std::vector<BatterySamplePoint>>& batteries) {
+    return computeTimeRange(batteries);
 }
 
 // Kural tabanlı otomatik yorumlama eşikleri: gerçek loglarla kalibre edilene
@@ -1352,7 +1358,7 @@ void parseVehicleThresholdArg(const std::string& value, VehicleThresholdMap& per
     }
 }
 
-// Basarili olursa (en az bir batarya bulunduysa) true doner.
+// Basarili olursa (en az bir batarya/motor/PWM verisi bulunduysa) true doner.
 bool writePowerLogJson(const std::string& inputLogPath, const std::string& outputPath,
                        const WarningThresholds& thresholds,
                        const VehicleThresholdMap& perVehicleThresholds = {}) {
@@ -1370,6 +1376,16 @@ bool writePowerLogJson(const std::string& inputLogPath, const std::string& outpu
     out << std::setprecision(15);
 
     double duration_s = computeDuration(parsed.batteries);
+    // Bataryası olmayan (ör. gerçek bir ArduPilot QuadPlane SITL logu --
+    // birçoğu güç izleme simüle etmiyor ama gerçek çok motorlu ESC/PWM
+    // verisi taşıyor) loglarda süreyi motor/PWM zaman damgalarından
+    // hesapla; aksi halde duration_s hep 0 kalırdı.
+    if (duration_s == 0.0 && parsed.batteries.empty()) {
+        duration_s = computeTimeRange(parsed.motors);
+        if (duration_s == 0.0) {
+            duration_s = computeTimeRange(parsed.pwmOutputs);
+        }
+    }
     std::vector<std::string> warnings = computeWarnings(
         parsed, selectThresholds(perVehicleThresholds, thresholds, parsed.vehicleType));
 
@@ -1399,20 +1415,30 @@ bool writePowerLogJson(const std::string& inputLogPath, const std::string& outpu
               << " batarya, " << parsed.motors.size() << " motor, " << warnings.size() << " uyari)" << std::endl;
 
     if (parsed.batteries.empty()) {
-        if (parsed.hasSystemPowerTopic) {
-            // Ozellikle bazi Rover yapilandirmalarinda goruldu: bu arac ana
-            // batarya (battery_status) yerine sadece dahili guc hatlarini
-            // (system_power - 5V/payload rayi, ana batarya degil) logluyor.
-            std::cerr << "Uyari: bu log dosyasinda ana batarya (battery_status) verisi yok, "
-                         "sadece dahili guc hatti (system_power) verisi bulundu. Bu arac/"
-                         "yapilandirma su an desteklenmiyor."
-                      << std::endl;
-        } else {
-            std::cerr << "Uyari: dosyada batarya verisi bulunamadi. Desteklenmeyen ya da bozuk "
-                         "bir log dosyasi olabilir (ArduPilot .bin ya da PX4 .ulog bekleniyor)."
-                      << std::endl;
+        // Batarya yoksa da motor/PWM verisi varsa log yine islenebilir --
+        // gercek bir ArduPilot QuadPlane SITL logunda goruldu: cogu boyle
+        // bir test guc izleme simule etmiyor ama gercek coklu-motor ESC/PWM
+        // verisi tasiyor. Sadece HICBIR kullanisli veri yoksa reddediliyor.
+        bool hasOtherUsefulData = !parsed.motors.empty() || !parsed.pwmOutputs.empty();
+        if (!hasOtherUsefulData) {
+            if (parsed.hasSystemPowerTopic) {
+                // Ozellikle bazi Rover yapilandirmalarinda goruldu: bu arac ana
+                // batarya (battery_status) yerine sadece dahili guc hatlarini
+                // (system_power - 5V/payload rayi, ana batarya degil) logluyor.
+                std::cerr << "Uyari: bu log dosyasinda ana batarya (battery_status) verisi yok, "
+                             "sadece dahili guc hatti (system_power) verisi bulundu. Bu arac/"
+                             "yapilandirma su an desteklenmiyor."
+                          << std::endl;
+            } else {
+                std::cerr << "Uyari: dosyada batarya verisi bulunamadi. Desteklenmeyen ya da bozuk "
+                             "bir log dosyasi olabilir (ArduPilot .bin ya da PX4 .ulog bekleniyor)."
+                          << std::endl;
+            }
+            return false;
         }
-        return false;
+        std::cerr << "Bilgi: bu logda batarya verisi yok, sadece motor/PWM verisiyle devam "
+                     "ediliyor."
+                  << std::endl;
     }
     return true;
 }
