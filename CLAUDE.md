@@ -346,13 +346,50 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   arasındaki bağ sadece yorum satırlarıydı). Frontend 116→117, backend
   88→92 test.
 
-  **Bulunamayan bir madde:** gerçek bir ArduPilot QuadPlane/VTOL `.BIN`
-  logu arandı (Rover/Plane loglarıyla aynı kaynak, autotest.ardupilot.org).
-  Birkaç farklı tarihli çalıştırma denendi; QuadPlane işi bu kaynakta
-  sürekli FAILED durumda ve sadece `.tlog` (telemetri) yayınlıyor, hiç
-  `.BIN` dataflash logu yok. PX4 tarafında VTOL zaten gerçek bir logla
-  (`px4_sample_log_small.ulg`) test ediliyor; ArduPilot tarafı için uygun
-  bir log bulununcaya kadar ertelendi.
+  **İlk arama bulamadı, ikinci arama buldu:** gerçek bir ArduPilot
+  QuadPlane/VTOL `.BIN` logu için `autotest.ardupilot.org`'daki "QuadPlane"
+  CI işine bakıldı — o iş sürekli FAILED ve sadece `.tlog` yayınlıyor, hiç
+  `.BIN` yok. Ama kullanıcı ısrar edince farklı bir mekanizma bulundu:
+  ArduPilot'un `FlyEachFrame` testi, Plane firmware'ini `vehicleinfo.json`
+  içindeki TÜM çerçeve tiplerinde (aralarında `quadplane`, `quadplane-tri`,
+  `quadplane-cl84` gibi onlarca VTOL varyantı) uçuruyor ve HER biri için
+  ayrı bir `ArduPlane-FlyEachFrame-NNNNNNNN.BIN` üretiyor — 42 tanesi
+  indirilip kendi backend'imizden geçirildi, motor sayısına (ESC
+  telemetrisi) göre en zengin aday (`00000182`, 5 motor, 225 saniyelik
+  gerçek uçuş) seçildi.
+
+  **Asıl bulgu kod tarafındaydı:** bu logun (ve genel olarak birçok
+  QuadPlane SITL testinin) hiç batarya (BAT/CURR) verisi yok — sadece
+  gerçek çok motorlu ESC telemetrisi ve PWM verisi var. Backend o ana
+  kadar `parsed.batteries.empty()` olan HER logu reddediyordu (motor/PWM
+  verisi ne kadar zengin olursa olsun) — yani bu gerçek log daha
+  önceki (network-erişimli) aramalarla bulunsaydı bile o zaman hâlâ
+  kullanılamazdı. `writePowerLogJson` artık batarya yoksa da motor ya da
+  PWM'den en az biri doluysa logu kabul ediyor; `computeDuration`
+  (backend'de `computeTimeRange` şablon fonksiyonuna genelleştirildi)
+  batarya yoksa süreyi motor, o da yoksa PWM zaman damgalarından
+  hesaplıyor. Frontend'de voltaj panelinin bu durumda hiç mesaj
+  göstermeden boş kalması da düzeltildi (`NO_BATTERY_MESSAGE`, diğer
+  "veri yok" panelleriyle aynı desen).
+
+  Bu davranış değişikliği ESKİ bir testi (`test_ardupilot_esc_only_no_
+  battery_fails_with_clear_error`) bilerek kırdı — o test tam da artık
+  desteklenen senaryoyu (ESC var, batarya yok) "hata bekleniyor" diye
+  test ediyordu; adı ve beklentisi yeni davranışa göre güncellendi. Gate
+  değişikliği mutasyonla doğrulandı (eski katı kural geri getirilip yeni
+  testlerin kırmızı çıktığı teyit edildi). `data/ArduPlane-FlyEachFrame-
+  00000182.BIN` eklendi (28MB — diğer örneklerden ~10 kat büyük, bilinçli
+  bir tercih: bu zenginlikte gerçek VTOL geçiş verisi taşıyan başka aday
+  yoktu). `shared/power_log_schema.md`'ye "Batarya verisi hiç yoksa"
+  bölümü eklendi. Backend 92→97, frontend 117→118 test.
+
+  **Bilinen, kapsam dışı bırakılan sınırlama:** ArduPilot firmware adı
+  quadplane çerçeve sınıfını ayırt etmiyor (`Q_ENABLE` bir parametre,
+  firmware string'i değil) — bu yüzden bu logun `vehicle_type`'ı `"vtol"`
+  değil `"fixed_wing"` kalıyor. PX4 tarafında `is_vtol` bayrağı sayesinde
+  bu ayrım zaten var; ArduPilot tarafında düzeltmek FMT/PARM mesajlarından
+  `Q_ENABLE` parametresinin değerini okumayı gerektirir — ayrı bir iş,
+  bu turun kapsamı dışında.
 
 ## Kapsam dışı bırakılan fikirler
 
