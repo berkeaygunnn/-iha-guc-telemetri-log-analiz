@@ -1925,5 +1925,52 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(lo, hi)
 
 
+    # --- Karşılaştırma dialogu yardımcıları ----------------------------------
+
+    def test_middle_ellipsis_keeps_short_names_and_truncates_long(self):
+        self.assertEqual(frontend_main._middle_ellipsis("kisa.ulg"), "kisa.ulg")
+        long_name = "ArduPlane-GpsSensorPreArmEAHRS-00000115.BIN"
+        shortened = frontend_main._middle_ellipsis(long_name)
+        self.assertLessEqual(len(shortened), 28)
+        self.assertIn("…", shortened)
+        # Kuyruk (numara + uzantı) görünür kalmalı ki benzer adlar ayırt edilsin.
+        self.assertTrue(shortened.endswith(long_name[-10:]), shortened)
+
+    def test_comparison_mixed_vehicles_detected(self):
+        mixed = [("a", {"vehicle": "Multirotor"}), ("b", {"vehicle": "Sabit Kanat"})]
+        same = [("a", {"vehicle": "Multirotor"}), ("b", {"vehicle": "Multirotor"})]
+        unknown = [("a", {"vehicle": "Multirotor"}), ("b", {"vehicle": None})]
+        self.assertTrue(frontend_main._comparison_has_mixed_vehicles(mixed))
+        self.assertFalse(frontend_main._comparison_has_mixed_vehicles(same))
+        # Tipi bilinmeyen "karışık" sayılmamalı (yanlış alarm olurdu).
+        self.assertFalse(frontend_main._comparison_has_mixed_vehicles(unknown))
+
+    def test_comparison_notable_cells_flags_two_times_median(self):
+        """39 mΩ vs 10-14 mΩ senaryosu: max, diğerlerinin medyanının 2 katını
+        aşınca işaretlenir; 1.5 katı gibi sınır durumlar İŞARETLENMEZ (kuralın
+        muhafazakârlığının mutasyon bekçisi)."""
+        flagged = [("u1", {"resistance_mohm": 10.0, "voltage_sag_pct": None}),
+                   ("u2", {"resistance_mohm": 14.0, "voltage_sag_pct": None}),
+                   ("u3", {"resistance_mohm": 39.0, "voltage_sag_pct": None})]
+        notable = frontend_main._comparison_notable_cells(flagged)
+        self.assertEqual(notable, [("resistance_mohm", 2, "u3")])
+
+        borderline = [("u1", {"resistance_mohm": 10.0, "voltage_sag_pct": None}),
+                      ("u2", {"resistance_mohm": 15.0, "voltage_sag_pct": None})]
+        self.assertEqual(frontend_main._comparison_notable_cells(borderline), [])
+
+        single = [("u1", {"resistance_mohm": 39.0, "voltage_sag_pct": None}),
+                  ("u2", {"resistance_mohm": None, "voltage_sag_pct": None})]
+        self.assertEqual(frontend_main._comparison_notable_cells(single), [])
+
+    def test_comparison_current_range_negative_gets_warning_prefix(self):
+        metrics = {"current_min": -0.7, "current_max": 23.0}
+        self.assertTrue(
+            frontend_main._format_comparison_value("current_range", metrics).startswith("⚠"))
+        metrics_ok = {"current_min": 0.0, "current_max": 23.0}
+        self.assertFalse(
+            frontend_main._format_comparison_value("current_range", metrics_ok).startswith("⚠"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -309,6 +309,15 @@ LANDING_FOOTER_TEXT = "#3a5a78"      # alt bilgi satırı ("... MIT Lisansı ile
 LANDING_SIDEBAR_WIDTH = 290          # _build_recent_sidebar'daki sabit genişlik; başlık/açıklama
                                      # metinlerinin kalan alana göre ne zaman sarması gerektiğini
                                      # hesaplayabilmek için burada da adlandırılmış halde tutuluyor
+# "Uçuşları Karşılaştır" penceresi SADECE giriş ekranından açılıyor ve giriş
+# ekranı temadan bağımsız hep koyu lacivert — dialog aktif temayı takip
+# edince açık temada "koyu zemin üstünde beyaz pencere" gibi kopuk duruyordu
+# (kullanıcı geri bildirimi). Dialog bu yüzden LANDING paletiyle çiziliyor.
+LANDING_ROW_STRIPE = "#0f2236"       # karşılaştırma tablosunun zebra bandı: LANDING_BG ile
+                                     # LANDING_CARD arasında bir ara ton
+LANDING_WARNING = DARK_PALETTE["COLOR_WARNING"]    # koyu zeminde okunan uyarı/kritik tonları —
+LANDING_CRITICAL = DARK_PALETTE["COLOR_CRITICAL"]  # temalı singles açık temada laciverte karşı
+                                                   # okunaksız kalabilirdi, sabitlere bağlandı
 
 # Birden fazla batarya/motor olduğunda her birine sabit sırada, kategorik bir
 # renk atamak için (kategori kimliği). Bir bataryanın voltaj ve akım çizgisi
@@ -665,7 +674,11 @@ def _format_comparison_value(key: str, metrics: dict) -> str:
         return f"{low:.2f}–{high:.2f} V" if low is not None else "—"
     if key == "current_range":
         low, high = metrics["current_min"], metrics["current_max"]
-        return f"{low:.1f}–{high:.1f} A" if low is not None else "—"
+        if low is None:
+            return "—"
+        # Ana ekrandaki Akım Aralığı kartıyla aynı işaret: negatif minimum
+        # muhtemelen sensör gürültüsü, tabloda da görünür olmalı.
+        return ("⚠ " if low < 0 else "") + f"{low:.1f}–{high:.1f} A"
 
     value = metrics.get(key)
     if value is None:
@@ -685,6 +698,54 @@ def _format_comparison_value(key: str, metrics: dict) -> str:
     if key == "voltage_sag_pct":
         return f"%{value:.1f}"
     return str(value)
+
+
+def _middle_ellipsis(text: str, max_chars: int = 28) -> str:
+    """Uzun dosya adını ortadan kısaltır ("çokUzunBirAd…0067.BIN") — uzantı
+    ve numara kuyruğu görünür kalır ki benzer adlı loglar ayırt edilebilsin.
+    Karşılaştırma tablosu başlıkları için: sarmak (wraplength) başlıkları iki
+    satıra taşırıp tabloyu dalgalandırıyordu."""
+    if len(text) <= max_chars:
+        return text
+    head = max_chars - 11  # 10 karakter kuyruk + 1 "…"
+    return text[:head] + "…" + text[-10:]
+
+
+def _comparison_has_mixed_vehicles(results: list) -> bool:
+    """Karşılaştırılan uçuşların araç tipleri farklı mı? (results:
+    (ad, metrikler) listesi.) Tipi bilinmeyenler (None) sayılmaz — "unknown
+    + multirotor" karışık sayılıp yanlış alarm vermesin."""
+    types = {metrics.get("vehicle") for _name, metrics in results}
+    types.discard(None)
+    return len(types) > 1
+
+
+# Dikkat çekici değer vurgusunda hangi metriklerin "yüksekliği kötüdür"
+# anlamı taşıdığı: iç direnç (yaşlanan batarya) ve voltaj düşümü. Diğer
+# satırlar (tepe güç, enerji...) araç sınıfına göre doğal olarak farklıdır,
+# onları vurgulamak yanlış "sorun" iması olur.
+COMPARISON_NOTABLE_KEYS = ("resistance_mohm", "voltage_sag_pct")
+
+
+def _comparison_notable_cells(results: list) -> list:
+    """Tablodaki dikkat çekici hücreleri bulur: [(metrik_anahtarı,
+    sütun_indeksi, uçuş_adı), ...]. Kural bilinçli muhafazakâr: bir uçuşun
+    değeri, DİĞERLERİNİN medyanının en az 2 KATIysa işaretlenir (ör. 39 mΩ
+    vs 10-14 mΩ). Ölçülmüş bir eşik değil ama "belirgin farklı" için makul
+    ve açıklanabilir bir oran; 1.5x gibi sınır durumlar bilerek işaretlenmez
+    (yanlış alarm, vurgunun değerini düşürür)."""
+    notable = []
+    for key in COMPARISON_NOTABLE_KEYS:
+        values = [(i, m.get(key)) for i, (_n, m) in enumerate(results)]
+        present = [(i, v) for i, v in values if v is not None]
+        if len(present) < 2:
+            continue
+        max_index, max_value = max(present, key=lambda pair: pair[1])
+        others = sorted(v for i, v in present if i != max_index)
+        median = others[len(others) // 2]
+        if median > 0 and max_value >= 2 * median:
+            notable.append((key, max_index, results[max_index][0]))
+    return notable
 
 
 def _draw_voltage_sag_line(ax, first_voltage: float, threshold: float, color: str):
@@ -2211,7 +2272,11 @@ class App(ctk.CTk):
             )
             return
 
-        dialog = ctk.CTkToplevel(self)
+        # Dialog LANDING paletiyle çiziliyor (temayı takip ETMİYOR): sadece
+        # hep-koyu giriş ekranından açılıyor; açık temada ctk varsayılanları
+        # "koyu zemin üstünde beyaz pencere" gibi kopuk duruyordu (kullanıcı
+        # geri bildirimi, bkz. LANDING_ROW_STRIPE'ın yorumu).
+        dialog = ctk.CTkToplevel(self, fg_color=LANDING_BG)
         dialog.title("Uçuşları Karşılaştır")
         dialog.geometry("920x720")
         dialog.transient(self)
@@ -2221,7 +2286,7 @@ class App(ctk.CTk):
         # -- UI_* çiftleri değil -- yerinde güncellenmeyip donuk kalıyordu).
 
         ctk.CTkLabel(
-            dialog, text="Karşılaştırılacak uçuşları seç",
+            dialog, text="Karşılaştırılacak uçuşları seç", text_color=LANDING_TEXT,
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(pady=(16, 4))
 
@@ -2236,10 +2301,13 @@ class App(ctk.CTk):
             variable = ctk.BooleanVar(value=False)
             ctk.CTkCheckBox(
                 selection_frame, text=Path(entry["path"]).name, variable=variable,
+                text_color=LANDING_TEXT, fg_color=LANDING_ACCENT,
+                hover_color=LANDING_ACCENT, border_color=LANDING_CARD_BORDER,
+                checkmark_color=LANDING_TEXT,
             ).pack(anchor="w", pady=3)
             checkboxes.append((entry["path"], variable))
 
-        status = ctk.CTkLabel(dialog, text="", text_color=TEXT_MUTED)
+        status = ctk.CTkLabel(dialog, text="", text_color=LANDING_TEXT_SECONDARY)
         status.pack(padx=20, pady=(6, 0))
 
         result_frame = ctk.CTkScrollableFrame(dialog, fg_color="transparent")
@@ -2248,19 +2316,23 @@ class App(ctk.CTk):
         def on_compare():
             selected = [path for path, variable in checkboxes if variable.get()]
             if len(selected) < 2:
-                status.configure(text="En az iki uçuş seçmelisin.", text_color=COLOR_WARNING)
+                status.configure(text="En az iki uçuş seçmelisin.", text_color=LANDING_WARNING)
                 return
-            status.configure(text="Uçuşlar işleniyor...", text_color=TEXT_MUTED)
+            status.configure(text="Uçuşlar işleniyor...", text_color=LANDING_TEXT_SECONDARY)
             compare_button.configure(state="disabled")
             self._run_comparison(selected, result_frame, status, compare_button)
 
         button_row = ctk.CTkFrame(dialog, fg_color="transparent")
         button_row.pack(pady=(0, 12))
-        compare_button = ctk.CTkButton(button_row, text="Karşılaştır", command=on_compare)
+        compare_button = ctk.CTkButton(
+            button_row, text="Karşılaştır", command=on_compare,
+            fg_color=LANDING_ACCENT, hover_color="#2d6fc0", text_color=LANDING_TEXT,
+        )
         compare_button.pack(side="left", padx=6)
         ctk.CTkButton(
             button_row, text="Kapat", fg_color="transparent", border_width=1,
-            border_color=AXIS_LINE, text_color=TEXT_SECONDARY, command=dialog.destroy,
+            border_color=LANDING_CARD_BORDER, text_color=LANDING_TEXT_SECONDARY,
+            hover_color=LANDING_CARD, command=dialog.destroy,
         ).pack(side="left", padx=6)
 
     def _run_comparison(self, paths: list, result_frame, status_label, compare_button):
@@ -2299,46 +2371,83 @@ class App(ctk.CTk):
 
             self._build_comparison_table(result_frame, results)
             if errors:
-                status_label.configure(text="⚠ " + " | ".join(errors), text_color=COLOR_CRITICAL)
+                status_label.configure(text="⚠ " + " | ".join(errors), text_color=LANDING_CRITICAL)
             else:
                 status_label.configure(
-                    text=f"{len(results)} uçuş karşılaştırıldı.", text_color=TEXT_MUTED
+                    text=f"{len(results)} uçuş karşılaştırıldı.", text_color=LANDING_TEXT_SECONDARY
                 )
 
         self.after(100, poll)
 
     def _build_comparison_table(self, parent, results: list):
         """Satır = metrik, sütun = uçuş olacak şekilde özet tabloyu çizer.
-        Ölçülemeyen değerler "—" gösterilir (bkz. _format_comparison_value)."""
+        Ölçülemeyen değerler "—" gösterilir (bkz. _format_comparison_value).
+        Renkler LANDING paleti: dialog temayı takip etmiyor (bkz.
+        _on_compare_click'teki açıklama)."""
         for child in parent.winfo_children():
             child.destroy()
         if not results:
             return
 
-        header_font = ctk.CTkFont(size=12, weight="bold")
-        ctk.CTkLabel(parent, text="", width=150).grid(row=0, column=0, padx=6, pady=4)
-        for column, (name, _metrics) in enumerate(results, start=1):
+        next_row = 0
+        # Multirotor ile sabit kanatı yan yana koymak "34 W vs 541 W" gibi
+        # doğa farklarını sorunmuş gibi gösterebilir — dürüst bir not düş.
+        if _comparison_has_mixed_vehicles(results):
             ctk.CTkLabel(
-                parent, text=name, font=header_font, text_color=TEXT_PRIMARY,
-                wraplength=210, justify="center",
-            ).grid(row=0, column=column, padx=6, pady=4, sticky="ew")
+                parent,
+                text="Farklı araç tipleri karşılaştırılıyor — mutlak değerler doğrudan kıyaslanamaz.",
+                text_color=LANDING_TEXT_SECONDARY, font=ctk.CTkFont(size=11),
+            ).grid(row=next_row, column=0, columnspan=len(results) + 1, pady=(0, 4), sticky="w")
+            next_row += 1
 
-        # Tek/çift satırlara stat kutucuklarıyla aynı dil (UI_GRIDLINE) ile bant
-        # uygulanıyor — bu tablo uygulamanın tek gerçek tablo verisiydi ve tek
-        # stilsiz kalan yerdi (bkz. genel tarama bulguları). pady sıfıra yakın
-        # tutuluyor ki bant KESİNTİSİZ görünsün; nefes payı ipady ile veriliyor.
-        for row, (key, title) in enumerate(COMPARISON_ROWS, start=1):
-            row_color = UI_GRIDLINE if row % 2 == 0 else "transparent"
+        header_font = ctk.CTkFont(size=12, weight="bold")
+        ctk.CTkLabel(parent, text="", width=150).grid(row=next_row, column=0, padx=6, pady=4)
+        for column, (name, _metrics) in enumerate(results, start=1):
+            # Uzun ad başlığı iki satıra sarıp tabloyu dalgalandırıyordu;
+            # ortadan kısaltılıyor, tam ad fare ipucunda.
+            header = ctk.CTkLabel(
+                parent, text=_middle_ellipsis(name), font=header_font,
+                text_color=LANDING_TEXT, justify="center",
+            )
+            header.grid(row=next_row, column=column, padx=6, pady=4, sticky="ew")
+            if _middle_ellipsis(name) != name:
+                _add_toolbar_tooltip(header, name)
+        next_row += 1
+
+        # Dikkat çekici hücreler (ör. diğerlerinin 2 katı iç direnç) uyarı
+        # rengiyle vurgulanır; kural _comparison_notable_cells'te.
+        notable = _comparison_notable_cells(results)
+        notable_positions = {(key, column_index) for key, column_index, _n in notable}
+
+        # Tek/çift satırlara bant (stat kutucuklarındaki desenle aynı amaç,
+        # LANDING_ROW_STRIPE tonuyla). pady sıfıra yakın tutuluyor ki bant
+        # KESİNTİSİZ görünsün; nefes payı ipady ile veriliyor.
+        data_start = next_row
+        for row, (key, title) in enumerate(COMPARISON_ROWS, start=data_start):
+            row_color = LANDING_ROW_STRIPE if (row - data_start) % 2 == 1 else "transparent"
             ctk.CTkLabel(
-                parent, text=title, text_color=TEXT_SECONDARY, anchor="w",
+                parent, text=title, text_color=LANDING_TEXT_SECONDARY, anchor="w",
                 fg_color=row_color, corner_radius=0,
             ).grid(row=row, column=0, padx=(6, 2), pady=1, ipady=4, sticky="nsew")
             for column, (_name, metrics) in enumerate(results, start=1):
+                is_notable = (key, column - 1) in notable_positions
                 ctk.CTkLabel(
                     parent, text=_format_comparison_value(key, metrics),
-                    text_color=TEXT_PRIMARY, anchor="center",
-                    fg_color=row_color, corner_radius=0,
+                    text_color=LANDING_WARNING if is_notable else LANDING_TEXT,
+                    anchor="center", fg_color=row_color, corner_radius=0,
                 ).grid(row=row, column=column, padx=2, pady=1, ipady=4, sticky="nsew")
+        next_row = data_start + len(COMPARISON_ROWS)
+
+        # Vurgulanan her hücre için tablo altına tek satır otomatik özet —
+        # sayının NEDEN işaretlendiğini söylemeden vurgu yarım kalırdı.
+        row_titles = dict(COMPARISON_ROWS)
+        for key, _column_index, flight_name in notable:
+            ctk.CTkLabel(
+                parent,
+                text=f"⚠ {flight_name}: {row_titles[key]} diğer uçuşların medyanının 2 katı ve üzeri.",
+                text_color=LANDING_WARNING, font=ctk.CTkFont(size=11), anchor="w",
+            ).grid(row=next_row, column=0, columnspan=len(results) + 1, pady=(6, 0), sticky="w")
+            next_row += 1
 
         for column in range(1, len(results) + 1):
             parent.grid_columnconfigure(column, weight=1)
