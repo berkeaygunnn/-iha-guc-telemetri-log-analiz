@@ -12,6 +12,7 @@ import ctypes
 import json
 import math
 import queue
+import re
 import subprocess
 import sys
 import tempfile
@@ -700,6 +701,26 @@ def _format_comparison_value(key: str, metrics: dict) -> str:
     return str(value)
 
 
+# Backend'in tüm uyarı cümleleri "Batarya N: ..." ya da "Motor N: ..." ile
+# başlıyor (computeWarnings şablonları) ve grafik serilerinin etiketleri de
+# birebir "Batarya N"/"Motor N". Bu önek, bir uyarıyı grafikteki serisine
+# bağlamamızı sağlıyor (uyarıya tıkla -> seri vurgulansın).
+WARNING_TARGET_RE = re.compile(r"^(Batarya|Motor) (\d+): ")
+
+
+def _series_highlight_alpha(highlight, label: str, panel_labels: list) -> float:
+    """Bir serinin çizim alfası: vurgu yoksa ya da bu seri vurgunun hedefiyse
+    tam opak, hedefin PANELİNDEKİ diğer seriler soluk. Hedef bu panelde hiç
+    yoksa (ör. "Motor 5" vurgusu voltaj panelinde) kimse soluklaştırılmaz —
+    yabancı bir hedef tüm paneli söndürmemeli."""
+    if highlight is None:
+        return 1.0
+    target_label = f"{highlight[0]} {highlight[1]}"
+    if target_label not in panel_labels:
+        return 1.0
+    return 1.0 if label == target_label else 0.15
+
+
 def _middle_ellipsis(text: str, max_chars: int = 28) -> str:
     """Uzun dosya adını ortadan kısaltır ("çokUzunBirAd…0067.BIN") — uzantı
     ve numara kuyruğu görünür kalır ki benzer adlı loglar ayırt edilebilsin.
@@ -748,7 +769,8 @@ def _comparison_notable_cells(results: list) -> list:
     return notable
 
 
-def _draw_voltage_sag_line(ax, first_voltage: float, threshold: float, color: str):
+def _draw_voltage_sag_line(ax, first_voltage: float, threshold: float, color: str,
+                           alpha_factor: float = 1.0):
     """Backend'in voltaj düşümü kuralıyla (ilk örneğe göre %eşik düşüş) aynı
     hesapla, o bataryanın kendi rengiyle kesikli bir eşik çizgisi çizer —
     sadece çizgi modunda anlamlı, ısı haritasında çağrılmaz.
@@ -756,11 +778,15 @@ def _draw_voltage_sag_line(ax, first_voltage: float, threshold: float, color: st
     Label kasıtlı olarak "_" ile başlıyor: hem matplotlib'in legend()'ı
     otomatik dışlasın diye (bkz. az aşağıdaki batarya/motor çizgilerinin
     "Batarya N"/"Motor N" etiketleri), hem de get_lines()'ı gerçek veri
-    sayısıyla karşılaştıran testler bu çizgiyi ayırt edip filtreleyebilsin diye."""
+    sayısıyla karşılaştıran testler bu çizgiyi ayırt edip filtreleyebilsin diye.
+
+    alpha_factor: seri vurgulama (bkz. _series_highlight_alpha) soluklaştırılan
+    bataryanın eşik çizgisini de aynı oranda soluklaştırsın diye."""
     if first_voltage <= 0:
         return
     ax.axhline(
-        first_voltage * (1 - threshold), color=color, linestyle="--", linewidth=1, alpha=0.5,
+        first_voltage * (1 - threshold), color=color, linestyle="--", linewidth=1,
+        alpha=0.5 * alpha_factor,
         label="_voltage_sag_threshold",
     )
 
@@ -1280,6 +1306,9 @@ class App(ctk.CTk):
         self._last_loaded_path = None
 
         self._current_warnings = []  # PDF raporunun ham uyarı listesine ihtiyacı var
+        # Tıklanmış uyarının hedef serisi ("Motor", 5) — grafiklerde o seri
+        # vurgulanır, panelindeki diğerleri soluklaşır (bkz. _on_warning_click).
+        self._highlight_series = None
         self._hover_annotation = None  # grafik üzerindeki hover tooltip'i (bkz. _on_plot_hover)
         # Isı haritası modunda imlecin altındaki HÜCREYİ bulabilmek için gereken
         # veri (satır etiketleri + ortak zaman ekseni + değer biçimleyici).
@@ -2626,19 +2655,55 @@ class App(ctk.CTk):
     def _build_warnings_area(self):
         """Backend'in kural tabanlı ürettiği uyarıları (ör. aşırı voltaj düşümü,
         motor akım dengesizliği) gösteren satır. Uyarı yoksa boş kalır, ekstra
-        yer kaplamaz."""
-        self.warnings_label = ctk.CTkLabel(
-            self.analysis_frame, text="", text_color=UI_COLOR_WARNING, justify="left", anchor="w",
-            wraplength=1000,
-        )
-        self.warnings_label.pack(side="top", fill="x", padx=16, pady=(0, 4))
+        yer kaplamaz.
+
+        Uyarılar tek bir birleşik etiket DEĞİL, uyarı başına ayrı etiket:
+        "Batarya N:"/"Motor N:" ile başlayanlar tıklanabilir ve tıklanınca
+        ilgili seri grafikte vurgulanıyor (diğerleri soluklaşıyor) — tek
+        etikette hangi satıra tıklandığı bilinemezdi."""
+        self.warnings_frame = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
+        self.warnings_frame.pack(side="top", fill="x", padx=16, pady=(0, 4))
+        self._warning_labels = []
+        self._warning_wraplength = 1000  # ilk <Configure>'a kadar yer tutucu
 
     def _update_warnings(self, warnings: list):
         self._current_warnings = warnings  # PDF raporu ham listeye ihtiyaç duyuyor
-        if not warnings:
-            self.warnings_label.configure(text="")
-            return
-        self.warnings_label.configure(text="\n".join(f"⚠ {message}" for message in warnings))
+        # Yeni dosya yükleme de Temizle de buradan geçiyor — vurgunun ayrıca
+        # temizlenmesi gereken başka bir kanca yok.
+        self._highlight_series = None
+        for label in self._warning_labels:
+            label.destroy()
+        self._warning_labels = []
+        for message in warnings:
+            label = ctk.CTkLabel(
+                self.warnings_frame, text=f"⚠ {message}", text_color=UI_COLOR_WARNING,
+                justify="left", anchor="w", wraplength=self._warning_wraplength,
+            )
+            label.pack(side="top", fill="x")
+            match = WARNING_TARGET_RE.match(message)
+            if match:
+                target = (match.group(1), int(match.group(2)))
+                label.configure(cursor="hand2")
+                label.bind("<Button-1>",
+                           lambda _e, t=target, l=label: self._on_warning_click(t, l))
+            self._warning_labels.append(label)
+
+    def _on_warning_click(self, target, clicked_label):
+        """Uyarıya tıklanınca hedef seri vurgulanır (aynı hedefe ikinci tık
+        vurguyu kaldırır). Basılı görünüm: aktif uyarının zemini tonlanır.
+        Replot backend'e gitmeden cache'ten yapılır — tema toggle'ının
+        kullandığı replot kümesiyle aynı, maliyeti bilinir."""
+        self._highlight_series = None if self._highlight_series == target else target
+        for label in self._warning_labels:
+            label.configure(
+                fg_color=UI_GRIDLINE
+                if (label is clicked_label and self._highlight_series is not None)
+                else "transparent"
+            )
+        self._plot_voltage_panel(self._last_batteries or [])
+        self._plot_battery_currents(self._last_batteries or [])
+        self._plot_motor_currents(self._last_motors or [])
+        self.canvas.draw()
 
     def _build_status_label(self):
         """Hata mesajları için ayrı bir durum satırı (dosya etiketiyle karışmasın diye)."""
@@ -2664,7 +2729,11 @@ class App(ctk.CTk):
         olay nesnesinin genişliği kullanılıyor)."""
         width = event.width if event is not None else self.analysis_frame.winfo_width()
         wraplength = max(1, width - 32)  # padx=16 iki yandan
-        self.warnings_label.configure(wraplength=wraplength)
+        # Saklanıyor: uyarı etiketleri her _update_warnings'te yeniden
+        # kurulduğu için yenileri de güncel genişlikle doğmalı.
+        self._warning_wraplength = wraplength
+        for label in self._warning_labels:
+            label.configure(wraplength=wraplength)
         self.status_label.configure(wraplength=wraplength)
 
     def _build_plot_area(self):
@@ -3236,14 +3305,18 @@ class App(ctk.CTk):
 
         voltage_sag_threshold = _get_warning_thresholds(
             self._last_vehicle_type)["voltage_sag_threshold"]
+        panel_labels = [f"Batarya {battery['id']}" for battery in batteries]
         for i, battery in enumerate(batteries):
             color, linestyle = _series_style(i)
+            label = f"Batarya {battery['id']}"
+            alpha = _series_highlight_alpha(self._highlight_series, label, panel_labels)
             self.ax_voltage.plot(
                 battery["time_s"], battery["voltage_v"], color=color, linestyle=linestyle,
-                linewidth=2, label=f"Batarya {battery['id']}",
+                linewidth=2, label=label, alpha=alpha,
             )
             if battery["voltage_v"]:
-                _draw_voltage_sag_line(self.ax_voltage, battery["voltage_v"][0], voltage_sag_threshold, color)
+                _draw_voltage_sag_line(self.ax_voltage, battery["voltage_v"][0],
+                                       voltage_sag_threshold, color, alpha_factor=alpha)
 
         if len(batteries) > 1:
             self.ax_voltage.legend(
@@ -3260,15 +3333,18 @@ class App(ctk.CTk):
         veri yoksa açık bir durum mesajı gösterilir (sessiz boş grafik yerine)."""
         self._style_axes(self.ax_voltage, "Sıcaklık (°C)")
 
+        panel_labels = [f"Batarya {battery['id']}" for battery in batteries]
         plotted = 0
         for i, battery in enumerate(batteries):
             temperature_c = battery.get("temperature_c") or []
             if not temperature_c or all(t == 0 for t in temperature_c):
                 continue
             color, linestyle = _series_style(i)
+            label = f"Batarya {battery['id']}"
             self.ax_voltage.plot(
                 battery["time_s"], temperature_c, color=color, linestyle=linestyle,
-                linewidth=2, label=f"Batarya {battery['id']}",
+                linewidth=2, label=label,
+                alpha=_series_highlight_alpha(self._highlight_series, label, panel_labels),
             )
             plotted += 1
 
@@ -3313,6 +3389,8 @@ class App(ctk.CTk):
         bir sıfır çizgisi yerine açık bir durum mesajı gösterilir."""
         self._style_axes(self.ax_current, "Toplam Akım (A)")
 
+        panel_labels = [f"Batarya {battery['id']}"
+                        for battery in batteries if _has_current_data(battery)]
         plotted = 0
         for i, battery in enumerate(batteries):
             if not _has_current_data(battery):
@@ -3321,9 +3399,11 @@ class App(ctk.CTk):
             # serinin sırası değil: bir batarya atlansa bile kalanların rengi
             # voltaj panelindeki aynı bataryanın rengiyle eşleşmeye devam etsin.
             color, linestyle = _series_style(i)
+            label = f"Batarya {battery['id']}"
             self.ax_current.plot(
                 battery["time_s"], battery["current_a"], color=color, linestyle=linestyle,
-                linewidth=2, label=f"Batarya {battery['id']}",
+                linewidth=2, label=label,
+                alpha=_series_highlight_alpha(self._highlight_series, label, panel_labels),
             )
             plotted += 1
 
@@ -3436,14 +3516,18 @@ class App(ctk.CTk):
         self._style_axes(self.ax_motors, "Motor Akımı (A)")
         self.ax_motors.set_xlabel("Zaman (s)", color=TEXT_SECONDARY)
 
+        panel_labels = [f"Motor {motor['id']}"
+                        for motor in motors if _has_current_data(motor)]
         plotted = 0
         for i, motor in enumerate(motors):
             if not _has_current_data(motor):
                 continue
             color, linestyle = _series_style(i)
+            label = f"Motor {motor['id']}"
             self.ax_motors.plot(
                 motor["time_s"], motor["current_a"], color=color, linestyle=linestyle,
-                linewidth=2, label=f"Motor {motor['id']}",
+                linewidth=2, label=label,
+                alpha=_series_highlight_alpha(self._highlight_series, label, panel_labels),
             )
             plotted += 1
 
