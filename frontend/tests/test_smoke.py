@@ -110,7 +110,7 @@ class SmokeTests(unittest.TestCase):
 
     def test_synthetic_bin_shows_motor_imbalance_warnings(self):
         self._load_and_plot("synthetic_test_log.BIN")
-        warnings_text = self.app.warnings_label.cget("text")
+        warnings_text = "\n".join(l.cget("text") for l in self.app._warning_labels)
         self.assertIn("Motor 1", warnings_text)
         self.assertIn("Motor 4", warnings_text)
 
@@ -198,7 +198,7 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(len(self.app.ax_voltage.get_lines()), 0)
         self.assertEqual(len(self.app.ax_current.get_lines()), 0)
         self.assertEqual(len(self.app.ax_motors.get_lines()), 0)
-        self.assertEqual(self.app.warnings_label.cget("text"), "")
+        self.assertEqual(self.app._warning_labels, [])
         self.assertEqual(self.app.file_label.cget("text"), "Henüz dosya seçilmedi.")
         self.assertEqual(self.app.stat_labels["duration"].cget("text"), "—")
 
@@ -1214,13 +1214,23 @@ class SmokeTests(unittest.TestCase):
         """warnings_label hiç wraplength taşımıyordu, status_label'ınki ise
         sabit 1000px'ti — toolbar/stats-row'daki gibi <Configure>'da yeniden
         hesaplanmıyordu. Dar pencerede ikisi de görünür genişliğe göre
-        güncellenmeli (padx=16 iki yandan, bkz. _on_analysis_frame_configure)."""
+        güncellenmeli (padx=16 iki yandan, bkz. _on_analysis_frame_configure).
+
+        Uyarılar artık tek etiket değil, listeye ayrılmış durumda —
+        _warning_wraplength yeni etiketler kurulurken uygulanan güncel
+        değeri saklıyor; ayrıca YÜKLÜ bir uyarı varken gerçek etikete de
+        yansıdığını doğruluyoruz."""
         self._resize(1400)
-        self.assertEqual(self.app.warnings_label.cget("wraplength"), 1400 - 32)
+        self.assertEqual(self.app._warning_wraplength, 1400 - 32)
         self.assertEqual(self.app.status_label.cget("wraplength"), 1400 - 32)
 
+        self._load_and_plot("synthetic_test_log.BIN")  # motor dengesizlik uyarısı üretir
+        self.assertTrue(self.app._warning_labels)
+        self.assertEqual(self.app._warning_labels[0].cget("wraplength"), 1400 - 32)
+
         self._resize(700)
-        self.assertEqual(self.app.warnings_label.cget("wraplength"), 700 - 32)
+        self.assertEqual(self.app._warning_wraplength, 700 - 32)
+        self.assertEqual(self.app._warning_labels[0].cget("wraplength"), 700 - 32)
         self.assertEqual(self.app.status_label.cget("wraplength"), 700 - 32)
 
     # --- Araç tipi başına uyarı eşikleri ---------------------------------------
@@ -1368,13 +1378,20 @@ class SmokeTests(unittest.TestCase):
         self.app._build_comparison_table(frame, results)
 
         cells = [w for w in frame.winfo_children() if isinstance(w, frontend_main.ctk.CTkLabel)]
-        # 1 bos kose + 2 baslik + her metrik icin (1 etiket + 2 deger)
-        expected = 1 + len(results) + len(frontend_main.COMPARISON_ROWS) * (1 + len(results))
+        # 1 bos kose + 2 baslik + her metrik icin (1 etiket + 2 deger) + dikkat
+        # cekici hucre basina 1 otomatik ozet satiri (bkz. _comparison_notable_cells).
+        notable_count = len(frontend_main._comparison_notable_cells(results))
+        expected = (
+            1 + len(results)
+            + len(frontend_main.COMPARISON_ROWS) * (1 + len(results))
+            + notable_count
+        )
         self.assertEqual(len(cells), expected)
 
         texts = [w.cget("text") for w in cells]
         self.assertIn("Enerji Tüketimi", texts)
-        self.assertIn("ArduCopter-MaxAltFence-00000067.BIN", texts)
+        # Uzun dosya adı başlıkta ortadan kısaltılıyor (bkz. _middle_ellipsis).
+        self.assertIn(frontend_main._middle_ellipsis("ArduCopter-MaxAltFence-00000067.BIN"), texts)
 
     def test_compare_button_warns_when_history_too_short(self):
         """Tek dosyalık geçmişte karşılaştırma anlamsız; pencere açılmak
@@ -1970,6 +1987,60 @@ class SmokeTests(unittest.TestCase):
         metrics_ok = {"current_min": 0.0, "current_max": 23.0}
         self.assertFalse(
             frontend_main._format_comparison_value("current_range", metrics_ok).startswith("⚠"))
+
+    # --- Tıklanabilir uyarılar → seri vurgulama --------------------------------
+
+    def test_warning_target_regex_matches_known_templates(self):
+        m = frontend_main.WARNING_TARGET_RE.match(
+            "Motor 5: ortalama akımı diğerlerinden %21 daha fazla.")
+        self.assertEqual(m.groups(), ("Motor", "5"))
+        m2 = frontend_main.WARNING_TARGET_RE.match(
+            "Batarya 2: voltaj %18 düştü (25.2V → 20.7V).")
+        self.assertEqual(m2.groups(), ("Batarya", "2"))
+        # "Batarya"/"Motor" DIŞINDA bir kelimeyle başlayan uyarı (ör. gelecekte
+        # eklenebilecek yeni bir kural) eşleşmemeli — _on_warning_click'e
+        # hedefsiz bir tıklama bağlanmasın.
+        self.assertIsNone(frontend_main.WARNING_TARGET_RE.match("Veri kalitesi uyarısı"))
+        self.assertIsNone(frontend_main.WARNING_TARGET_RE.match("Kanal 3: taşma tespit edildi."))
+
+    def test_series_highlight_alpha(self):
+        panel = ["Motor 1", "Motor 5"]
+        self.assertEqual(frontend_main._series_highlight_alpha(None, "Motor 1", panel), 1.0)
+        self.assertEqual(
+            frontend_main._series_highlight_alpha(("Motor", 5), "Motor 5", panel), 1.0)
+        self.assertEqual(
+            frontend_main._series_highlight_alpha(("Motor", 5), "Motor 1", panel), 0.15)
+        # Hedef bu panelde yoksa (ör. "Batarya" vurgusu motor panelinde)
+        # kimse soluklaştırılmamalı.
+        self.assertEqual(
+            frontend_main._series_highlight_alpha(("Batarya", 1), "Motor 1", panel), 1.0)
+
+    def test_clicking_motor_warning_dims_other_motor_lines(self):
+        """Tıklama olayını simüle etmek yerine (widget haritalanmadığı için
+        güvenilir tetiklenmiyor) doğrudan _on_warning_click çağrılıyor —
+        _build_warnings_area'nın <Button-1>'i doğru hedefle bağladığı ayrı
+        olarak _on_warning_click'in davranışını test ediyoruz."""
+        self._load_and_plot("synthetic_test_log.BIN")  # Motor 1/4 dengesizlik uyarısı
+        target_label = next(
+            lbl for lbl in self.app._warning_labels if lbl.cget("text").startswith("⚠ Motor 1:"))
+        self.app._on_warning_click(("Motor", 1), target_label)
+
+        self.assertEqual(self.app._highlight_series, ("Motor", 1))
+        lines = {line.get_label(): line for line in self._data_lines(self.app.ax_motors)}
+        self.assertEqual(lines["Motor 1"].get_alpha(), 1.0)
+        self.assertEqual(lines["Motor 4"].get_alpha(), 0.15)
+
+        # Aynı uyarıya ikinci tık vurguyu kaldırmalı.
+        self.app._on_warning_click(("Motor", 1), target_label)
+        self.assertIsNone(self.app._highlight_series)
+        lines_after = {line.get_label(): line for line in self._data_lines(self.app.ax_motors)}
+        self.assertEqual(lines_after["Motor 4"].get_alpha(), 1.0)
+
+    def test_clear_click_resets_highlight(self):
+        self._load_and_plot("synthetic_test_log.BIN")
+        self.app._highlight_series = ("Motor", 1)
+        self.app._on_clear_click()
+        self.assertIsNone(self.app._highlight_series)
 
 
 if __name__ == "__main__":
