@@ -11,9 +11,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <set>
@@ -508,7 +511,12 @@ ULogField parseUlogField(const std::string& fieldSpec) {
     }
 
     size_t baseSize = ulogBasicTypeSize(field.elementType);
-    field.size = (baseSize == 0) ? 0 : baseSize * static_cast<size_t>(field.arrayLength);
+    // Bozuk bir format string'i ("tip[-5]" gibi) negatif bir arrayLength
+    // uretebilir; size_t'e cast edilince dev bir sayiya sarip sonraki offset
+    // toplamalarini tasirabilirdi. Boyutu 0 (bilinmeyen/cozulemeyen alan)
+    // sayip guvenli tarafta kaliyoruz.
+    field.size = (baseSize == 0 || field.arrayLength < 0)
+        ? 0 : baseSize * static_cast<size_t>(field.arrayLength);
     return field;
 }
 
@@ -965,16 +973,28 @@ ParsedLog parseLog(const std::string& logPath) {
 }
 
 // JSON'da " ve \ karakterleri kaçışlanmalı; aksi halde geçersiz JSON üretilir.
+// RFC 8259, U+0000-U+001F aralığındaki TÜM kontrol karakterlerinin
+// kaçışlanmasını şart koşar (sadece \n/\r/\t değil) — burada işlenen
+// string'ler çoğunlukla dosya yolu/argv gibi sabit kaynaklardan geliyor ama
+// beklenmedik bir kontrol karakteri geçersiz JSON üretmesin diye eklendi.
 void writeJsonString(std::ostream& out, const std::string& text) {
     out << '"';
     for (char c : text) {
+        unsigned char uc = static_cast<unsigned char>(c);
         switch (c) {
             case '"': out << "\\\""; break;
             case '\\': out << "\\\\"; break;
             case '\n': out << "\\n"; break;
             case '\r': out << "\\r"; break;
             case '\t': out << "\\t"; break;
-            default: out << c;
+            default:
+                if (uc < 0x20) {
+                    char buf[7];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<int>(uc));
+                    out << buf;
+                } else {
+                    out << c;
+                }
         }
     }
     out << '"';
@@ -1343,6 +1363,11 @@ bool writePowerLogJson(const std::string& inputLogPath, const std::string& outpu
         std::cerr << "Cikti dosyasi acilamadi: " << outputPath << std::endl;
         return false;
     }
+    // Varsayilan ostream hassasiyeti (6 anlamli basamak) uzun ucuslarda
+    // time_s'i yuvarlayip alt-saniye cozunurlugu kaybediyordu (ornek:
+    // 12345.6789 -> "12345.7"). double'in tasiyabildigi ~15-17 basamaga
+    // cikariyoruz.
+    out << std::setprecision(15);
 
     double duration_s = computeDuration(parsed.batteries);
     std::vector<std::string> warnings = computeWarnings(
