@@ -1876,6 +1876,54 @@ class SmokeTests(unittest.TestCase):
         line = self._data_lines(self.app.ax_voltage)[0]
         self.assertAlmostEqual(float(line.get_xdata()[0]), first, places=6)
 
+    # --- Stat kartları cilası ------------------------------------------------
+
+    def test_stat_tile_tooltips_cover_every_tile(self):
+        """Her kutucuğun bir açıklaması olmalı — yeni bir kutucuk eklenirken
+        tooltip'i unutulursa bu test yakalar (build sırasında KeyError da
+        olur ama bu test nedeni açıkça söyler)."""
+        tile_keys = {key for key, _title in frontend_main.STAT_TILE_DEFINITIONS}
+        self.assertEqual(set(frontend_main.STAT_TILE_TOOLTIPS.keys()), tile_keys)
+
+    def test_negative_current_tile_shows_warning_prefix(self):
+        """Kart negatifken sadece renk değiştiriyordu; ⚠ öneki, uyarı
+        listesiyle bağı renk körü kullanıcılar için de kurar."""
+        self._load_and_plot("px4_hexarotor_flight.ulg")  # min akım -0.73 A
+        text = self.app.stat_labels["current_range"].cget("text")
+        self.assertTrue(text.startswith("⚠"), text)
+
+    def test_remaining_time_range_constant_current_gives_single_value(self):
+        """Tüketim hızı sabitse aralık üretmek sahte hassasiyet olur —
+        eski tek-değerli formülün sonucu dönmeli (lo == hi)."""
+        result = frontend_main._remaining_time_range_min(600.0, 50.0, [10.0] * 60)
+        self.assertIsNotNone(result)
+        lo, hi = result
+        self.assertEqual(lo, hi)
+        self.assertAlmostEqual(lo, 600.0 * 50.0 / 50.0 / 60, places=6)
+
+    def test_remaining_time_range_higher_recent_draw_shrinks_estimate(self):
+        """Son 1/3 pencerede akım uçuş geneli ortalamasının üstündeyse
+        kalan süre tahmini kısalmalı: aralığın ALT ucu ölçeklenmiş tahmin,
+        üst ucu taban tahmin olmalı (lo < hi)."""
+        current = [5.0] * 40 + [15.0] * 20  # genel ort 8.33, son 1/3 ort 15
+        result = frontend_main._remaining_time_range_min(600.0, 50.0, current)
+        lo, hi = result
+        self.assertLess(lo, hi)
+        base = 600.0 * 50.0 / 50.0 / 60
+        self.assertAlmostEqual(hi, base, places=6)
+        self.assertAlmostEqual(lo, base * (500.0 / 60) / 15.0, places=6)
+
+    def test_remaining_time_range_full_battery_returns_none(self):
+        self.assertIsNone(frontend_main._remaining_time_range_min(600.0, 100.0, [5.0] * 60))
+        self.assertIsNone(frontend_main._remaining_time_range_min(0.0, 50.0, [5.0] * 60))
+
+    def test_remaining_time_range_short_window_falls_back_to_single(self):
+        """10 örnekten kısa 'son pencere' gürültüye açık — aralık yerine
+        tek değer dönmeli."""
+        result = frontend_main._remaining_time_range_min(600.0, 50.0, [5.0] * 12)
+        lo, hi = result
+        self.assertEqual(lo, hi)
+
 
 if __name__ == "__main__":
     unittest.main()
