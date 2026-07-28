@@ -1192,14 +1192,20 @@ class App(ctk.CTk):
 
         sample_file = self._pick_sample_data_file()
         if sample_file is not None:
+            # text_color eskiden TEXT_MUTED'du (tema değişince renk
+            # değiştiren tekil sabit); açık temada LANDING_BG'nin (her
+            # zaman koyu lacivert) üzerinde neredeyse hiç kontrastı
+            # kalmıyordu — LANDING_TEXT_SECONDARY diğer landing metinleri
+            # gibi bu zemin için sabit/güvenli. height de diğer butonlardan
+            # (48px) belirgin küçük bir tıklama hedefiydi, büyütüldü.
             sample_link = ctk.CTkButton(
                 content_block, text="veya örnek veri ile dene →", command=self._on_try_sample_click,
-                fg_color="transparent", hover_color=LANDING_BG, text_color=TEXT_MUTED,
-                font=ctk.CTkFont(size=12, underline=True), width=0, height=20,
+                fg_color="transparent", hover_color=LANDING_BG, text_color=LANDING_TEXT_SECONDARY,
+                font=ctk.CTkFont(size=12, underline=True), width=0, height=32,
             )
             sample_link.pack()
             sample_link.bind("<Enter>", lambda _e: sample_link.configure(text_color=LANDING_ACCENT_BRIGHT))
-            sample_link.bind("<Leave>", lambda _e: sample_link.configure(text_color=TEXT_MUTED))
+            sample_link.bind("<Leave>", lambda _e: sample_link.configure(text_color=LANDING_TEXT_SECONDARY))
 
         self.landing_frame.bind("<Configure>", self._on_landing_frame_configure)
 
@@ -1900,7 +1906,10 @@ class App(ctk.CTk):
         bir ayrışma ölçülmedi (bkz. SETTINGS_VEHICLE_THRESHOLDS_KEY)."""
         dialog = ctk.CTkToplevel(self)
         dialog.title("Uyarı Eşikleri")
-        dialog.geometry("400x400")
+        # 400 yükseklik içeriğe yetmiyordu (ölçüldü: gerçek içerik yüksekliği
+        # 466px, eşik alanlarının GRIDLINE çerçeveye alınmasından sonra daha
+        # da arttı) — buton satırı kırpılıyordu. 480 rahat pay bırakıyor.
+        dialog.geometry("400x480")
         dialog.transient(self)
         dialog.grab_set()
 
@@ -2050,6 +2059,10 @@ class App(ctk.CTk):
         dialog.title("Uçuşları Karşılaştır")
         dialog.geometry("920x720")
         dialog.transient(self)
+        dialog.grab_set()  # Ayarlar dialoguyla aynı: açıkken ana pencere
+        # etkileşilebilir kalmasın (aksi halde tema değiştirilebiliyordu ve
+        # bu dialogdaki renkler açılış anındaki modül sabitleri olduğu için
+        # -- UI_* çiftleri değil -- yerinde güncellenmeyip donuk kalıyordu).
 
         ctk.CTkLabel(
             dialog, text="Karşılaştırılacak uçuşları seç",
@@ -2799,9 +2812,28 @@ class App(ctk.CTk):
         if not self._current_warnings:
             fig.text(0.08, y, "Uyarı yok.", color=TEXT_SECONDARY, fontsize=11)
         else:
-            for warning in self._current_warnings:
+            # y sabit adımlarla (0.035) azalıyor; sayfa alt kenarı y=0.
+            # Çok sayıda uyarı varsa (ör. çok motorlu bir araçta her motor
+            # çifti için ayrı dengesizlik uyarısı) liste sayfa dışına taşıp
+            # SESSİZCE kayboluyordu. Sığmayanlar artık "+N tane daha" ile
+            # özetleniyor — o satırın kendisi de sığacak şekilde bir satır
+            # payı ayrılıyor.
+            PAGE_BOTTOM_MARGIN = 0.04
+            LINE_HEIGHT = 0.035
+            max_lines = max(1, int((y - PAGE_BOTTOM_MARGIN) / LINE_HEIGHT))
+            warnings = self._current_warnings
+            if len(warnings) > max_lines:
+                visible = warnings[:max_lines - 1]
+                hidden_count = len(warnings) - len(visible)
+            else:
+                visible = warnings
+                hidden_count = 0
+            for warning in visible:
                 fig.text(0.08, y, f"• {warning}", color=COLOR_WARNING, fontsize=11)
-                y -= 0.035
+                y -= LINE_HEIGHT
+            if hidden_count > 0:
+                fig.text(0.08, y, f"… ve {hidden_count} uyarı daha (tam liste için uygulamaya bakın).",
+                         color=TEXT_SECONDARY, fontsize=10)
         return fig
 
     def _on_clear_click(self):
