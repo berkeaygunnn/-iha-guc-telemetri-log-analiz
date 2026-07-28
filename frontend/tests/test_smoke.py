@@ -207,6 +207,27 @@ class SmokeTests(unittest.TestCase):
         self.assertFalse(self.app.landing_frame.winfo_ismapped())
         self.assertTrue(self.app.analysis_frame.winfo_ismapped())
 
+    def test_backend_failure_shows_error_status_and_re_enables_controls(self):
+        """_poll_backend_result'ın "error" dalı (main.py:2717-2720) hiç test
+        edilmemişti — mevcut tüm testler sadece "ok" yolunu sürüyordu.
+        Backend gerçekten başarısız olduğunda (bozuk/tanınmayan dosya)
+        status_label kırmızı "⚠ Hata: ..." göstermeli ve load_button tekrar
+        etkinleşmeli (aksi halde kullanıcı arayüzde sıkışıp kalır).
+
+        recent_menu burada KASITLI olarak kontrol edilmiyor: bu testte hiç
+        geçmiş dosya yok, bu yüzden hata sonrası "disabled" kalması zaten
+        doğru davranış (_refresh_recent_menu boş listede öyle davranıyor)."""
+        with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
+            f.write(b"bu gecerli bir log dosyasi degil")
+            path = Path(f.name)
+        try:
+            self._load_file_and_wait(str(path))
+            self.assertIn("Hata", self.app.status_label.cget("text"))
+            self.assertEqual(self.app.status_label.cget("text_color"), frontend_main.UI_COLOR_CRITICAL)
+            self.assertEqual(self.app.load_button.cget("state"), "normal")
+        finally:
+            path.unlink(missing_ok=True)
+
     def test_recent_sidebar_updates_after_load(self):
         file_path = str(DATA_DIR / "synthetic_test_log.BIN")
         self._load_file_and_wait(file_path)
