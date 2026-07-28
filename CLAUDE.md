@@ -284,6 +284,75 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   olur ve projenin "küçük, test edilebilir adımlar" ilkesine ters düşer —
   bilinçli olarak kapsam dışı bırakıldı, sadece dokunulan alanlarda (yukarı
   bakınız) düzeltiliyor.
+- **Giriş ekranı içeriği tekrar sağa kaymıştı (relx=0.56 -> 0.5):** bir
+  önceki maddedeki pack-sırası düzeltmesinin yan etkisi — `relx=0.56`,
+  footer'ın `center`'ı daralttığı (yanlış) bir genişliğe göre kalibre
+  edilmişti; genişlik doğru hale gelince aynı oran artık görünür şekilde
+  daha sağa denk geliyordu. `relx=0.5`'e çekildi (1600px pencerede
+  ölçüldü: başlık etiketinin merkezi beklenen merkezle birebir eşit).
+- **İkinci "genel tarama" turu:** yine üç paralel araştırma ajanı (frontend
+  görsel, backend hata avı, test kapsamı) çalıştırıldı, kullanıcı bu kez
+  "hepsini birden yap" dedi — ~12 bulgunun tamamı ele alındı.
+
+  **Backend (`backend/src/main.cpp`), dört düzeltme:**
+  (1) JSON çıktısında hiçbir yerde `setprecision` yoktu, varsayılan 6
+  anlamlı basamak uzun uçuşlarda `time_s`'i yuvarlayıp alt-saniye
+  çözünürlüğünü kaybediyordu (`12345.6789` → `"12345.7"`) — artık
+  `out << std::setprecision(15)`. Gerçek bir PX4 logunda ölçülüp
+  doğrulandı (`1453.497104` gibi değerler artık tam korunuyor).
+  (2) `writeJsonString` sadece `\n\r\t` kaçışlıyordu, RFC 8259'un şart
+  koştuğu diğer kontrol karakterleri (0x00-0x1F) `\u00XX` ile kaçışlanıyor.
+  (3) `std::atoi` kullanılıyordu ama `<cstdlib>` include edilmemişti — eklendi.
+  (4) ULog format string'inde negatif dizi uzunluğu (`"tip[-5]"`) artık
+  reddediliyor (alan boyutu 0/çözülemez sayılıyor) — negatif değer
+  `size_t`'e cast edilince dev bir sayıya sarıp offset hesaplarını
+  bozabilirdi.
+
+  (1) gerçek logla, (4) mutasyonla denendi: guard kaldırılıp yeniden
+  derlendiğinde test yine de yeşil kaldı, çünkü bu senaryodaki sarma
+  (-5 × 4 bayt) zaten var olan `offset + fieldSize > payloadSize` sınır
+  kontrolünü her durumda geçiyor (dev sayı her zaman payload'dan büyük) —
+  escCount>32 UB durumundaki gibi, guard'ın gerekliliği bu ortamda
+  kanıtlanamadı ama yine de doğru (sarmaya bel bağlamak yerine kaynağında
+  reddediyor). Backend 88→92 test.
+
+  **Frontend (`frontend/main.py`), beş düzeltme:**
+  (1) Karşılaştırma dialoguna `grab_set()` eklendi (Ayarlar'da zaten
+  vardı) — eksikken pencere açıkken ana ekran hâlâ etkileşilebiliyordu ve
+  tema değiştirilirse dialogdaki renkler (açılış anındaki modül sabitleri,
+  UI_* çiftleri değil) donuk kalıyordu.
+  (2) Giriş ekranındaki "örnek veri ile dene" linki `TEXT_MUTED`
+  kullanıyordu (tema değişince renk değiştiren sabit); açık temada
+  `LANDING_BG`'nin (her zaman koyu) üzerinde kontrastı kalmıyordu —
+  `LANDING_TEXT_SECONDARY`'ye çevrildi. Tıklama yüksekliği de (20px,
+  diğer butonlar 48px) 32px'e büyütüldü.
+  (3) PDF raporunda 10+ uyarı varsa liste sayfa dışına taşıp sessizce
+  kayboluyordu — artık sığmayan kısım "… ve N uyarı daha" ile özetleniyor,
+  o satırın kendisi de sığacak şekilde bir satır payı ayrılarak.
+  (4) Ayarlar dialogunun sabit yüksekliği (400px) gerçek içerik
+  yüksekliğinden (466px, ölçüldü) azdı — buton satırı kırpılıyordu; 480'e
+  çıkarıldı.
+  (5) "Hangi araç için?" menüsünün genişlik almadığı (uzun etiket
+  kırpılabilir) iddiası ölçülüp YANLIŞ çıktı: `pack(fill="x")` zaten
+  menüyü satırın tam genişliğine geriyor, en uzun etiket ("Sadece Sabit
+  Kanat") bile kırpılmadan sığıyor — kod değişikliği yapılmadı.
+
+  **Yeni testler:** frontend'in backend-hata UI yolu (`⚠ Hata: ...`,
+  `status_label` rengi, `load_button` yeniden etkinleşmesi) hiç test
+  edilmiyordu, artık var. Backend'de `SchemaConformanceTests` —
+  `shared/power_log_schema.md`'de dokümante edilen tüm alanların (meta/
+  batteries/motors/pwm_outputs) gerçek ArduPilot ve PX4 loglarında
+  birebir üretildiğini doğrudan kontrol ediyor (öncesinde şemayla kod
+  arasındaki bağ sadece yorum satırlarıydı). Frontend 116→117, backend
+  88→92 test.
+
+  **Bulunamayan bir madde:** gerçek bir ArduPilot QuadPlane/VTOL `.BIN`
+  logu arandı (Rover/Plane loglarıyla aynı kaynak, autotest.ardupilot.org).
+  Birkaç farklı tarihli çalıştırma denendi; QuadPlane işi bu kaynakta
+  sürekli FAILED durumda ve sadece `.tlog` (telemetri) yayınlıyor, hiç
+  `.BIN` dataflash logu yok. PX4 tarafında VTOL zaten gerçek bir logla
+  (`px4_sample_log_small.ulg`) test ediliyor; ArduPilot tarafı için uygun
+  bir log bulununcaya kadar ertelendi.
 
 ## Kapsam dışı bırakılan fikirler
 
