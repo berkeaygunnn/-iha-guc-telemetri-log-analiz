@@ -874,13 +874,14 @@ class _PanPreviewToolbar(NavigationToolbar2Tk):
         image = Image.new("RGBA", (source, source), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
 
-        # Ölçüldü: butonun kendisi (20p x 20p) diğer ikon butonlarıyla zaten
-        # birebir aynı, ama bu glifin dolgun (kalın kavis + dolu ok başı,
-        # mavi renk) görünümü onu diğerlerinden (ince, çoğu gri çizgi)
-        # görsel olarak "daha büyük" gösteriyordu. margin/thickness/ok
-        # boyutları biraz küçültülüp incelterek diğer ikonlarla aynı görsel
-        # ağırlığa getirildi.
-        margin, thickness = 22, 8
+        # Boyut göz kararı değil ÖLÇÜMLE seçildi: matplotlib komşu ikonlarının
+        # (back/forward/move/zoom/filesave) 26x26'ya ölçeklenmiş dolu-piksel
+        # (ink) kutuları 21x22 ile 26x25 arasında, ortalama ~23x23. Bu
+        # parametrelerle sıfırla'nın ink kutusu 23x22 çıkıyor — ortalamaya en
+        # yakın aday. (Önceki iki deneme göz kararıydı ve ikisi de ıskaladı:
+        # ilk hali 19x19'du "büyük görünüyor" şikayeti aldı, küçültülünce
+        # 17x16'ya düşüp bu kez gerçekten küçük kaldı.)
+        margin, thickness = 10, 9
         center = source / 2
         radius = center - margin
         # Yay tam çember değil: kalan boşluk ok başına ayrılıyor.
@@ -900,7 +901,7 @@ class _PanPreviewToolbar(NavigationToolbar2Tk):
         cos_end, sin_end = math.cos(end_rad), math.sin(end_rad)
         tangent_x, tangent_y = -sin_end, cos_end
         base_x, base_y = center + radius * cos_end, center + radius * sin_end
-        half_width, tip_length = 14.0, 24.0
+        half_width, tip_length = 15.0, 26.0
         draw.polygon(
             [
                 (base_x + half_width * cos_end, base_y + half_width * sin_end),
