@@ -403,6 +403,74 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   kalıyor (bu sadece frontend'in görüntüleme normalizasyonu). Mutasyonla
   doğrulandı (normalizasyon kapatılınca test 1453.5 != 0.0 ile kırmızı).
 
+- **Kullanıcı geri bildirim turu — açık tema, stat kartları, karşılaştırma,
+  tıklanabilir uyarılar:** ekran görüntüleri üzerinden gelen ayrıntılı bir
+  geri bildirim listesi 4 pakete bölünüp uygulandı. Keşifte netleşen iki
+  şey: PDF raporu zaten vardı (kullanıcı bilmiyordu), dengesizlik bandı da
+  zaten çiziliyordu (sadece açıklaması yoktu) — bu ikisi için yeni iş
+  açılmadı, sadece bildirildi/etiketlendi.
+
+  **Paket 1 — açık tema seri paleti:** `SERIES_COLORS`/`HEATMAP_COLORS`
+  tek (koyu zemine göre seçilmiş) listeydi, açık temada soluk kalıyordu.
+  `PWM_DEVIATION_COLORS`'daki desenle birebir: ikisi de artık
+  `DARK_PALETTE`/`LIGHT_PALETTE` içinde, tema toggle'ı ikisini de yeniden
+  bağlıyor. Renk-varlık eşleşmesi korundu (Batarya 1 iki temada da mavi).
+
+  **Paket 2 — stat kartları cilası:** 9 kutucuğa `STAT_TILE_TOOLTIPS`
+  (birim/bağlam açıklaması); Akım Aralığı kutucuğu negatifte "⚠ " öneki
+  alıyor (kart ile uyarı arasındaki görsel bağ kullanıcı isteğiydi).
+  Tahmini Kalan Süre artık tek sayı yerine aralık (`_remaining_time_range_min`):
+  taban tahmine, son 1/3 pencerenin akım oranıyla ölçeklenmiş ikinci bir
+  tahmin ekleniyor; ikisi %10 içindeyse tek değere düşüyor.
+
+  **Paket 3 — karşılaştırma dialogu, landing paleti:** dialogdaki "tema
+  uyumsuzluğu" aslında dialog kaynaklı değildi — giriş ekranı BİLEREK hep
+  koyu (LANDING_* paleti), dialog aktif temayı takip ediyordu ama sadece o
+  hep-koyu ekrandan açıldığı için açık temada "koyu zemin üstünde beyaz
+  pencere" gibi kopuk duruyordu. Kullanıcıya soruldu: dialog artık HER
+  ZAMAN LANDING paletini kullanıyor, temayı hiç takip etmiyor. Ayrıca:
+  farklı araç tipi karşılaştırılırken uyarı notu (`_comparison_has_mixed_
+  vehicles`), dikkat çekici hücre vurgusu + otomatik özet satırı
+  (`_comparison_notable_cells` — bir uçuşun değeri diğerlerinin medyanının
+  2 KATIysa işaretlenir; 1.5x gibi sınır durumlar bilerek işaretlenmez),
+  uzun dosya adı başlıkta ortadan kısaltma (`_middle_ellipsis`, tam ad
+  tooltip'te).
+
+  **Paket 4a — tıklanabilir uyarılar → seri vurgulama:** bir uyarıya
+  tıklayınca ("Batarya N: ..." / "Motor N: ...") ilgili seri grafikte tam
+  opak kalırken paneldeki diğerleri soluklaşıyor (alpha 0.15); ikinci tık
+  kaldırıyor. Backend'in tüm uyarı cümleleri bu önekle başladığı için
+  (`WARNING_TARGET_RE`) uyarı metninden hedef seri güvenle çıkarılabiliyor.
+  Isı haritası ve PWM görünümleri kapsam dışı: birinde seri çizgisi yok,
+  ötekinde kanal numarası motor numarasıyla eşleşmiyor (bkz. PWM notları).
+
+  **Paket 4b — karşılaştırma voltaj overlay'i + eşik görselleştirmeleri:**
+  tablo altına, uçuş başına TEK çizgi olacak şekilde voltaj overlay
+  grafiği eklendi (`_overlay_battery_for_flight` — ilk voltaj örneği olan
+  batarya; 5 uçuş × N batarya çizmek okunmaz olurdu). Zaman ekseni zaten
+  t=0 bazlı olduğu için ek hizalama gerekmedi. Farklı batarya sınıfları
+  (3S/6S) aynı panelde dürüstçe farklı seviyelerde görünüyor — bu
+  KASITLI, "elma-armut" karşılaştırmasının kendisi zaten mixed-vehicle
+  notuyla işaretleniyor. Dengesizlik bandına köşe metni ("bant: ortalama
+  ±%N dengesizlik eşiği") eklendi; negatif akım eşiği artık akım/motor
+  panellerinde kesikli bir çizgi (`_draw_negative_current_threshold`) —
+  SADECE gerçekten negatif örnek varsa çiziliyor, her uçuşta sabit bir
+  çizgi negatif akım nadir olduğu için gürültü olurdu.
+
+  Dialog geometry 920x720 → 960x860'a çıkarıldı (grafik eklenince eski
+  boyut yetersiz kaldı). Bir ekran görüntüsü probu ilk seferde grafiği
+  "kayıp" gösterdi — kod hatası değildi, `CTkScrollableFrame`'in görünür
+  viewport'u chart'ı sarkıtıyordu; kaydırılınca üç uçuşun (12V/11V/24V)
+  çizgileri de doğru görünüyor.
+
+  Ortam notu: Bash tool'un (git-bash) alt süreç ortamında backend .exe'si
+  access violation (0xC0000005) ile çöküyor, aynı komut PowerShell'den
+  sorunsuz çalışıyor — kod hatası değil, sadece test/derleme komutlarının
+  PowerShell üzerinden çalıştırılması gerekiyor (Bash tool'un bilinen PATH
+  tuhaflığına ek bir ortam sınırlaması).
+
+  Frontend 118 → 140 test.
+
 ## Kapsam dışı bırakılan fikirler
 
 - **Yapay zeka / makine öğrenmesi entegrasyonu:** Değerlendirildi, KESİN
