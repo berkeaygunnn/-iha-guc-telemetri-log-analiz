@@ -664,6 +664,10 @@ def _flight_summary_metrics(data: dict) -> dict:
         "resistance_mohm": resistance[1] if resistance else None,
         "voltage_sag_pct": voltage_sag_pct,
         "warning_count": len(data.get("warnings", [])),
+        # Batarya var ama hiçbirinde gerçek akım verisi yoksa True (rover
+        # durumu) — karşılaştırma tablosunda "—" hücrelerine, sebebi akım
+        # sensörü eksikliği olduğunda açıklayıcı tooltip eklemek için.
+        "current_data_missing": bool(batteries) and not measured,
     }
 
 
@@ -746,6 +750,15 @@ def _comparison_has_mixed_vehicles(results: list) -> bool:
 # satırlar (tepe güç, enerji...) araç sınıfına göre doğal olarak farklıdır,
 # onları vurgulamak yanlış "sorun" iması olur.
 COMPARISON_NOTABLE_KEYS = ("resistance_mohm", "voltage_sag_pct")
+
+# _format_comparison_value'nun "—" bastığı satırlardan hangileri akım
+# sensörü eksikliğinden kaynaklanıyor (bkz. current_data_missing) — sadece
+# bu satırlarda dash'e açıklayıcı tooltip eklenir; "vehicle"/"warning_count"
+# gibi başka None sebepleri buna dahil değil.
+COMPARISON_CURRENT_DEPENDENT_KEYS = (
+    "current_range", "energy_wh", "peak_power_w", "capacity_used_mah", "resistance_mohm",
+)
+NO_CURRENT_DATA_TOOLTIP = "— : bu araç için akım verisi log'da bulunamadı."
 
 
 def _comparison_notable_cells(results: list) -> list:
@@ -2514,11 +2527,14 @@ class App(ctk.CTk):
             ).grid(row=row, column=0, padx=(6, 2), pady=1, ipady=4, sticky="nsew")
             for column, (_name, metrics) in enumerate(results, start=1):
                 is_notable = (key, column - 1) in notable_positions
-                ctk.CTkLabel(
+                cell = ctk.CTkLabel(
                     parent, text=_format_comparison_value(key, metrics),
                     text_color=LANDING_WARNING if is_notable else LANDING_TEXT,
                     anchor="center", fg_color=row_color, corner_radius=0,
-                ).grid(row=row, column=column, padx=2, pady=1, ipady=4, sticky="nsew")
+                )
+                cell.grid(row=row, column=column, padx=2, pady=1, ipady=4, sticky="nsew")
+                if key in COMPARISON_CURRENT_DEPENDENT_KEYS and metrics.get("current_data_missing"):
+                    _add_toolbar_tooltip(cell, NO_CURRENT_DATA_TOOLTIP)
         next_row = data_start + len(COMPARISON_ROWS)
 
         # Vurgulanan her hücre için tablo altına tek satır otomatik özet —

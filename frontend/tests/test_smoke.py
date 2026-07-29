@@ -1380,6 +1380,24 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(frontend_main._format_comparison_value(key, metrics), "—")
         # Voltaj gerçek ölçüm; o gösterilmeye devam etmeli.
         self.assertIn("V", frontend_main._format_comparison_value("voltage_range", metrics))
+        self.assertTrue(metrics["current_data_missing"])
+
+    def test_comparison_table_explains_dash_caused_by_missing_current_sensor(self):
+        """Rover'ın (akım sensörsüz) "—" hücrelerine, sebebi açıklayan bir
+        tooltip bağlanmalı — aksi halde kullanıcı bunu bozukluk sanabilir."""
+        rover_data = self._load_and_plot("px4_ground_rover_flight.ulg")
+        normal_data = self.app._run_backend(str(DATA_DIR / "ArduCopter-MaxAltFence-00000067.BIN"))
+        results = [
+            ("rover", frontend_main._flight_summary_metrics(rover_data)),
+            ("normal", frontend_main._flight_summary_metrics(normal_data)),
+        ]
+
+        frame = frontend_main.ctk.CTkFrame(self.app)
+        self.app._build_comparison_table(frame, results)
+
+        cells = [w for w in frame.winfo_children() if isinstance(w, frontend_main.ctk.CTkLabel)]
+        dash_cell = next(w for w in cells if w.cget("text") == "—")
+        self.assertNotEqual(dash_cell.bind("<Enter>"), "")
 
     def test_comparison_table_has_row_per_metric_and_column_per_flight(self):
         results = []
