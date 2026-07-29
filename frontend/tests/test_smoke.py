@@ -2011,6 +2011,49 @@ class SmokeTests(unittest.TestCase):
                   ("u2", {"resistance_mohm": None, "voltage_sag_pct": None})]
         self.assertEqual(frontend_main._comparison_notable_cells(single), [])
 
+    def test_comparison_winner_cells_marks_lowest_of_lower_is_better_metrics(self):
+        """resistance_mohm/voltage_sag_pct/warning_count için en düşük
+        değer 'kazanan' işaretlenmeli; eşitlikte hepsi işaretlenmeli."""
+        results = [
+            ("a", {"resistance_mohm": 10.0, "voltage_sag_pct": 5.0, "warning_count": 2}),
+            ("b", {"resistance_mohm": 25.0, "voltage_sag_pct": 3.0, "warning_count": 2}),
+        ]
+        winners = frontend_main._comparison_winner_cells(results)
+        self.assertIn(("resistance_mohm", 0, "a"), winners)
+        self.assertIn(("voltage_sag_pct", 1, "b"), winners)
+        # warning_count eşit -> ikisi de kazanan sayılır.
+        self.assertIn(("warning_count", 0, "a"), winners)
+        self.assertIn(("warning_count", 1, "b"), winners)
+
+    def test_comparison_winner_cells_skips_when_less_than_two_present(self):
+        single = [("a", {"resistance_mohm": 10.0})]
+        self.assertEqual(frontend_main._comparison_winner_cells(single), [])
+
+    def test_comparison_winner_cells_excludes_workload_dependent_rows(self):
+        """energy_wh gibi göreve bağlı satırlar hiç kazanan işareti almamalı
+        — daha az enerji harcamak 'daha iyi' anlamına gelmiyor, daha kısa
+        uçuş anlamına gelebilir."""
+        results = [("a", {"energy_wh": 5.0}), ("b", {"energy_wh": 50.0})]
+        self.assertEqual(frontend_main._comparison_winner_cells(results), [])
+
+    def test_comparison_table_marks_winner_cell_with_checkmark(self):
+        results = [
+            ("a", {"resistance_mohm": 10.0, "voltage_sag_pct": None, "warning_count": 0}),
+            ("b", {"resistance_mohm": 39.0, "voltage_sag_pct": None, "warning_count": 0}),
+        ]
+        for _name, metrics in results:
+            for key, _title in frontend_main.COMPARISON_ROWS:
+                metrics.setdefault(key, None)
+            for raw_key in ("voltage_min", "voltage_max", "current_min", "current_max"):
+                metrics.setdefault(raw_key, None)
+
+        frame = frontend_main.ctk.CTkFrame(self.app)
+        self.app._build_comparison_table(frame, results)
+        cells = [w for w in frame.winfo_children() if isinstance(w, frontend_main.ctk.CTkLabel)]
+        texts = [w.cget("text") for w in cells]
+        self.assertIn("✓ 10 mΩ", texts)
+        self.assertNotIn("✓ 39 mΩ", texts)
+
     def test_comparison_current_range_negative_gets_warning_prefix(self):
         metrics = {"current_min": -0.7, "current_max": 23.0}
         self.assertTrue(

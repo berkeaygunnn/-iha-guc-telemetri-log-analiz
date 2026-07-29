@@ -760,6 +760,12 @@ COMPARISON_CURRENT_DEPENDENT_KEYS = (
 )
 NO_CURRENT_DATA_TOOLTIP = "— : bu araç için akım verisi log'da bulunamadı."
 
+# "Kazanan" (en iyi değer) vurgusu sadece burada — süre/enerji/tepe güç gibi
+# satırlar araç/görev bağımlı olduğu için "daha az/çok iyidir" anlamı
+# taşımıyor (bkz. COMPARISON_NOTABLE_KEYS'in aynı gerekçesi). Üçü de "düşük
+# olması iyi": zayıflayan batarya, voltaj dengesizliği, uyarı sayısı.
+COMPARISON_LOWER_IS_BETTER = ("resistance_mohm", "voltage_sag_pct", "warning_count")
+
 
 def _comparison_notable_cells(results: list) -> list:
     """Tablodaki dikkat çekici hücreleri bulur: [(metrik_anahtarı,
@@ -780,6 +786,22 @@ def _comparison_notable_cells(results: list) -> list:
         if median > 0 and max_value >= 2 * median:
             notable.append((key, max_index, results[max_index][0]))
     return notable
+
+
+def _comparison_winner_cells(results: list) -> list:
+    """(metrik_anahtarı, sütun_indeksi, uçuş_adı) listesi döner — sadece
+    COMPARISON_LOWER_IS_BETTER satırları için en düşük değere sahip
+    hücre(ler). Eşitlikte TÜM eşit-minimum uçuşlar işaretlenir (tek birini
+    seçmek keyfi olurdu). _comparison_notable_cells'teki gibi en az 2 dolu
+    değer şartı var (tek uçuşta "kazanan" anlamsız)."""
+    winners = []
+    for key in COMPARISON_LOWER_IS_BETTER:
+        present = [(i, m.get(key)) for i, (_n, m) in enumerate(results) if m.get(key) is not None]
+        if len(present) < 2:
+            continue
+        best_value = min(v for _i, v in present)
+        winners.extend((key, i, results[i][0]) for i, v in present if v == best_value)
+    return winners
 
 
 def _overlay_battery_for_flight(batteries: list) -> dict:
@@ -2514,6 +2536,11 @@ class App(ctk.CTk):
         # rengiyle vurgulanır; kural _comparison_notable_cells'te.
         notable = _comparison_notable_cells(results)
         notable_positions = {(key, column_index) for key, column_index, _n in notable}
+        # En iyi (en düşük) değer taşıyan hücreler kazanan rengiyle vurgulanır;
+        # kural _comparison_winner_cells'te. Kötü (notable) her zaman önde —
+        # ikisi aynı hücrede teorik olarak çakışamaz (biri max, diğeri min
+        # alıyor) ama öncelik yine de açıkça belirtiliyor.
+        winner_positions = {(key, column_index) for key, column_index, _n in _comparison_winner_cells(results)}
 
         # Tek/çift satırlara bant (stat kutucuklarındaki desenle aynı amaç,
         # LANDING_ROW_STRIPE tonuyla). pady sıfıra yakın tutuluyor ki bant
@@ -2526,10 +2553,17 @@ class App(ctk.CTk):
                 fg_color=row_color, corner_radius=0,
             ).grid(row=row, column=0, padx=(6, 2), pady=1, ipady=4, sticky="nsew")
             for column, (_name, metrics) in enumerate(results, start=1):
-                is_notable = (key, column - 1) in notable_positions
+                position = (key, column - 1)
+                is_notable = position in notable_positions
+                is_winner = not is_notable and position in winner_positions
+                value_text = _format_comparison_value(key, metrics)
                 cell = ctk.CTkLabel(
-                    parent, text=_format_comparison_value(key, metrics),
-                    text_color=LANDING_WARNING if is_notable else LANDING_TEXT,
+                    parent, text=("✓ " + value_text) if is_winner else value_text,
+                    text_color=(
+                        LANDING_WARNING if is_notable
+                        else LANDING_ACCENT_BRIGHT if is_winner
+                        else LANDING_TEXT
+                    ),
                     anchor="center", fg_color=row_color, corner_radius=0,
                 )
                 cell.grid(row=row, column=column, padx=2, pady=1, ipady=4, sticky="nsew")
