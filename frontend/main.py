@@ -883,6 +883,16 @@ def _truncate_to_width(text: str, max_width_px: float, font) -> str:
     return text[:lo] + "..."
 
 
+def _make_format_coord(ylabel: str):
+    """Toolbar'ın varsayılan "(x, y) = (...)" okunuşu yerine Türkçe, birimli
+    bir metin üretir. ylabel zaten doğru birimi taşıyor (_style_axes'e
+    geçirilen "Voltaj (V)", "Sıcaklık (°C)" gibi değerler), bu yüzden ayrı
+    bir birim eşlemesi kurmaya gerek yok."""
+    def format_coord(x, y):
+        return f"Zaman: {x:.2f}s, {ylabel}: {y:.2f}"
+    return format_coord
+
+
 def _add_toolbar_tooltip(widget, text):
     """Bir araç çubuğu butonuna, fare üzerine gelince çıkan küçük bir ipucu
     balonu bağlar. `text` bir metin ya da metin döndüren bir fonksiyon
@@ -2938,6 +2948,7 @@ class App(ctk.CTk):
         """Bir eksene koyu tema görünümünü (arka plan, ince gridline, soluk çerçeve) uygular."""
         ax.set_facecolor(SURFACE)
         ax.set_ylabel(ylabel, color=TEXT_SECONDARY)
+        ax.format_coord = _make_format_coord(ylabel)
         ax.grid(True, color=GRIDLINE, linewidth=1, linestyle="-")
         ax.set_axisbelow(True)
         ax.tick_params(colors=TEXT_MUTED)
