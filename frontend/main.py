@@ -3160,6 +3160,18 @@ class App(ctk.CTk):
         offset_x, ha = (-12, "right") if x_frac > 0.85 else (12, "left")
         offset_y, va = (-12, "top") if y_frac > 0.85 else (12, "bottom")
 
+        # Yukarıdaki kontrol EKSENİN kendi veri aralığına göre — üstteki
+        # panelin (voltaj/sıcaklık) üzerinde Figure kenarına az boşluk
+        # olduğunda, y_frac eşiğe henüz ulaşmadan bile etiket üst kenardan
+        # taşıp kayboluyordu ("37.0s" gibi satırlar kırpılıyordu). Piksel
+        # bazında Figure sınırına olan gerçek mesafeyi de ayrıca kontrol et.
+        px, py = ax.transData.transform((x, y))
+        fig_w, fig_h = self.canvas.get_width_height()
+        if py > fig_h - 40:
+            offset_y, va = -12, "top"
+        if px > fig_w - 90:
+            offset_x, ha = -12, "right"
+
         self._hover_annotation = ax.annotate(
             text,
             xy=(x, y), xytext=(offset_x, offset_y), textcoords="offset points",
