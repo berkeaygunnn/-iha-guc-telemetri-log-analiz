@@ -423,6 +423,25 @@ class SmokeTests(unittest.TestCase):
         self.app._on_plot_hover(leave_event)
         self.assertEqual(len(self.app.ax_voltage.texts), 0)
 
+    def test_hover_tooltip_near_top_of_short_panel_still_flips_upward(self):
+        """Üstteki panelin (voltaj) Figure kenarına az piksel boşluğu olduğu
+        durumlarda, sadece EKSENİN kendi veri aralığına bakan eski kontrol
+        (y_frac > 0.85) yetersiz kalıp etiketin üst kısmı Figure dışına taşıp
+        kırpılıyordu (kullanıcı geri bildirimi, ör. "37.0s" satırı
+        görünmüyordu). Figure'ı piksel olarak yapay şekilde kısaltıp
+        (get_width_height mock'lanarak) eski eşiğin ÇOK altında bir veri
+        kesrinde bile artık üst hizalamaya geçtiğini doğrular."""
+        self._load_and_plot("px4_hexarotor_flight.ulg")
+        ax = self.app.ax_voltage
+        xlim, ylim = ax.get_xlim(), ax.get_ylim()
+        x = xlim[0] + 0.5 * (xlim[1] - xlim[0])
+        y = ylim[0] + 0.3 * (ylim[1] - ylim[0])  # eski eşiğin (0.85) çok altında
+
+        with patch.object(self.app.canvas, "get_width_height", return_value=(500, 50)):
+            self.app._show_hover_annotation(ax, x, y, "test")
+
+        self.assertEqual(self.app._hover_annotation.get_verticalalignment(), "top")
+
     def _hover_text(self, ax, xdata, ydata):
         """Verilen noktada hover tetikleyip tooltip metnini döndürür
         (tooltip çıkmazsa None)."""
