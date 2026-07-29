@@ -2095,6 +2095,56 @@ class SmokeTests(unittest.TestCase):
         canvases = [w for w in frame.winfo_children() if isinstance(w, frontend_main.tk.Canvas)]
         self.assertEqual(len(canvases), 0)
 
+    def test_plot_comparison_overlay_draws_one_line_per_flight(self):
+        """Küçük gömülü grafik ve büyütülmüş dialog aynı çizim fonksiyonunu
+        (_plot_comparison_overlay) paylaşıyor; burada doğrudan test edilir."""
+        data_a = self.app._run_backend(str(DATA_DIR / "ArduCopter-MaxAltFence-00000067.BIN"))
+        data_b = self.app._run_backend(str(DATA_DIR / "px4_hexarotor_flight.ulg"))
+        overlays = [
+            ("a", frontend_main._overlay_battery_for_flight(data_a["batteries"])),
+            ("b", frontend_main._overlay_battery_for_flight(data_b["batteries"])),
+        ]
+
+        figure = frontend_main.Figure()
+        ax = figure.add_subplot(111)
+        self.app._plot_comparison_overlay(ax, overlays)
+        self.assertEqual(len(ax.get_lines()), 2)
+
+    def test_comparison_chart_buyut_button_opens_a_dialog(self):
+        """'Büyüt' butonu, karşılaştırma grafiğini büyük bir CTkToplevel'da
+        yeniden açmalı."""
+        results = []
+        chart_series = []
+        for name in ("ArduCopter-MaxAltFence-00000067.BIN", "px4_hexarotor_flight.ulg"):
+            data = self.app._run_backend(str(DATA_DIR / name))
+            results.append((name, frontend_main._flight_summary_metrics(data)))
+            chart_series.append((name, data["batteries"]))
+
+        frame = frontend_main.ctk.CTkFrame(self.app)
+        next_row = self.app._build_comparison_table(frame, results)
+        self.app._build_comparison_chart(frame, next_row, chart_series)
+
+        buttons = [
+            w for w in frame.winfo_children()
+            if isinstance(w, frontend_main.ctk.CTkButton) and w.cget("text") == "Büyüt"
+        ]
+        self.assertEqual(len(buttons), 1)
+
+        dialogs_before = [
+            w for w in self.app.winfo_children() if isinstance(w, frontend_main.ctk.CTkToplevel)
+        ]
+        buttons[0].cget("command")()
+        self.app.update()
+        try:
+            dialogs_after = [
+                w for w in self.app.winfo_children() if isinstance(w, frontend_main.ctk.CTkToplevel)
+            ]
+            self.assertEqual(len(dialogs_after), len(dialogs_before) + 1)
+        finally:
+            for dialog in self.app.winfo_children():
+                if isinstance(dialog, frontend_main.ctk.CTkToplevel) and dialog not in dialogs_before:
+                    dialog.destroy()
+
     def test_negative_current_threshold_line_only_when_negative_samples_exist(self):
         """Eşik çizgisi SADECE negatif örnek varsa çizilir -- her uçuşta sabit
         bir çizgi eklemek, negatif akım nadir olduğu için gürültü olurdu

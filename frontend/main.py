@@ -2586,22 +2586,13 @@ class App(ctk.CTk):
             parent.grid_columnconfigure(column, weight=1)
         return next_row
 
-    def _build_comparison_chart(self, parent, row: int, chart_series: list):
-        """Tablo altına, uçuş başına tek çizgi olacak şekilde voltaj overlay
-        grafiği çizer (bkz. _overlay_battery_for_flight). Zaman ekseni her
-        uçuşta zaten t=0'dan başlıyor (_normalize_time_axis), bu yüzden ek
-        hizalama gerekmiyor. Dialog hep LANDING paletinde olduğu için renkler
-        DARK_PALETTE'ten sabit alınıyor -- tema-takip eden modül singles'ı
-        açık temada bu koyu zemine karşı yanlış olurdu."""
-        overlays = [
-            (name, battery) for name, batteries in chart_series
-            for battery in [_overlay_battery_for_flight(batteries)] if battery is not None
-        ]
-        if not overlays:
-            return
-
-        figure = Figure(figsize=(8.6, 2.6), dpi=100, facecolor=LANDING_BG)
-        ax = figure.add_subplot(111)
+    def _plot_comparison_overlay(self, ax, overlays: list):
+        """overlays: [(uçuş adı, battery dict), ...]. Küçük gömülü grafik ve
+        büyütülmüş dialog grafiği (bkz. _open_comparison_chart_dialog) aynı
+        çizim mantığını paylaşsın diye _build_comparison_chart'tan çıkarıldı
+        — veri/stil mantığı tek yerde. Dialog hep LANDING paletinde olduğu
+        için renkler DARK_PALETTE'ten sabit alınıyor -- tema-takip eden modül
+        sabitleri açık temada bu koyu zemine karşı yanlış olurdu."""
         ax.set_facecolor(LANDING_BG)
         colors = DARK_PALETTE["SERIES_COLORS"]
         for i, (name, battery) in enumerate(overlays):
@@ -2619,13 +2610,67 @@ class App(ctk.CTk):
             loc="upper right", facecolor=LANDING_CARD, edgecolor=LANDING_CARD_BORDER,
             labelcolor=LANDING_TEXT_SECONDARY, fontsize=8,
         )
+
+    def _build_comparison_chart(self, parent, row: int, chart_series: list):
+        """Tablo altına, uçuş başına tek çizgi olacak şekilde voltaj overlay
+        grafiği çizer (bkz. _overlay_battery_for_flight). Zaman ekseni her
+        uçuşta zaten t=0'dan başlıyor (_normalize_time_axis), bu yüzden ek
+        hizalama gerekmiyor. Grafiğin küçüklüğü şikayet konusu olduğu için
+        üstüne, aynı veriyi büyük bir pencerede yeniden çizen bir "Büyüt"
+        butonu eklendi (bkz. _open_comparison_chart_dialog)."""
+        overlays = [
+            (name, battery) for name, batteries in chart_series
+            for battery in [_overlay_battery_for_flight(batteries)] if battery is not None
+        ]
+        if not overlays:
+            return
+
+        button_row = row
+        ctk.CTkButton(
+            parent, text="Büyüt", width=70, fg_color=LANDING_ACCENT, hover_color="#2d6fc0",
+            text_color=LANDING_TEXT, command=lambda: self._open_comparison_chart_dialog(overlays),
+        ).grid(row=button_row, column=0, columnspan=len(chart_series) + 1, sticky="e", pady=(14, 0))
+        row += 1
+
+        figure = Figure(figsize=(8.6, 2.6), dpi=100, facecolor=LANDING_BG)
+        ax = figure.add_subplot(111)
+        self._plot_comparison_overlay(ax, overlays)
         figure.tight_layout()
 
         canvas = FigureCanvasTkAgg(figure, master=parent)
         canvas.draw()
         canvas.get_tk_widget().grid(
-            row=row, column=0, columnspan=len(chart_series) + 1, sticky="nsew", pady=(14, 4),
+            row=row, column=0, columnspan=len(chart_series) + 1, sticky="nsew", pady=(4, 4),
         )
+
+    def _open_comparison_chart_dialog(self, overlays: list):
+        """Karşılaştırma voltaj overlay grafiğini büyük bir CTkToplevel'da
+        yeniden çizer — aynı veri, aynı _plot_comparison_overlay. Karşılaştırma
+        dialoguyla aynı LANDING paletini kullanır, temayı takip etmez (bkz.
+        _on_compare_click'teki açıklama)."""
+        dialog = ctk.CTkToplevel(self, fg_color=LANDING_BG)
+        dialog.title("Voltaj Karşılaştırması")
+        dialog.geometry("1100x650")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        figure = Figure(figsize=(10.5, 5.5), dpi=100, facecolor=LANDING_BG)
+        ax = figure.add_subplot(111)
+        self._plot_comparison_overlay(ax, overlays)
+        figure.tight_layout()
+
+        canvas = FigureCanvasTkAgg(figure, master=dialog)
+        canvas.draw()
+        toolbar_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        toolbar_frame.pack(side="top", fill="x", padx=10)
+        _PanPreviewToolbar(canvas, toolbar_frame)  # zoom/kaydırma/kaydet bedava geliyor
+        canvas.get_tk_widget().pack(side="top", fill="both", expand=True, padx=10, pady=(0, 10))
+
+        ctk.CTkButton(
+            dialog, text="Kapat", fg_color="transparent", border_width=1,
+            border_color=LANDING_CARD_BORDER, text_color=LANDING_TEXT_SECONDARY,
+            hover_color=LANDING_CARD, command=dialog.destroy,
+        ).pack(pady=(0, 10))
 
     def _load_recent_files(self) -> list:
         """Kalıcı listeyi diskten okur; dosya yoksa/bozuksa boş liste döner
