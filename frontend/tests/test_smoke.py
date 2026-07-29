@@ -532,6 +532,17 @@ class SmokeTests(unittest.TestCase):
         # değerin bittiği yerde kontrol ediliyor.
         self.assertTrue(text.endswith(" µs"), text)
 
+    def test_axes_have_turkish_format_coord(self):
+        """Toolbar'ın ham "(x, y) = (...)" okunuşu yerine artık birimli,
+        Türkçe bir metin üretiliyor (_style_axes -> _make_format_coord).
+        Bu, _on_plot_hover'ın çizdiği özel tooltip'ten tamamen ayrı bir
+        mekanizma (matplotlib'in varsayılan format_coord'unun override'ı)."""
+        self._load_and_plot("px4_hexarotor_flight.ulg")
+        text = self.app.ax_voltage.format_coord(12.3, 16.5)
+        self.assertIn("Zaman", text)
+        self.assertIn("Voltaj (V)", text)
+        self.assertNotIn("=", text)
+
     def test_export_pdf_creates_file(self):
         self._load_and_plot("synthetic_test_log.BIN")
         with tempfile.TemporaryDirectory() as tmp_dir:
