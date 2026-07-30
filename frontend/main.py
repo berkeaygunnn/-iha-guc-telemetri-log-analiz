@@ -66,9 +66,21 @@ def _find_icon_path() -> Path:
     return assets_dir / "icon.png"
 
 
+def _find_ico_path() -> Path:
+    """Windows başlık çubuğu/görev çubuğu ikonu için .ico dosyasının yolu.
+    `_find_icon_path()` ile birebir aynı frozen/geliştirme ayrımı — ikisi de
+    aynı `assets/` klasörüne bakıyor, sadece dosya adı farklı."""
+    if getattr(sys, "frozen", False):
+        assets_dir = Path(sys.executable).resolve().parent / "assets"
+    else:
+        assets_dir = Path(__file__).resolve().parent / "assets"
+    return assets_dir / "uygulama.ico"
+
+
 BACKEND_EXE = _find_backend_exe()
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 ICON_PATH = _find_icon_path()
+ICO_PATH = _find_ico_path()
 # Son kullanılan dosyalar listesi kullanıcının home klasöründe tutulur (dev/
 # paketlenmiş ayrımından bağımsız, her zaman yazılabilir). Testler bu sabiti
 # monkeypatch'leyerek gerçek kullanıcı verisini etkilemeden test edebiliyor.
@@ -1367,6 +1379,26 @@ class App(ctk.CTk):
 
         if ICON_PATH.exists():
             self.iconphoto(True, PhotoImage(file=str(ICON_PATH)))
+
+        # Görev çubuğu/başlık çubuğu ikonu (Windows'a özgü): iconphoto tek
+        # başına bazı Windows sürümlerinde görev çubuğunda hâlâ varsayılan
+        # Tk ikonunu bırakıyor, .ico ile iconbitmap gerekiyor. .ico sadece
+        # Windows'ta biçim olarak geçerli (X11'de iconbitmap XBM bekler),
+        # bu yüzden platform kontrolü şart -- yoksa Linux'ta (CI'daki xvfb
+        # smoke testleri) TclError ile pencere hiç açılmazdı.
+        #
+        # after() ile ERTELEMEK gerekmiyor: CustomTkinter'ın kendi
+        # CTk.__init__'i zaten `after(200, self._windows_set_titlebar_icon)`
+        # planlıyor ama SADECE `self.iconbitmap(...)` hiç çağrılmamışsa kendi
+        # varsayılan ikonunu basıyor (bkz. customtkinter/windows/ctk_tk.py).
+        # Burada senkron çağırmak o bayrağı (_iconbitmap_method_called) 200ms
+        # dolmadan önce True yapıyor, yani CTk'nin kendi ikonu hiç görünmeden
+        # doğrudan bizimkiyle açılıyor.
+        if sys.platform.startswith("win") and ICO_PATH.exists():
+            try:
+                self.iconbitmap(default=str(ICO_PATH))
+            except tk.TclError:
+                pass  # bozuk/eksik .ico penceyi açılmaktan alıkoymasın
 
         self.motor_view_mode = "line"  # "line", "heatmap" ya da "pwm"
         self._motor_colorbar = None
