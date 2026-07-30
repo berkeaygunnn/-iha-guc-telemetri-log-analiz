@@ -2306,6 +2306,45 @@ class SmokeTests(unittest.TestCase):
         self.app._on_clear_click()
         self.assertIsNone(self.app._highlight_series)
 
+    def test_clicking_battery_warning_dims_other_battery_lines(self):
+        """Motor uyarısı için var olan vurgulama testinin batarya eşleniği —
+        _on_warning_click sadece motor panelinde değil, aynı mantıkla voltaj
+        panelinde de (ax_voltage, "Batarya N" etiketleri) çalışmalı."""
+        self._load_and_plot("synthetic_test_log.BIN")  # Batarya 1/2 dengesizlik uyarısı
+        target_label = next(
+            lbl for lbl in self.app._warning_labels if lbl.cget("text").startswith("⚠ Batarya 1:"))
+        self.app._on_warning_click(("Batarya", 1), target_label)
+
+        self.assertEqual(self.app._highlight_series, ("Batarya", 1))
+        lines = {line.get_label(): line for line in self._data_lines(self.app.ax_voltage)}
+        self.assertEqual(lines["Batarya 1"].get_alpha(), 1.0)
+        self.assertEqual(lines["Batarya 2"].get_alpha(), 0.15)
+
+        # Aynı uyarıya ikinci tık vurguyu kaldırmalı.
+        self.app._on_warning_click(("Batarya", 1), target_label)
+        self.assertIsNone(self.app._highlight_series)
+        lines_after = {line.get_label(): line for line in self._data_lines(self.app.ax_voltage)}
+        self.assertEqual(lines_after["Batarya 2"].get_alpha(), 1.0)
+
+    def test_switching_highlight_between_two_motor_warnings(self):
+        """Bir motor zaten vurgulanmışken FARKLI bir motora tıklamak (önce
+        temizlemeden) vurguyu değiştirmeli, eskisiyle 'toggle' gibi
+        davranıp kapatmamalı — _on_warning_click hedefi karşılaştırırken
+        tam eşitlik kontrolü yapıyor, bu ayrımı doğrudan test eder."""
+        self._load_and_plot("synthetic_test_log.BIN")  # Motor 1/4 dengesizlik uyarısı
+        label_motor1 = next(
+            lbl for lbl in self.app._warning_labels if lbl.cget("text").startswith("⚠ Motor 1:"))
+        label_motor4 = next(
+            lbl for lbl in self.app._warning_labels if lbl.cget("text").startswith("⚠ Motor 4:"))
+
+        self.app._on_warning_click(("Motor", 1), label_motor1)
+        self.app._on_warning_click(("Motor", 4), label_motor4)
+
+        self.assertEqual(self.app._highlight_series, ("Motor", 4))
+        lines = {line.get_label(): line for line in self._data_lines(self.app.ax_motors)}
+        self.assertEqual(lines["Motor 4"].get_alpha(), 1.0)
+        self.assertEqual(lines["Motor 1"].get_alpha(), 0.15)
+
 
 if __name__ == "__main__":
     unittest.main()
