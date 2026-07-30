@@ -471,6 +471,10 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
 
   Frontend 118 → 140 test.
 
+- **Platform bağımsızlık (Windows + Linux hazırlığı):** Kod platform-bağımsız
+  hale getirildi (Windows + Linux uyumlu). Linux paketleme/test henüz
+  yapılmadı, bir Linux ortamı (WSL vb.) gerektiğinde ele alınacak.
+
 ## Kapsam dışı bırakılan fikirler
 
 - **Yapay zeka / makine öğrenmesi entegrasyonu:** Değerlendirildi, KESİN
