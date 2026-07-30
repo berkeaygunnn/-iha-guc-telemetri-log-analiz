@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>İHA Güç ve Telemetri Log Analiz Aracı</title>
+    <style>
+        /* TEMEL AYARLAR */
+        :root {
+            --bg-color: #0f1b28;
+            --bg-lighter: #162638;
+            --bg-card: #1c2e42;
+            --text-main: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent-color: #4fc3f7;
+            --accent-hover: #3bb2e8;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            margin: 0;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            line-height: 1.6;
+        }
+
+        h1, h2, h3, h4 {
+            color: #ffffff;
+            margin-top: 0;
+        }
+
+        a {
+            color: var(--accent-color);
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+
+        a:hover {
+            color: var(--accent-hover);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        /* 1. ÜST MENÜ (NAVBAR) */
+        header {
+            position: sticky;
+            top: 0;
+            background-color: rgba(15, 27, 40, 0.95);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(79, 195, 247, 0.2);
+            z-index: 1000;
+        }
+
+        .navbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 70px;
+        }
+
+        .logo-area {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            font-weight: 600;
+            font-size: 1.1rem;
+            color: #fff;
+        }
+
+        .logo-placeholder {
+            width: 40px;
+            height: 40px;
+            background-color: var(--accent-color);
+            border-radius: 8px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: var(--bg-color);
+            font-weight: bold;
+            font-size: 0.8rem;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 25px;
+            align-items: center;
+        }
+
+        .nav-links a {
+            color: var(--text-main);
+            font-size: 0.95rem;
+        }
+
+        .nav-links a:hover {
+            color: var(--accent-color);
+        }
+
+        .lang-switch {
+            border: 1px solid var(--text-muted);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            user-select: none;
+        }
+
+        .lang-option {
+            cursor: pointer;
+        }
+
+        .lang-option.active {
+            color: var(--accent-color);
+            font-weight: 600;
+        }
+
+        .lang-option:hover {
+            color: var(--accent-hover);
+        }
+
+        /* 2. HERO BÖLÜMÜ */
+        .hero {
+            padding: 120px 20px 80px;
+            text-align: center;
+        }
+
+        .hero h1 {
+            font-size: 3rem;
+            margin-bottom: 20px;
+            letter-spacing: -0.5px;
+        }
+
+        .hero p.subtitle {
+            font-size: 1.2rem;
+            color: var(--text-muted);
+            max-width: 650px;
+            margin: 0 auto 40px;
+        }
+
+        .btn-download {
+            display: inline-block;
+            background-color: var(--accent-color);
+            color: var(--bg-color);
+            padding: 16px 40px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            border-radius: 6px;
+            box-shadow: 0 4px 15px rgba(79, 195, 247, 0.3);
+            transition: all 0.3s;
+            margin-bottom: 30px;
+        }
+
+        .btn-download:hover {
+            background-color: var(--accent-hover);
+            transform: translateY(-2px);
+            color: var(--bg-color);
+        }
+
+        .badges {
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .badge {
+            background-color: var(--bg-lighter);
+            border: 1px solid rgba(79, 195, 247, 0.4);
+            padding: 6px 16px;
+            border-radius: 30px;
+            font-size: 0.85rem;
+            color: var(--text-main);
+        }
+
+        /* Mini Kurulum Rehberi (hero içinde, indirme butonunun altında) */
+        .mini-steps {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 0 auto 30px;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        .mini-steps .mini-step {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .mini-steps .mini-step-number {
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            border: 1px solid rgba(79, 195, 247, 0.5);
+            color: var(--accent-color);
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .mini-steps .mini-step-arrow {
+            color: rgba(148, 163, 184, 0.5);
+        }
+
+        /* İstatistik Şeridi */
+        .stats-strip {
+            padding: 40px 0 80px;
+            border-top: none;
+        }
+
+        .stats-strip .container {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 20px;
+            background-color: var(--bg-lighter);
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.03);
+        }
+
+        .stat-item .stat-icon {
+            font-size: 1.6rem;
+            margin-bottom: 8px;
+        }
+
+        .stat-item .stat-number {
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 4px;
+        }
+
+        .stat-item .stat-label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        /* Sorun/Çözüm */
+        .problem-solution-block {
+            max-width: 800px;
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        .problem-solution-block p {
+            font-size: 1.1rem;
+            color: var(--text-muted);
+        }
+
+        .problem-solution-block strong {
+            color: var(--text-main);
+        }
+
+        /* Kimler İçin */
+        .audience-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 20px;
+        }
+
+        .audience-card {
+            background-color: var(--bg-lighter);
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.02);
+        }
+
+        .audience-card .audience-icon {
+            font-size: 1.8rem;
+            margin-bottom: 10px;
+        }
+
+        .audience-card p {
+            margin: 0;
+            font-size: 0.95rem;
+            color: var(--text-main);
+        }
+
+        /* Gerçek Uyarı Örneği Vurgusu */
+        .callout-box {
+            margin-top: 50px;
+            background-color: rgba(79, 195, 247, 0.06);
+            border: 1px solid rgba(79, 195, 247, 0.35);
+            border-radius: 8px;
+            padding: 35px;
+            text-align: center;
+        }
+
+        .callout-box .callout-label {
+            font-size: 0.8rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            color: var(--accent-color);
+            margin-bottom: 16px;
+        }
+
+        .callout-box .callout-example {
+            display: inline-block;
+            font-family: 'Consolas', 'SFMono-Regular', monospace;
+            font-size: 1rem;
+            color: var(--accent-color);
+            background-color: rgba(0, 0, 0, 0.25);
+            padding: 12px 22px;
+            border-radius: 6px;
+            border-left: 3px solid var(--accent-color);
+            margin-bottom: 16px;
+        }
+
+        .callout-box .callout-note {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            margin: 0;
+        }
+
+        /* SSS (Accordion) */
+        .faq-list {
+            max-width: 800px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .faq-item {
+            background-color: var(--bg-lighter);
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            padding: 4px 20px;
+        }
+
+        .faq-item summary {
+            cursor: pointer;
+            list-style: none;
+            padding: 16px 0;
+            font-weight: 600;
+            color: var(--text-main);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .faq-item summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .faq-item summary::after {
+            content: '+';
+            color: var(--accent-color);
+            font-size: 1.3rem;
+            font-weight: 400;
+            margin-left: 12px;
+            transition: transform 0.2s ease;
+        }
+
+        .faq-item[open] summary::after {
+            transform: rotate(45deg);
+        }
+
+        .faq-item p {
+            margin: 0 0 18px;
+            color: var(--text-muted);
+            font-size: 0.95rem;
+        }
+
+        /* Kaynaklar: açık kaynak rozetleri */
+        .badges-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .badges-row img {
+            height: 22px;
+            display: block;
+        }
+
+        /* İletişim */
+        .contact-block {
+            text-align: center;
+        }
+
+        .btn-secondary {
+            display: inline-block;
+            background-color: transparent;
+            border: 1px solid var(--accent-color);
+            color: var(--accent-color);
+            padding: 12px 32px;
+            font-size: 1rem;
+            font-weight: 600;
+            border-radius: 6px;
+            transition: all 0.3s;
+            margin-top: 10px;
+        }
+
+        .btn-secondary:hover {
+            background-color: rgba(79, 195, 247, 0.1);
+            color: var(--accent-hover);
+        }
+
+        /* Kaydırma ile Belirme Animasyonu */
+        .reveal {
+            opacity: 0;
+            transform: translateY(24px);
+            transition: opacity 0.6s ease, transform 0.6s ease;
+        }
+
+        .reveal.visible {
+            opacity: 1;
+            transform: none;
+        }
+
+        /* GENEL BÖLÜM YAPISI */
+        section {
+            padding: 80px 0;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .section-title {
+            text-align: center;
+            font-size: 2rem;
+            margin-bottom: 50px;
+        }
+
+        /* 3. NASIL ÇALIŞIR */
+        .how-it-works-grid {
+            display: flex;
+            gap: 20px;
+            justify-content: space-between;
+        }
+
+        .step-card {
+            flex: 1;
+            background-color: var(--bg-lighter);
+            padding: 30px 20px;
+            border-radius: 8px;
+            text-align: center;
+            position: relative;
+            border: 1px solid rgba(255, 255, 255, 0.02);
+        }
+
+        .step-number {
+            width: 40px;
+            height: 40px;
+            background-color: var(--accent-color);
+            color: var(--bg-color);
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-weight: bold;
+            font-size: 1.2rem;
+            margin: 0 auto 20px;
+        }
+
+        .step-card h3 {
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+        }
+
+        .step-card p {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin: 0;
+        }
+
+        /* 4. ÖZELLİKLER */
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 25px;
+        }
+
+        .feature-card {
+            background-color: var(--bg-card);
+            padding: 25px;
+            border-radius: 8px;
+            border-left: 4px solid var(--accent-color);
+            transition: transform 0.2s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-3px);
+        }
+
+        .feature-card h3 {
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+        }
+
+        .feature-card p {
+            font-size: 0.95rem;
+            color: var(--text-muted);
+            margin: 0;
+        }
+
+        /* 5. EKRAN GÖRÜNTÜLERİ */
+        .screenshots-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 30px;
+        }
+
+        .screenshot-item {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .screenshot-placeholder {
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            background-color: var(--bg-card);
+            border: 2px dashed rgba(79, 195, 247, 0.3);
+            border-radius: 8px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: var(--text-muted);
+            font-size: 1.1rem;
+            overflow: hidden;
+            cursor: zoom-in;
+        }
+
+        .screenshot-placeholder img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        /* Görsel büyütme (lightbox) */
+        .lightbox-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(8, 16, 24, 0.92);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 2000;
+            padding: 30px;
+            cursor: zoom-out;
+        }
+
+        .lightbox-overlay.active {
+            display: flex;
+        }
+
+        .lightbox-overlay img {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 8px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        }
+
+        .screenshot-item p {
+            text-align: center;
+            font-size: 0.95rem;
+            color: var(--text-muted);
+            margin: 0;
+        }
+
+        /* 6. & 7. KAYNAKLAR VE GİZLİLİK */
+        .content-block {
+            background-color: var(--bg-lighter);
+            padding: 40px;
+            border-radius: 8px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .content-block ul {
+            padding-left: 20px;
+            margin: 0;
+        }
+
+        .content-block li {
+            margin-bottom: 12px;
+        }
+
+        .content-block li:last-child {
+            margin-bottom: 0;
+        }
+
+        .privacy-box {
+            border: 1px solid rgba(79, 195, 247, 0.4);
+            background-color: rgba(79, 195, 247, 0.05);
+            text-align: center;
+        }
+
+        /* 8. FOOTER */
+        footer {
+            background-color: #081018;
+            padding: 40px 0;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin-top: 40px;
+        }
+
+        /* RESPONSIVE TASARIM */
+        @media (max-width: 768px) {
+            .nav-links {
+                display: none; /* Mobilde menüyü gizleyerek sade bir görünüm sağlıyoruz */
+            }
+            .hero h1 {
+                font-size: 2.2rem;
+            }
+            .how-it-works-grid {
+                flex-direction: column;
+            }
+            .screenshots-grid {
+                grid-template-columns: 1fr;
+            }
+            .stats-strip .container {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .mini-steps {
+                flex-direction: column;
+                gap: 6px;
+            }
+            .mini-steps .mini-step-arrow {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 1. ÜST MENÜ (STICKY NAVBAR) -->
+    <header>
+        <div class="container navbar">
+            <div class="logo-area">
+                <!-- Logo Yer Tutucu -->
+                <div class="logo-placeholder">LOG</div>
+                <span data-tr="İHA Güç/Telemetri Analiz" data-en="UAV Power/Telemetry Analysis">İHA Güç/Telemetri Analiz</span>
+            </div>
+            <!-- Menü Linkleri -->
+            <nav class="nav-links">
+                <a href="#nasil-calisir" data-tr="Nasıl Çalışır?" data-en="How It Works?">Nasıl Çalışır?</a>
+                <a href="#ozellikler" data-tr="Özellikler" data-en="Features">Özellikler</a>
+                <a href="#sss" data-tr="SSS" data-en="FAQ">SSS</a>
+                <a href="#kaynaklar" data-tr="Kaynaklar" data-en="Resources">Kaynaklar</a>
+                <a href="#gizlilik" data-tr="Gizlilik" data-en="Privacy">Gizlilik</a>
+                <a href="#iletisim" data-tr="İletişim" data-en="Contact">İletişim</a>
+                <!-- Dil Değiştirici -->
+                <span class="lang-switch">
+                    <span class="lang-option active" data-lang="tr" onclick="setLang('tr')">TR</span> / <span class="lang-option" data-lang="en" onclick="setLang('en')">EN</span>
+                </span>
+            </nav>
+        </div>
+    </header>
+
+    <!-- 2. HERO BÖLÜMÜ -->
+    <main>
+        <section class="hero">
+            <div class="container">
+                <h1 data-tr="İHA Güç/Telemetri Log Analiz Aracı" data-en="UAV Power/Telemetry Log Analysis Tool">İHA Güç/Telemetri Log Analiz Aracı</h1>
+                <p class="subtitle" data-tr="ArduPilot ve PX4 uçuş loglarınızı tamamen çevrimdışı, yerel ortamınızda saniyeler içinde analiz edin. Gelişmiş güç grafikleri ve kural tabanlı donanım uyarıları ile uçuş güvenliğinizi maksimuma çıkarın." data-en="Analyze your ArduPilot and PX4 flight logs completely offline, locally, in seconds. Maximize your flight safety with advanced power graphs and rule-based hardware warnings.">ArduPilot ve PX4 uçuş loglarınızı tamamen çevrimdışı, yerel ortamınızda saniyeler içinde analiz edin. Gelişmiş güç grafikleri ve kural tabanlı donanım uyarıları ile uçuş güvenliğinizi maksimuma çıkarın.</p>
+
+                <!-- İndirme Butonu -->
+                <a href="https://github.com/berkeaygunnn/-iha-guc-telemetri-log-analiz/releases/download/v0.1.0/iha-guc-telemetri-analiz-v0.1.0-windows.zip" class="btn-download" data-tr="İndir (Windows)" data-en="Download (Windows)">İndir (Windows)</a>
+
+                <!-- Mini Kurulum Rehberi -->
+                <div class="mini-steps">
+                    <span class="mini-step"><span class="mini-step-number">1</span><span data-tr="İndir" data-en="Download">İndir</span></span>
+                    <span class="mini-step-arrow">→</span>
+                    <span class="mini-step"><span class="mini-step-number">2</span><span data-tr="Çalıştır" data-en="Run">Çalıştır</span></span>
+                    <span class="mini-step-arrow">→</span>
+                    <span class="mini-step"><span class="mini-step-number">3</span><span data-tr="İlk log dosyanı yükle" data-en="Upload your first log file">İlk log dosyanı yükle</span></span>
+                </div>
+
+                <!-- Rozetler -->
+                <div class="badges">
+                    <span class="badge" data-tr=".bin destekli" data-en=".bin supported">.bin destekli</span>
+                    <span class="badge" data-tr=".ulog / .ulg destekli" data-en=".ulog / .ulg supported">.ulog / .ulg destekli</span>
+                    <span class="badge" data-tr="MIT Lisansı" data-en="MIT License">MIT Lisansı</span>
+                    <span class="badge">Windows</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- 2b. İSTATİSTİK ŞERİDİ -->
+        <section class="stats-strip reveal">
+            <div class="container">
+                <div class="stat-item">
+                    <div class="stat-icon">⚙️</div>
+                    <div class="stat-number">6</div>
+                    <div class="stat-label" data-tr="motora kadar destek" data-en="motors supported">motora kadar destek</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-icon">📄</div>
+                    <div class="stat-number">2</div>
+                    <div class="stat-label" data-tr="log formatı (.bin/.ulog)" data-en="log formats (.bin/.ulog)">log formatı (.bin/.ulog)</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-icon">🔒</div>
+                    <div class="stat-number">%100</div>
+                    <div class="stat-label" data-tr="çevrimdışı" data-en="offline">çevrimdışı</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-icon">⚡</div>
+                    <div class="stat-number" data-tr="Saniyeler" data-en="Seconds">Saniyeler</div>
+                    <div class="stat-label" data-tr="içinde analiz" data-en="to analyze">içinde analiz</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 2c. SORUN/ÇÖZÜM -->
+        <section id="sorun-cozum" class="reveal">
+            <div class="container">
+                <div class="problem-solution-block">
+                    <p><span data-tr="Bir uçuş garip gitti — batarya beklenenden hızlı bitti, bir motor fazla ısındı. Ham log dosyasında yüzlerce satır arasında kaybolmak yerine, bu araç o karmaşayı " data-en="A flight went strange — the battery drained faster than expected, one motor ran hot. Instead of getting lost in hundreds of lines in a raw log file, this tool turns that mess into understandable graphs and automatic warnings ">Bir uçuş garip gitti — batarya beklenenden hızlı bitti, bir motor fazla ısındı. Ham log dosyasında yüzlerce satır arasında kaybolmak yerine, bu araç o karmaşayı </span><strong data-tr="saniyeler içinde" data-en="in seconds">saniyeler içinde</strong><span data-tr=" anlaşılır grafiklere ve otomatik uyarılara çevirir." data-en="."> anlaşılır grafiklere ve otomatik uyarılara çevirir.</span></p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 3. NASIL ÇALIŞIR -->
+        <section id="nasil-calisir" class="reveal">
+            <div class="container">
+                <h2 class="section-title" data-tr="Nasıl Çalışır?" data-en="How It Works?">Nasıl Çalışır?</h2>
+                <div class="how-it-works-grid">
+                    <div class="step-card">
+                        <div class="step-number">1</div>
+                        <h3 data-tr="Uçuş ve Kayıt" data-en="Flight & Logging">Uçuş ve Kayıt</h3>
+                        <p data-tr="Drone uçar ve uçuş kontrolcüsü görev boyunca log kaydını otomatik olarak tutar." data-en="The drone flies and the flight controller automatically records the log throughout the mission.">Drone uçar ve uçuş kontrolcüsü görev boyunca log kaydını otomatik olarak tutar.</p>
+                    </div>
+                    <div class="step-card">
+                        <div class="step-number">2</div>
+                        <h3 data-tr="Bilgisayara Aktarım" data-en="Transfer to Computer">Bilgisayara Aktarım</h3>
+                        <p data-tr="SD karttan veya yer istasyonu yazılımıyla (Mission Planner, QGroundControl) log dosyası (.bin/.ulg) bilgisayara indirilir." data-en="The log file (.bin/.ulg) is downloaded to the computer from the SD card or via ground station software (Mission Planner, QGroundControl).">SD karttan veya yer istasyonu yazılımıyla (Mission Planner, QGroundControl) log dosyası (.bin/.ulg) bilgisayara indirilir.</p>
+                    </div>
+                    <div class="step-card">
+                        <div class="step-number">3</div>
+                        <h3 data-tr="Uygulamaya Yükleme" data-en="Upload to App">Uygulamaya Yükleme</h3>
+                        <p data-tr='Log dosyası &quot;Dosya Yükle&quot; butonuyla masaüstü uygulamasına yüklenir.' data-en='The log file is uploaded to the desktop application using the &quot;Upload File&quot; button.'>Log dosyası "Dosya Yükle" butonuyla masaüstü uygulamasına yüklenir.</p>
+                    </div>
+                    <div class="step-card">
+                        <div class="step-number">4</div>
+                        <h3 data-tr="Anında Analiz" data-en="Instant Analysis">Anında Analiz</h3>
+                        <p data-tr="Grafikler, ısı haritaları ve kural tabanlı otomatik uyarılar saniyeler içinde sistemde hazır olur." data-en="Graphs, heat maps, and rule-based automatic warnings are ready in the system within seconds.">Grafikler, ısı haritaları ve kural tabanlı otomatik uyarılar saniyeler içinde sistemde hazır olur.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 3b. KİMLER İÇİN -->
+        <section id="kimler-icin" class="reveal">
+            <div class="container">
+                <h2 class="section-title" data-tr="Kimler İçin?" data-en="Who Is It For?">Kimler İçin?</h2>
+                <div class="audience-grid">
+                    <div class="audience-card">
+                        <div class="audience-icon">🏆</div>
+                        <p data-tr="TEKNOFEST ve üniversite yarışma takımları" data-en="TEKNOFEST and university competition teams">TEKNOFEST ve üniversite yarışma takımları</p>
+                    </div>
+                    <div class="audience-card">
+                        <div class="audience-icon">🛠️</div>
+                        <p data-tr="İHA geliştiren mühendisler" data-en="Engineers developing UAVs">İHA geliştiren mühendisler</p>
+                    </div>
+                    <div class="audience-card">
+                        <div class="audience-icon">🚁</div>
+                        <p data-tr="Hobiciler" data-en="Hobbyists">Hobiciler</p>
+                    </div>
+                    <div class="audience-card">
+                        <div class="audience-icon">🎓</div>
+                        <p data-tr="Eğitmenler" data-en="Instructors">Eğitmenler</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 4. ÖZELLİKLER -->
+        <section id="ozellikler" class="reveal">
+            <div class="container">
+                <h2 class="section-title" data-tr="Uygulama Özellikleri" data-en="App Features">Uygulama Özellikleri</h2>
+                <div class="features-grid">
+                    <div class="feature-card">
+                        <h3 data-tr="Batarya Voltaj/Akım Grafikleri" data-en="Battery Voltage/Current Graphs">Batarya Voltaj/Akım Grafikleri</h3>
+                        <p data-tr="Uçuş sırasındaki batarya gerilim düşümlerini ve çekilen anlık/toplam akımı detaylı bir zaman çizelgesinde inceleyin." data-en="Examine battery voltage drops and instantaneous/total current draw during flight on a detailed timeline.">Uçuş sırasındaki batarya gerilim düşümlerini ve çekilen anlık/toplam akımı detaylı bir zaman çizelgesinde inceleyin.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3 data-tr="Motor Bazında Akım Analizi" data-en="Per-Motor Current Analysis">Motor Bazında Akım Analizi</h3>
+                        <p data-tr="ESC ve motorların bireysel olarak ne kadar akım çektiğini analiz ederek itki sistemindeki dengesizlikleri tespit edin." data-en="Detect imbalances in the propulsion system by analyzing how much current each ESC and motor draws individually.">ESC ve motorların bireysel olarak ne kadar akım çektiğini analiz ederek itki sistemindeki dengesizlikleri tespit edin.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3 data-tr="Çizgi Grafiği & Isı Haritası" data-en="Line Chart & Heat Map">Çizgi Grafiği & Isı Haritası</h3>
+                        <p data-tr="Verileri detaylı çizgi grafikleriyle zaman tabanlı okuyun veya ısı haritası görünümleriyle anormallikleri bir bakışta fark edin." data-en="Read data over time with detailed line charts, or spot anomalies at a glance with heat map views.">Verileri detaylı çizgi grafikleriyle zaman tabanlı okuyun veya ısı haritası görünümleriyle anormallikleri bir bakışta fark edin.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3 data-tr="Otomatik Uyarı Sistemi" data-en="Automatic Warning System">Otomatik Uyarı Sistemi</h3>
+                        <p data-tr="Kural tabanlı çalışan uyarı motoru, voltaj düşümü ve motor akım dengesizliği gibi teknik donanım sorunlarını otomatik tespit edip uyarı üretir." data-en="The rule-based warning engine automatically detects technical hardware issues such as voltage sag and motor current imbalance, and generates warnings.">Kural tabanlı çalışan uyarı motoru, voltaj düşümü ve motor akım dengesizliği gibi teknik donanım sorunlarını otomatik tespit edip uyarı üretir.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3 data-tr="Çoklu Batarya Desteği" data-en="Multi-Battery Support">Çoklu Batarya Desteği</h3>
+                        <p data-tr="Sistemde birden fazla batarya/Power Module kullanılıyorsa, tüm güç kaynaklarının durumunu eşzamanlı olarak görüntüleyin." data-en="If multiple batteries/power modules are used in the system, view the status of all power sources simultaneously.">Sistemde birden fazla batarya/Power Module kullanılıyorsa, tüm güç kaynaklarının durumunu eşzamanlı olarak görüntüleyin.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3 data-tr="PNG Olarak Kaydetme" data-en="Save as PNG">PNG Olarak Kaydetme</h3>
+                        <p data-tr="Raporlama ve takım sunumları için oluşturulan grafikleri tek tıkla PNG formatında kaydedin." data-en="Save generated graphs as PNG with one click for reports and team presentations.">Raporlama ve takım sunumları için oluşturulan grafikleri tek tıkla PNG formatında kaydedin.</p>
+                    </div>
+                </div>
+
+                <!-- Gerçek Uyarı Örneği Vurgusu -->
+                <div class="callout-box">
+                    <div class="callout-label" data-tr="Uygulamanın ürettiği gerçek bir uyarı" data-en="A real warning generated by the application">Uygulamanın ürettiği gerçek bir uyarı</div>
+                    <div class="callout-example">"Motor 5 ortalama akımı diğerlerinden %21 fazla"</div>
+                    <p class="callout-note" data-tr="Uygulama bunu sizin için otomatik yakalar." data-en="The application catches this for you, automatically.">Uygulama bunu sizin için otomatik yakalar.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 5. EKRAN GÖRÜNTÜLERİ -->
+        <section class="reveal">
+            <div class="container">
+                <h2 class="section-title" data-tr="Arayüz İncelemesi" data-en="Interface Overview">Arayüz İncelemesi</h2>
+                <div class="screenshots-grid">
+                    <!-- 1. Ekran Görüntüsü -->
+                    <div class="screenshot-item">
+                        <div class="screenshot-placeholder" onclick="openLightbox('images/analiz-ekrani.png')">
+                            <img src="images/analiz-ekrani.png" alt="Ana Dashboard ve Voltaj Grafikleri">
+                        </div>
+                        <p data-tr="Genel uçuş profili ve batarya güç tüketim grafikleri." data-en="Overall flight profile and battery power consumption graphs.">Genel uçuş profili ve batarya güç tüketim grafikleri.</p>
+                    </div>
+                    <!-- 2. Ekran Görüntüsü -->
+                    <div class="screenshot-item">
+                        <div class="screenshot-placeholder" onclick="openLightbox('images/pwm-sapma.png')">
+                            <img src="images/pwm-sapma.png" alt="PWM Sapması Isı Haritası">
+                        </div>
+                        <p data-tr="PWM sapma ısı haritasıyla motorlar arası dengesizlikleri bir bakışta fark edin." data-en="Spot imbalances across motors at a glance with the PWM deviation heat map.">PWM sapma ısı haritasıyla motorlar arası dengesizlikleri bir bakışta fark edin.</p>
+                    </div>
+                    <!-- 3. Ekran Görüntüsü -->
+                    <div class="screenshot-item">
+                        <div class="screenshot-placeholder" onclick="openLightbox('images/ucus-karsilastirma.png')">
+                            <img src="images/ucus-karsilastirma.png" alt="Çoklu Uçuş Karşılaştırma Tablosu">
+                        </div>
+                        <p data-tr="Birden fazla uçuşun özet metriklerini yan yana karşılaştırın." data-en="Compare summary metrics from multiple flights side by side.">Birden fazla uçuşun özet metriklerini yan yana karşılaştırın.</p>
+                    </div>
+                    <!-- 4. Ekran Görüntüsü -->
+                    <div class="screenshot-item">
+                        <div class="screenshot-placeholder" onclick="openLightbox('images/uyari-vurgulama.png')">
+                            <img src="images/uyari-vurgulama.png" alt="Uyarıya Tıklayınca Grafikte Vurgulama">
+                        </div>
+                        <p data-tr="Bir uyarıya tıklayın, ilgili motor/batarya grafikte anında öne çıksın." data-en="Click a warning to instantly highlight the related motor/battery in the chart.">Bir uyarıya tıklayın, ilgili motor/batarya grafikte anında öne çıksın.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Görsel Büyütme (Lightbox) -->
+        <div class="lightbox-overlay" id="lightboxOverlay" onclick="closeLightbox()">
+            <img id="lightboxImg" src="" alt="Büyütülmüş ekran görüntüsü">
+        </div>
+
+        <!-- 5b. SSS -->
+        <section id="sss" class="reveal">
+            <div class="container">
+                <h2 class="section-title" data-tr="Sıkça Sorulan Sorular" data-en="Frequently Asked Questions">Sıkça Sorulan Sorular</h2>
+                <div class="faq-list">
+                    <details class="faq-item">
+                        <summary data-tr="Verilerim güvende mi?" data-en="Is my data safe?">Verilerim güvende mi?</summary>
+                        <p data-tr="Tamamen çevrimdışı çalışır, hiçbir veri dışarı gönderilmez, açık kaynaktır." data-en="It runs completely offline, no data is ever sent out, and it is open source.">Tamamen çevrimdışı çalışır, hiçbir veri dışarı gönderilmez, açık kaynaktır.</p>
+                    </details>
+                    <details class="faq-item">
+                        <summary data-tr="Drone'a bağlanıyor mu?" data-en="Does it connect to the drone?">Drone'a bağlanıyor mu?</summary>
+                        <p data-tr="Hayır, canlı bağlantı yok. Uçuştan sonra log dosyasını (.bin/.ulog) yükleyip analiz edersiniz (post-flight)." data-en="No, there is no live connection. You upload and analyze the log file (.bin/.ulog) after the flight (post-flight).">Hayır, canlı bağlantı yok. Uçuştan sonra log dosyasını (.bin/.ulog) yükleyip analiz edersiniz (post-flight).</p>
+                    </details>
+                    <details class="faq-item">
+                        <summary data-tr="Hangi uçuş kontrolcülerini destekler?" data-en="Which flight controllers does it support?">Hangi uçuş kontrolcülerini destekler?</summary>
+                        <p data-tr="ArduPilot (.bin) ve PX4 (.ulog/.ulg)." data-en="ArduPilot (.bin) and PX4 (.ulog/.ulg).">ArduPilot (.bin) ve PX4 (.ulog/.ulg).</p>
+                    </details>
+                    <details class="faq-item">
+                        <summary data-tr="Hangi araç tiplerini destekler?" data-en="Which vehicle types does it support?">Hangi araç tiplerini destekler?</summary>
+                        <p data-tr="Multirotor, sabit kanat, rover, VTOL." data-en="Multirotor, fixed-wing, rover, VTOL.">Multirotor, sabit kanat, rover, VTOL.</p>
+                    </details>
+                    <details class="faq-item">
+                        <summary data-tr="Ücretsiz mi?" data-en="Is it free?">Ücretsiz mi?</summary>
+                        <p data-tr="Evet, MIT lisansı ile tamamen açık kaynak ve ücretsiz." data-en="Yes, it is completely open source and free under the MIT license.">Evet, MIT lisansı ile tamamen açık kaynak ve ücretsiz.</p>
+                    </details>
+                    <details class="faq-item">
+                        <summary data-tr="Hangi işletim sistemlerinde çalışır?" data-en="Which operating systems does it run on?">Hangi işletim sistemlerinde çalışır?</summary>
+                        <p data-tr="Şu an Windows." data-en="Currently Windows.">Şu an Windows.</p>
+                    </details>
+                </div>
+            </div>
+        </section>
+
+        <!-- 6. KAYNAKLAR -->
+        <section id="kaynaklar" class="reveal">
+            <div class="container">
+                <h2 class="section-title" data-tr="Kaynaklar" data-en="Resources">Kaynaklar</h2>
+                <div class="content-block">
+                    <div class="badges-row">
+                        <a href="https://github.com/berkeaygunnn/-iha-guc-telemetri-log-analiz/blob/main/LICENSE" target="_blank" rel="noopener"><img src="https://img.shields.io/badge/license-MIT-4fc3f7" alt="MIT License"></a>
+                        <a href="https://github.com/berkeaygunnn/-iha-guc-telemetri-log-analiz" target="_blank" rel="noopener"><img src="https://img.shields.io/badge/açık%20kaynak-open%20source-4fc3f7" alt="Açık Kaynak"></a>
+                        <a href="https://github.com/berkeaygunnn/-iha-guc-telemetri-log-analiz" target="_blank" rel="noopener"><img src="https://img.shields.io/badge/GitHub-Repo-4fc3f7?logo=github" alt="GitHub Repo"></a>
+                    </div>
+                    <ul>
+                        <li><strong data-tr="Kaynak Kodu:" data-en="Source Code:">Kaynak Kodu:</strong> <a href="https://github.com/berkeaygunnn/-iha-guc-telemetri-log-analiz" target="_blank" rel="noopener" data-tr="GitHub Deposunu İncele" data-en="View GitHub Repository">GitHub Deposunu İncele</a></li>
+                        <li><strong>ArduPilot:</strong> <a href="https://ardupilot.org" target="_blank" rel="noopener" data-tr="Resmi Dokümantasyon" data-en="Official Documentation">Resmi Dokümantasyon</a></li>
+                        <li><strong>PX4 Autopilot:</strong> <a href="https://px4.io" target="_blank" rel="noopener" data-tr="Resmi Dokümantasyon" data-en="Official Documentation">Resmi Dokümantasyon</a></li>
+                        <li><strong data-tr="Lisans:" data-en="License:">Lisans:</strong> <span data-tr="Bu proje" data-en="This project is">Bu proje</span> <strong data-tr="MIT Lisansı" data-en="open-sourced under the MIT License">MIT Lisansı</strong> <span data-tr="ile açık kaynaklı olarak sunulmaktadır. Kodlar özgürce incelenebilir, değiştirilebilir ve hem bireysel hem ticari projelerde kullanılabilir." data-en=". The code can be freely reviewed, modified, and used in both personal and commercial projects.">ile açık kaynaklı olarak sunulmaktadır. Kodlar özgürce incelenebilir, değiştirilebilir ve hem bireysel hem ticari projelerde kullanılabilir.</span></li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- 7. GİZLİLİK -->
+        <section id="gizlilik" class="reveal">
+            <div class="container">
+                <h2 class="section-title" data-tr="Gizlilik Politikası" data-en="Privacy Policy">Gizlilik Politikası</h2>
+                <div class="content-block privacy-box">
+                    <p data-tr="Uygulama tamamen bilgisayarınızda, çevrimdışı çalışır. Hiçbir kişisel veri toplanmaz, log dosyalarınız veya uçuş verileriniz cihazınızdan dışarı gönderilmez. Kod açık kaynaktır, dileyen herkes sistemin şeffaflığını GitHub üzerinden inceleyebilir." data-en="The application runs entirely on your computer, offline. No personal data is collected; your log files or flight data are never sent outside your device. The code is open source, and anyone can review the system's transparency on GitHub.">Uygulama tamamen bilgisayarınızda, çevrimdışı çalışır. Hiçbir kişisel veri toplanmaz, log dosyalarınız veya uçuş verileriniz cihazınızdan dışarı gönderilmez. Kod açık kaynaktır, dileyen herkes sistemin şeffaflığını GitHub üzerinden inceleyebilir.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 7b. İLETİŞİM / GERİ BİLDİRİM -->
+        <section id="iletisim" class="reveal">
+            <div class="container">
+                <h2 class="section-title" data-tr="Hata Bildir / Öneri Yap" data-en="Report a Bug / Suggest a Feature">Hata Bildir / Öneri Yap</h2>
+                <div class="content-block contact-block">
+                    <p data-tr="Bir hata mı buldunuz, yoksa aklınızda bir özellik önerisi mi var? GitHub Issues üzerinden bize ulaşabilirsiniz." data-en="Found a bug, or have a feature suggestion in mind? Reach out to us via GitHub Issues.">Bir hata mı buldunuz, yoksa aklınızda bir özellik önerisi mi var? GitHub Issues üzerinden bize ulaşabilirsiniz.</p>
+                    <a href="https://github.com/berkeaygunnn/-iha-guc-telemetri-log-analiz/issues" target="_blank" rel="noopener" class="btn-secondary" data-tr="GitHub Issues'a Git" data-en="Go to GitHub Issues">GitHub Issues'a Git</a>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- 8. FOOTER -->
+    <footer>
+        <div class="container">
+            <p data-tr="© 2026 İHA Güç/Telemetri Log Analiz Aracı." data-en="© 2026 UAV Power/Telemetry Log Analysis Tool.">&copy; 2026 İHA Güç/Telemetri Log Analiz Aracı.</p>
+            <p data-tr="Mühendisler ve yarışma takımları için MIT Lisansı ile geliştirilmiştir." data-en="Developed under the MIT License for engineers and competition teams.">Mühendisler ve yarışma takımları için MIT Lisansı ile geliştirilmiştir.</p>
+        </div>
+    </footer>
+
+    <script>
+        function openLightbox(src) {
+            document.getElementById('lightboxImg').src = src;
+            document.getElementById('lightboxOverlay').classList.add('active');
+        }
+
+        function closeLightbox() {
+            document.getElementById('lightboxOverlay').classList.remove('active');
+        }
+
+        function setLang(lang) {
+            document.querySelectorAll('[data-tr]').forEach(function (el) {
+                el.textContent = lang === 'en' ? el.getAttribute('data-en') : el.getAttribute('data-tr');
+            });
+            document.querySelectorAll('.lang-option').forEach(function (el) {
+                el.classList.toggle('active', el.getAttribute('data-lang') === lang);
+            });
+            document.documentElement.lang = lang;
+            localStorage.setItem('siteLang', lang);
+        }
+
+        var savedLang = localStorage.getItem('siteLang');
+        if (savedLang === 'en') {
+            setLang('en');
+        }
+
+        // Kaydırma ile Belirme: bölüm ekrana girince .visible eklenir, tek
+        // seferlik (unobserve) — abartısız bir fade-in + yukarı kayma.
+        var revealObserver = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('visible');
+                    revealObserver.unobserve(entry.target);
+                }
+            });
+        }, { threshold: 0.15 });
+        document.querySelectorAll('.reveal').forEach(function (el) {
+            revealObserver.observe(el);
+        });
+    </script>
+
+</body>
+</html>
