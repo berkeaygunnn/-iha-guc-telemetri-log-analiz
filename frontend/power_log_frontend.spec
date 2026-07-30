@@ -10,12 +10,24 @@
 # (backend'in önceden `cmake --build backend/build` ile derlenmiş olması gerekir.)
 
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_data_files
 
 # SPECPATH, PyInstaller'ın bu dosyanın bulunduğu klasörü otomatik tanımladığı
 # bir değişken - çalışma dizini neresi olursa olsun yollar hep doğru çözülsün diye.
-backend_exe = os.path.join(SPECPATH, "..", "backend", "build", "power_log_backend.exe")
+# Backend Windows'ta .exe uzantılı, Linux'ta uzantısız üretiliyor
+# (frontend/main.py'deki _find_backend_exe() ile aynı ikili-uzantı mantığı -
+# henüz Linux'ta paketleme yapılmıyor ama bu kontrol olmadan spec Linux'ta
+# her zaman "derlenmemiş" hatasıyla patlardı).
+backend_build_dir = os.path.join(SPECPATH, "..", "backend", "build")
+for _name in ("power_log_backend.exe", "power_log_backend"):
+    _candidate = os.path.join(backend_build_dir, _name)
+    if os.path.exists(_candidate):
+        backend_exe = _candidate
+        break
+else:
+    backend_exe = os.path.join(backend_build_dir, "power_log_backend.exe")
 
 if not os.path.exists(backend_exe):
     raise SystemExit(
@@ -29,11 +41,21 @@ if not os.path.exists(backend_exe):
 # Bunu atlarsak paketlenmiş uygulama ya temasız/hatalı görünür ya da açılışta patlar.
 customtkinter_datas = collect_data_files("customtkinter")
 
-# Pencere ikonu (frontend/main.py'deki _find_icon_path/ICON_PATH bunu ana .exe
-# ile aynı klasördeki "assets/" içinde arıyor - contents_directory="." sayesinde
-# datas girdileri de düz kök klasöre düşüyor).
-icon_ico = os.path.join(SPECPATH, "assets", "icon.ico")
-icon_datas = [(os.path.join(SPECPATH, "assets", "icon.png"), "assets")]
+# Pencere ikonu (frontend/main.py'deki _find_icon_path/ICON_PATH, _find_ico_path/
+# ICO_PATH bunları ana .exe ile aynı klasördeki "assets/" içinde arıyor -
+# contents_directory="." sayesinde datas girdileri de düz kök klasöre düşüyor).
+# uygulama.ico, .exe dosyasının kendi simgesi olan icon_ico'dan (Gezgin/görev
+# çubuğu için EXE parametresine verilir) AYRI: main.py çalışırken pencerenin
+# başlık çubuğu ikonunu ayarlamak için iconbitmap ile açtığı dosya bu.
+# .ico, Windows'a özgü bir ikon konteyner formatı; EXE()'nin icon= parametresi
+# de sadece Windows PE .exe'sine gömülüyor. Linux'ta bu None geçilir (henüz
+# Linux paketleme yapılmıyor ama ileride yapıldığında .ico dosyasını hiç
+# aramaya/kullanmaya çalışmasın diye şimdiden platforma göre ayrılıyor).
+icon_ico = os.path.join(SPECPATH, "assets", "icon.ico") if sys.platform.startswith("win") else None
+icon_datas = [
+    (os.path.join(SPECPATH, "assets", "icon.png"), "assets"),
+    (os.path.join(SPECPATH, "assets", "uygulama.ico"), "assets"),
+]
 
 a = Analysis(
     ["main.py"],

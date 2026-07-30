@@ -49,7 +49,10 @@ def _find_backend_exe() -> Path:
         candidate = build_dir / name
         if candidate.exists():
             return candidate
-    return build_dir / "power_log_backend.exe"  # bulunamadıysa hata mesajında gösterilecek varsayılan yol
+    # Bulunamadıysa hata mesajında gösterilecek varsayılan yol - platforma
+    # göre doğru uzantıyı seçer ki Linux'ta yanlışlıkla ".exe" adı gösterilmesin.
+    default_name = "power_log_backend.exe" if sys.platform.startswith("win") else "power_log_backend"
+    return build_dir / default_name
 
 
 def _find_icon_path() -> Path:
