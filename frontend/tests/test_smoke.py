@@ -8,6 +8,7 @@ xvfb altında çalıştırılmalı (bkz. .github/workflows/tests.yml).
 Kullanım: python test_smoke.py  (frontend/tests/ içinden)
 """
 
+import csv
 import itertools
 import shutil
 import sys
@@ -1489,6 +1490,76 @@ class SmokeTests(unittest.TestCase):
             self.assertIn("synthetic_test_log.BIN", labels)
         finally:
             dialog.destroy()
+
+    def test_export_comparison_csv_creates_file_with_metric_rows(self):
+        """Tek uçuş CSV export'unun karşılaştırma eşleniği: satır=metrik,
+        sütun=uçuş, değerler tablodakiyle (_format_comparison_value) birebir."""
+        results = []
+        for name in ("ArduCopter-MaxAltFence-00000067.BIN", "px4_hexarotor_flight.ulg"):
+            data = self.app._run_backend(str(DATA_DIR / name))
+            results.append((name, frontend_main._flight_summary_metrics(data)))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = str(Path(tmp_dir) / "karsilastirma.csv")
+            with patch("main.filedialog.asksaveasfilename", return_value=out_path):
+                self.app._export_comparison_csv(results, unittest.mock.Mock())
+            rows = list(csv.reader(Path(out_path).read_text(encoding="utf-8").splitlines()))
+
+        self.assertEqual(rows[0], ["Metrik", "ArduCopter-MaxAltFence-00000067.BIN", "px4_hexarotor_flight.ulg"])
+        self.assertEqual(len(rows) - 1, len(frontend_main.COMPARISON_ROWS))
+        energy_row = next(r for r in rows if r[0] == "Enerji Tüketimi")
+        self.assertEqual(
+            energy_row[1:],
+            [frontend_main._format_comparison_value("energy_wh", metrics) for _n, metrics in results],
+        )
+
+    def test_export_comparison_csv_does_nothing_without_results(self):
+        with patch("main.filedialog.asksaveasfilename") as mock_dialog:
+            self.app._export_comparison_csv(None, unittest.mock.Mock())
+            self.app._export_comparison_csv([], unittest.mock.Mock())
+        mock_dialog.assert_not_called()
+
+    def test_export_comparison_pdf_creates_file(self):
+        results, chart_series = [], []
+        for name in ("ArduCopter-MaxAltFence-00000067.BIN", "px4_hexarotor_flight.ulg"):
+            data = self.app._run_backend(str(DATA_DIR / name))
+            results.append((name, frontend_main._flight_summary_metrics(data)))
+            chart_series.append((name, data.get("batteries", [])))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = str(Path(tmp_dir) / "karsilastirma.pdf")
+            with patch("main.filedialog.asksaveasfilename", return_value=out_path):
+                self.app._export_comparison_pdf(results, chart_series, unittest.mock.Mock())
+            self.assertTrue(Path(out_path).exists())
+            self.assertGreater(Path(out_path).stat().st_size, 0)
+
+    def test_comparison_csv_and_pdf_buttons_enable_after_results(self):
+        """Karşılaştırma sonucu gelene kadar CSV/PDF butonları devre dışı
+        kalmalı, sonuç gelince etkinleşmeli — comparison_state'in poll()
+        içinde doldurulup butonlara işlendiğini _run_comparison'ı doğrudan
+        çalıştırarak (gerçek thread/after döngüsüyle) doğrular."""
+        paths = [
+            str(DATA_DIR / "ArduCopter-MaxAltFence-00000067.BIN"),
+            str(DATA_DIR / "px4_hexarotor_flight.ulg"),
+        ]
+        result_frame = frontend_main.ctk.CTkFrame(self.app)
+        status_label = frontend_main.ctk.CTkLabel(self.app)
+        compare_button = frontend_main.ctk.CTkButton(self.app)
+        csv_button = frontend_main.ctk.CTkButton(self.app, state="disabled")
+        pdf_button = frontend_main.ctk.CTkButton(self.app, state="disabled")
+        comparison_state = {"results": None, "chart_series": None}
+
+        self.app._run_comparison(
+            paths, result_frame, status_label, compare_button, csv_button, pdf_button, comparison_state)
+
+        self.assertEqual(csv_button.cget("state"), "disabled")
+        deadline = time.time() + 30
+        while comparison_state["results"] is None and time.time() < deadline:
+            self.app.update()
+        self.assertIsNotNone(comparison_state["results"])
+        self.app.update()
+        self.assertEqual(csv_button.cget("state"), "normal")
+        self.assertEqual(pdf_button.cget("state"), "normal")
 
     def test_concurrent_backend_calls_do_not_mix_results(self):
         """Aynı anda iki backend çağrısı birbirinin çıktısını bozmamalı.

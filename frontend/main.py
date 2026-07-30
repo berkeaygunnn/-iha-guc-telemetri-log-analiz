@@ -2460,6 +2460,11 @@ class App(ctk.CTk):
         result_frame = ctk.CTkScrollableFrame(dialog, fg_color="transparent")
         result_frame.pack(fill="both", expand=True, padx=20, pady=(8, 12))
 
+        # Karşılaştırma sonucu geldiğinde (poll() içinde) doldurulur; CSV/PDF
+        # butonları tıklandığında en son sonucu buradan okur. Dict kullanmak
+        # (düz değişken değil) closure'ın güncel değeri görmesini sağlıyor.
+        comparison_state = {"results": None, "chart_series": None}
+
         def on_compare():
             selected = [path for path, variable in checkboxes if variable.get()]
             if len(selected) < 2:
@@ -2467,7 +2472,10 @@ class App(ctk.CTk):
                 return
             status.configure(text="Uçuşlar işleniyor...", text_color=LANDING_TEXT_SECONDARY)
             compare_button.configure(state="disabled")
-            self._run_comparison(selected, result_frame, status, compare_button)
+            csv_button.configure(state="disabled")
+            pdf_button.configure(state="disabled")
+            self._run_comparison(
+                selected, result_frame, status, compare_button, csv_button, pdf_button, comparison_state)
 
         button_row = ctk.CTkFrame(dialog, fg_color="transparent")
         button_row.pack(pady=(0, 12))
@@ -2476,13 +2484,31 @@ class App(ctk.CTk):
             fg_color=LANDING_ACCENT, hover_color="#2d6fc0", text_color=LANDING_TEXT,
         )
         compare_button.pack(side="left", padx=6)
+        # Sonuç gelene kadar devre dışı: sonuç yokken tıklanırsa boş bir
+        # dosya diyaloğu açıp kafa karıştırırdı.
+        csv_button = ctk.CTkButton(
+            button_row, text="CSV", width=70, state="disabled",
+            fg_color="transparent", border_width=1, border_color=LANDING_CARD_BORDER,
+            text_color=LANDING_TEXT_SECONDARY, hover_color=LANDING_CARD,
+            command=lambda: self._export_comparison_csv(comparison_state["results"], status),
+        )
+        csv_button.pack(side="left", padx=6)
+        pdf_button = ctk.CTkButton(
+            button_row, text="PDF", width=70, state="disabled",
+            fg_color="transparent", border_width=1, border_color=LANDING_CARD_BORDER,
+            text_color=LANDING_TEXT_SECONDARY, hover_color=LANDING_CARD,
+            command=lambda: self._export_comparison_pdf(
+                comparison_state["results"], comparison_state["chart_series"], status),
+        )
+        pdf_button.pack(side="left", padx=6)
         ctk.CTkButton(
             button_row, text="Kapat", fg_color="transparent", border_width=1,
             border_color=LANDING_CARD_BORDER, text_color=LANDING_TEXT_SECONDARY,
             hover_color=LANDING_CARD, command=dialog.destroy,
         ).pack(side="left", padx=6)
 
-    def _run_comparison(self, paths: list, result_frame, status_label, compare_button):
+    def _run_comparison(self, paths: list, result_frame, status_label, compare_button,
+                         csv_button, pdf_button, comparison_state):
         """Seçilen logları arka planda backend'den geçirip tabloyu çizer.
 
         Her log için ayrı bir backend çağrısı yapılıyor ve bu saniyeler
@@ -2521,6 +2547,11 @@ class App(ctk.CTk):
 
             next_row = self._build_comparison_table(result_frame, results)
             self._build_comparison_chart(result_frame, next_row, chart_series)
+            comparison_state["results"] = results
+            comparison_state["chart_series"] = chart_series
+            if results and csv_button.winfo_exists():
+                csv_button.configure(state="normal")
+                pdf_button.configure(state="normal")
             if errors:
                 status_label.configure(text="⚠ " + " | ".join(errors), text_color=LANDING_CRITICAL)
             else:
@@ -3410,6 +3441,93 @@ class App(ctk.CTk):
             if hidden_count > 0:
                 fig.text(0.08, y, f"… ve {hidden_count} uyarı daha (tam liste için uygulamaya bakın).",
                          color=TEXT_SECONDARY, fontsize=10)
+        return fig
+
+    def _export_comparison_csv(self, results: list, status_label):
+        """Karşılaştırma tablosunu (satır=metrik, sütun=uçuş) CSV olarak
+        kaydeder. Aynı formatlayıcıyı (_format_comparison_value) kullanır ki
+        dosyadaki sayı ekrandaki tabloyla hiç ayrışmasın. status_label,
+        karşılaştırma dialogunun kendi durum etiketi — ana penceredekini
+        değil, kullanıcının o an baktığı dialogu güncellemek için."""
+        if not results:
+            return
+        file_path = filedialog.asksaveasfilename(
+            title="Karşılaştırma CSV Dışa Aktar",
+            defaultextension=".csv",
+            initialfile="karsilastirma",
+            filetypes=[("CSV dosyası", "*.csv"), ("Tüm dosyalar", "*.*")],
+        )
+        if not file_path:
+            return
+        try:
+            with open(file_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Metrik"] + [name for name, _metrics in results])
+                for key, title in COMPARISON_ROWS:
+                    writer.writerow(
+                        [title] + [_format_comparison_value(key, metrics) for _name, metrics in results]
+                    )
+            status_label.configure(text=f"Karşılaştırma CSV kaydedildi: {file_path}", text_color=LANDING_TEXT_SECONDARY)
+        except OSError as error:
+            status_label.configure(text=f"⚠ CSV kaydedilemedi: {error}", text_color=LANDING_CRITICAL)
+
+    def _export_comparison_pdf(self, results: list, chart_series: list, status_label):
+        """Karşılaştırma tablosunu (+ varsa voltaj overlay grafiğini) tek
+        PDF'e kaydeder — tek uçuş raporuyla (_on_export_pdf_click) aynı iki
+        sayfalı desen: önce özet/tablo sayfası, sonra grafik sayfası."""
+        if not results:
+            return
+        file_path = filedialog.asksaveasfilename(
+            title="Karşılaştırma Raporu Kaydet",
+            defaultextension=".pdf",
+            initialfile="karsilastirma",
+            filetypes=[("PDF belgesi", "*.pdf"), ("Tüm dosyalar", "*.*")],
+        )
+        if not file_path:
+            return
+        try:
+            with PdfPages(file_path) as pdf:
+                pdf.savefig(self._build_comparison_table_figure(results), facecolor=LANDING_BG)
+                overlays = [
+                    (name, battery) for name, batteries in (chart_series or [])
+                    for battery in [_overlay_battery_for_flight(batteries)] if battery is not None
+                ]
+                if overlays:
+                    figure = Figure(figsize=(10.5, 5.5), dpi=100, facecolor=LANDING_BG)
+                    ax = figure.add_subplot(111)
+                    self._plot_comparison_overlay(ax, overlays)
+                    figure.tight_layout()
+                    pdf.savefig(figure, facecolor=LANDING_BG)
+            status_label.configure(text=f"Karşılaştırma raporu kaydedildi: {file_path}", text_color=LANDING_TEXT_SECONDARY)
+        except OSError as error:
+            status_label.configure(text=f"⚠ Rapor kaydedilemedi: {error}", text_color=LANDING_CRITICAL)
+
+    def _build_comparison_table_figure(self, results: list) -> Figure:
+        """Karşılaştırma PDF'inin tablo sayfası: matplotlib table ile
+        satır=metrik, sütun=uçuş. Dialog hep LANDING paletinde olduğu için
+        (bkz. _on_compare_click) bu sayfa da temayı takip etmiyor."""
+        fig = Figure(figsize=(11.69, 8.27), dpi=100)  # A4 yatay: çok sütunlu tablo dikeyden daha rahat sığar
+        fig.set_facecolor(LANDING_BG)
+        fig.text(0.05, 0.95, "Uçuş Karşılaştırma Raporu", color=LANDING_TEXT, fontsize=18, weight="bold")
+        fig.text(0.05, 0.91, f"Oluşturulma: {datetime.now():%Y-%m-%d %H:%M}",
+                  color=LANDING_TEXT_SECONDARY, fontsize=11)
+
+        ax = fig.add_axes([0.05, 0.05, 0.9, 0.78])
+        ax.axis("off")
+        column_labels = [_middle_ellipsis(name) for name, _metrics in results]
+        row_labels = [title for _key, title in COMPARISON_ROWS]
+        cell_text = [
+            [_format_comparison_value(key, metrics) for _name, metrics in results]
+            for key, _title in COMPARISON_ROWS
+        ]
+        table = ax.table(cellText=cell_text, rowLabels=row_labels, colLabels=column_labels, loc="center")
+        table.auto_set_font_size(False)
+        table.set_fontsize(9)
+        table.scale(1, 1.6)
+        for cell in table.get_celld().values():
+            cell.set_edgecolor(LANDING_CARD_BORDER)
+            cell.set_facecolor(LANDING_CARD)
+            cell.get_text().set_color(LANDING_TEXT)
         return fig
 
     def _on_clear_click(self):
