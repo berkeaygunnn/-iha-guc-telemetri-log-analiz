@@ -173,6 +173,12 @@ klasörde bulunduğu için ayrıca CMake/Ninja kurmasına gerek yoktur).
 Not: paket örnek `data/` log dosyalarını içermez — küçük kalması için;
 kullanıcı kendi `.bin`/`.ulog`/`.ulg` dosyasını yükler.
 
+> **Windows SmartScreen uyarısı:** İndirdiğin kurulum dosyasını (`.exe`)
+> çalıştırdığında Windows "Bilinmeyen yayımcı" uyarısı gösterebilir — bu,
+> uygulamanın imzasız/yeni bir açık kaynak projesi olmasından kaynaklanır,
+> kötü amaçlı yazılım anlamına gelmez. Devam etmek için **"Ek bilgi"** →
+> **"Yine de çalıştır"** seçeneğine tıkla.
+
 ## Proje durumu
 
 - [x] Python UI iskeleti
