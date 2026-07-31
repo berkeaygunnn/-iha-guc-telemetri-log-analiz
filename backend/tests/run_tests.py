@@ -50,9 +50,13 @@ def run_backend(input_path: Path, extra_args: list = None) -> dict:
     backend_exe = find_backend_exe()
     with tempfile.TemporaryDirectory() as tmp_dir:
         output_path = Path(tmp_dir) / "output.json"
+        # CREATE_NO_WINDOW sadece Windows'ta var (frontend/main.py'deki
+        # _run_backend'le aynı gerekçe: konsol alt sistemli backend.exe'nin
+        # her çağrıda kısa bir konsol penceresi açıp kapatmasını önler).
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
         result = subprocess.run(
             [str(backend_exe), str(input_path), str(output_path), *(extra_args or [])],
-            capture_output=True, text=True,
+            capture_output=True, text=True, creationflags=creationflags,
         )
         if result.returncode != 0:
             raise RuntimeError(f"Backend basarisiz oldu ({input_path.name}): {result.stderr.strip()}")

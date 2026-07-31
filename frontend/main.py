@@ -3584,7 +3584,26 @@ class App(ctk.CTk):
                     f":{values['current_imbalance_threshold']}"
                     f":{values['negative_current_threshold']}"
                 )
-            result = subprocess.run(command, capture_output=True, text=True)
+            # Backend konsol alt sistemiyle derleniyor; GUI'den (konsolsuz)
+            # çağrılınca Windows'ta kısa bir siyah konsol penceresi
+            # yanıp sönüyordu. CREATE_NO_WINDOW tek başına bazı Windows 11
+            # kurulumlarında (özellikle "varsayılan terminal uygulaması"
+            # Windows Terminal ise) yetersiz kalıyor, pencere yine de
+            # açılabiliyor - STARTUPINFO ile SW_HIDE de birlikte veriliyor,
+            # ikisi birlikte daha güvenilir. İkisi de sadece Windows'ta var
+            # (Linux'ta subprocess'te böyle öznitelikler yok).
+            if sys.platform.startswith("win"):
+                creationflags = subprocess.CREATE_NO_WINDOW
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+            else:
+                creationflags = 0
+                startupinfo = None
+            result = subprocess.run(
+                command, capture_output=True, text=True,
+                creationflags=creationflags, startupinfo=startupinfo,
+            )
             if result.returncode != 0:
                 message = result.stderr.strip() or f"Backend hata koduyla sonlandı: {result.returncode}"
                 raise RuntimeError(message)
