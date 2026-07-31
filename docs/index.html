@@ -214,6 +214,19 @@
             color: rgba(148, 163, 184, 0.5);
         }
 
+        /* SmartScreen uyarısı notu */
+        .smartscreen-note {
+            max-width: 520px;
+            margin: -14px auto 30px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        .smartscreen-note strong {
+            color: var(--text-main);
+        }
+
         /* İstatistik Şeridi */
         .stats-strip {
             padding: 40px 0 80px;
@@ -686,6 +699,9 @@
                     <span class="mini-step-arrow">→</span>
                     <span class="mini-step"><span class="mini-step-number">3</span><span data-tr="İlk log dosyanı yükle" data-en="Upload your first log file">İlk log dosyanı yükle</span></span>
                 </div>
+
+                <!-- SmartScreen Uyarısı Notu -->
+                <p class="smartscreen-note"><span data-tr="Kurulum dosyasını çalıştırdığınızda Windows " data-en="When you run the installer, Windows may show a ">Kurulum dosyasını çalıştırdığınızda Windows </span><strong data-tr="SmartScreen uyarısı" data-en="SmartScreen warning">SmartScreen uyarısı</strong><span data-tr=" gösterebilir (imzasız/yeni açık kaynak uygulama olduğu için — kötü amaçlı yazılım anlamına gelmez). " data-en=" (because it's an unsigned, new open-source application — this doesn't mean it's malware). "> gösterebilir (imzasız/yeni açık kaynak uygulama olduğu için — kötü amaçlı yazılım anlamına gelmez). </span><strong data-tr="&quot;Ek bilgi&quot; → &quot;Yine de çalıştır&quot;" data-en="&quot;More info&quot; → &quot;Run anyway&quot;">"Ek bilgi" → "Yine de çalıştır"</strong><span data-tr=" diyerek devam edebilirsiniz." data-en=" to continue."> diyerek devam edebilirsiniz.</span></p>
 
                 <!-- Rozetler -->
                 <div class="badges">
