@@ -8,6 +8,16 @@ add_executable(power_log_backend src/main.cpp)
 
 if(WIN32)
     target_link_libraries(power_log_backend shell32)
+    # GUI (WIN32) alt sistemiyle derlemek, frontend'in her backend çağrısında
+    # kısa bir konsol penceresi açıp kapatmasını kaynağında engelliyor (bkz.
+    # frontend/main.py _run_backend'deki CREATE_NO_WINDOW/STARTUPINFO'ya
+    # rağmen bazı Windows 11 kurulumlarında pencerenin yine de görünmesi).
+    # stdout/stderr'e yazma davranışı ETKİLENMİYOR: Python tarafı zaten hep
+    # capture_output=True ile pipe üzerinden okuyor, bu subsystem'den
+    # bağımsız çalışır - sadece konsolsuz interaktif çalıştırmada (ör. elle
+    # `power_log_backend.exe ...` çalıştırıp çıktıyı canlı izlemek) çıktı
+    # görünmez, yönlendirme (`> log.txt 2>&1`) ile yine okunabilir.
+    set_target_properties(power_log_backend PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
 
 # Sadece bilgilendirici uyarilar (-Werror YOK) - build'i kirmaz, gelecekte
