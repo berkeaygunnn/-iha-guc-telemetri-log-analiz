@@ -56,6 +56,15 @@ def build_esc_message(time_s: float, instance: int, curr: float) -> bytes:
     return bytes([HEAD1, HEAD2, ESC_TYPE]) + struct.pack("<QBf", time_us, instance, curr)
 
 
+def build_esc_message_with_rpm(time_s: float, instance: int, curr: float, rpm: float) -> bytes:
+    """RPM alanı eklenmiş ESC mesajı varyantı. FMT'nin de "QBff"/"TimeUS,
+    Instance,Curr,RPM" olarak (bu fonksiyonla eşleşecek şekilde) ayrıca
+    yazılması gerekir - generate()'in varsayılan (RPM'siz) FMT'sini
+    bozmamak için bu, ayrı bir fonksiyon."""
+    time_us = int(time_s * 1e6)
+    return bytes([HEAD1, HEAD2, ESC_TYPE]) + struct.pack("<QBff", time_us, instance, curr, rpm)
+
+
 def generate() -> bytes:
     out = bytearray()
     out += build_fmt_message(BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr")

@@ -2345,6 +2345,72 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(lines["Motor 4"].get_alpha(), 1.0)
         self.assertEqual(lines["Motor 1"].get_alpha(), 0.15)
 
+    def _write_bin_with_sharp_voltage_sag(self) -> Path:
+        """anomaly_detect testlerindeki senaryonun (bkz. backend/tests/
+        run_tests.py'deki mutasyon deseni) ArduPilot .BIN fixture'ı: 30s,
+        50 Hz, t=15.0-15.08s arasında 16.8V -> 10.0V ani düşüş. Yüksek hız +
+        uzun temel çizgi, rolling z-score penceresinin anomaliyi kendi
+        istatistiğine dahil edip sulandırmasını (bkz. anomaly_detect.py'deki
+        _rolling_mean_std yorumu) önlemek için gerekli."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr")
+        n, dt = 1500, 0.02
+        for i in range(n):
+            if i < 750:
+                volt = 16.8
+            elif i < 754:
+                volt = 16.8 + (10.0 - 16.8) * (i - 750) / 4
+            else:
+                volt = 10.0
+            out += make_synthetic_log.build_bat_message(i * dt, 0, volt, 0.0)
+
+        tmp_file = tempfile.NamedTemporaryFile(suffix=".BIN", delete=False)
+        tmp_file.write(bytes(out))
+        tmp_file.close()
+        return Path(tmp_file.name)
+
+    def test_injected_voltage_sag_produces_anomaly_event_and_panel_row(self):
+        """Aşama 7 entegrasyonu: _plot_power_data, anomaly_detect.detect_all
+        sonucunu hem self._anomaly_events'e hem de görünür panel satırlarına
+        yansıtmalı."""
+        path = self._write_bin_with_sharp_voltage_sag()
+        try:
+            data = self.app._run_backend(str(path))
+            self.app._plot_power_data(data)
+            self.assertTrue(
+                any(event.kind == "voltage_sag" for event in self.app._anomaly_events),
+                "Enjekte edilmiş voltaj düşüşü self._anomaly_events'te hiç görünmedi",
+            )
+            self.assertEqual(len(self.app._anomaly_labels), len(self.app._anomaly_events))
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_clicking_anomaly_row_sets_highlight_and_replots_without_error(self):
+        path = self._write_bin_with_sharp_voltage_sag()
+        try:
+            data = self.app._run_backend(str(path))
+            self.app._plot_power_data(data)
+            event = next(e for e in self.app._anomaly_events if e.kind == "voltage_sag")
+            label = self.app._anomaly_labels[0]
+
+            self.app._on_anomaly_click(event.target, label)
+            self.assertEqual(self.app._highlight_series, event.target)
+
+            # Aynı satıra ikinci tık vurguyu kaldırmalı (_on_warning_click ile aynı sözleşme).
+            self.app._on_anomaly_click(event.target, label)
+            self.assertIsNone(self.app._highlight_series)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_clean_flight_shows_no_anomaly_events_or_panel_rows(self):
+        """Sağlıklı bir uçuşta (mevcut varsayılan sentetik fixture, gerçek
+        loglarla da ölçüldü) hiç anomali olayı/panel satırı üretilmemeli —
+        yanlış alarm olmadığının duman testi seviyesindeki kanıtı."""
+        self._load_and_plot("synthetic_test_log.BIN")
+        self.assertEqual(self.app._anomaly_events, [])
+        self.assertEqual(self.app._anomaly_labels, [])
+
 
 if __name__ == "__main__":
     unittest.main()

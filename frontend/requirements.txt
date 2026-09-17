@@ -1,6 +1,10 @@
 customtkinter
 matplotlib
 numpy
+# anomaly_spectral.py'nin scipy.signal.welch'i için (motor akımı/RPM'den
+# pervane dengesizliği tespiti) - bu, doğrudan bir titreşim ölçümünün
+# YERİNE geçmiyor (bkz. shared/power_log_schema.md'deki rpm/has_rpm_data notu).
+scipy
 # main.py doğrudan "from PIL import Image, ImageDraw, ImageTk" yapıyor
 # (uygulama ikonu, araç çubuğu simgeleri). matplotlib zaten Pillow'a bağımlı
 # olduğu için dolaylı olarak da kuruluyor, ama doğrudan kullandığımız bir

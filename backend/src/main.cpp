@@ -63,6 +63,10 @@ struct BatterySamplePoint {
 struct MotorSamplePoint {
     double time_s;
     double current_a;
+    // Motor devri (RPM). Log bu alanı hiç içermiyorsa 0.0 kalır; hasRpmData
+    // (bkz. aşağı) bunu "ölçüm yok" olarak ayırt eder (hasCurrentData ile
+    // aynı yaklaşım).
+    double rpm = 0.0;
 };
 
 // Bir çıkış kanalının (motor/servo/direksiyon) PWM darbe genişliği.
@@ -139,6 +143,16 @@ template <typename SamplePoint>
 bool hasCurrentData(const std::vector<SamplePoint>& points) {
     for (const SamplePoint& point : points) {
         if (point.current_a != 0.0) return true;
+    }
+    return false;
+}
+
+// hasCurrentData'nın RPM eşleniği. Aynı sınırlama geçerli: RPM alanı log'da
+// hiç yoksa (hep 0.0 ile dolduruldu) ile motor gerçekten hiç dönmediyse
+// ikisi de has_rpm_data:false üretir, ayırt edilemez.
+bool hasRpmData(const std::vector<MotorSamplePoint>& points) {
+    for (const MotorSamplePoint& point : points) {
+        if (point.rpm != 0.0) return true;
     }
     return false;
 }
@@ -304,6 +318,7 @@ void extractEscSample(const uint8_t* payload, const FormatDef& def, size_t paylo
     FieldLocator timeField = locateField(def, "TimeUS", payloadSize);
     FieldLocator instField = locateField(def, "Instance", payloadSize);
     FieldLocator currField = locateField(def, "Curr", payloadSize);
+    FieldLocator rpmField = locateField(def, "RPM", payloadSize);  // opsiyonel, tempField ile aynı desen
 
     if (!timeField.found || !instField.found || !currField.found) return;
 
@@ -314,7 +329,13 @@ void extractEscSample(const uint8_t* payload, const FormatDef& def, size_t paylo
 
     if (!std::isfinite(timeUs) || !std::isfinite(curr)) return;
 
-    motors[instance + 1].push_back(MotorSamplePoint{timeUs / 1e6, curr});
+    double rpm = 0.0;
+    if (rpmField.found) {
+        double rawRpm = readFieldAsDouble(payload + rpmField.byteOffset, rpmField.formatChar);
+        if (std::isfinite(rawRpm)) rpm = rawRpm;
+    }
+
+    motors[instance + 1].push_back(MotorSamplePoint{timeUs / 1e6, curr, rpm});
 }
 
 // ArduPilot'ta çıkış kanallarının PWM'i "RCOU" mesajında C1..C14 alanları
@@ -736,6 +757,7 @@ void extractUlogEscSamples(const uint8_t* payload, const ULogFormatDef& escStatu
     size_t elementSize = escArrayField.field->size / static_cast<size_t>(escArrayField.field->arrayLength);
     ULogFieldLocator currField = locateUlogField(escReportDef, "esc_current", elementSize);
     if (!currField.found) return;
+    ULogFieldLocator rpmField = locateUlogField(escReportDef, "esc_rpm", elementSize);  // opsiyonel
 
     double timestamp = readUlogFieldAsDouble(payload + timeField.byteOffset, timeField.field->elementType);
     if (!std::isfinite(timestamp)) return;
@@ -773,7 +795,12 @@ void extractUlogEscSamples(const uint8_t* payload, const ULogFormatDef& escStatu
         const uint8_t* elementPtr = payload + escArrayField.byteOffset + static_cast<size_t>(i) * elementSize;
         double curr = readUlogFieldAsDouble(elementPtr + currField.byteOffset, currField.field->elementType);
         if (!std::isfinite(curr)) continue;
-        motors[i + 1].push_back(MotorSamplePoint{timestamp / 1e6, curr});
+        double rpm = 0.0;
+        if (rpmField.found) {
+            double rawRpm = readUlogFieldAsDouble(elementPtr + rpmField.byteOffset, rpmField.field->elementType);
+            if (std::isfinite(rawRpm)) rpm = rawRpm;
+        }
+        motors[i + 1].push_back(MotorSamplePoint{timestamp / 1e6, curr, rpm});
     }
 }
 
@@ -1025,10 +1052,11 @@ void writeMotors(std::ostream& out, const std::map<int, std::vector<MotorSampleP
         int id = entry.first;
         const std::vector<MotorSamplePoint>& points = entry.second;
 
-        std::vector<double> time_s, current_a;
+        std::vector<double> time_s, current_a, rpm;
         for (const auto& point : points) {
             time_s.push_back(point.time_s);
             current_a.push_back(point.current_a);
+            rpm.push_back(point.rpm);
         }
 
         out << "    {\n      \"id\": " << id << ",\n      \"time_s\": ";
@@ -1036,6 +1064,9 @@ void writeMotors(std::ostream& out, const std::map<int, std::vector<MotorSampleP
         out << ",\n      \"current_a\": ";
         writeNumberArray(out, current_a);
         out << ",\n      \"has_current_data\": " << (hasCurrentData(points) ? "true" : "false");
+        out << ",\n      \"rpm\": ";
+        writeNumberArray(out, rpm);
+        out << ",\n      \"has_rpm_data\": " << (hasRpmData(points) ? "true" : "false");
         out << "\n    }";
         if (++written < motors.size()) out << ",";
         out << "\n";

@@ -66,6 +66,21 @@ def build_esc_status_data_message(time_s: float, motor_currents: list) -> bytes:
     return build_message(MSG_DATA, payload)
 
 
+def build_esc_status_data_message_with_rpm(time_s: float, motor_currents: list, motor_rpms: list) -> bytes:
+    """esc_rpm alanı eklenmiş esc_report varyantı:
+    esc_report:uint64_t timestamp;float esc_current;float esc_rpm;
+    generate()'in varsayılan (RPM'siz) format string'ini bozmamak için bu,
+    ayrı bir fonksiyon - kullanan test kendi format/subscription mesajını
+    da RPM'li olarak yazmalı."""
+    timestamp_us = int(time_s * 1e6)
+    payload = struct.pack("<H", ESC_STATUS_MSG_ID)
+    payload += struct.pack("<Q", timestamp_us)
+    payload += struct.pack("<B", len(motor_currents))
+    for curr, rpm in zip(motor_currents, motor_rpms):
+        payload += struct.pack("<Qff", timestamp_us, curr, rpm)
+    return build_message(MSG_DATA, payload)
+
+
 def generate() -> bytes:
     out = bytearray()
     out += build_header()

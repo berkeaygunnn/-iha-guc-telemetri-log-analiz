@@ -27,6 +27,14 @@ jobs:
       - name: Frontend bağımlılıkları
         run: pip install -r frontend/requirements.txt
 
+      - name: Anomali tespiti birim testleri (Tk gerektirmez)
+        run: |
+          python3 frontend/tests/test_flight_series.py
+          python3 frontend/tests/test_resample.py
+          python3 frontend/tests/test_anomaly_features.py
+          python3 frontend/tests/test_anomaly_spectral.py
+          python3 frontend/tests/test_anomaly_detect.py
+
       - name: xvfb ve python3-tk kur (Tkinter/CustomTkinter için gerekli)
         run: sudo apt-get install -y xvfb python3-tk
 
