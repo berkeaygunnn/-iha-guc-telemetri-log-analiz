@@ -32,6 +32,8 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
+import anomaly_detect
+
 def _find_backend_exe() -> Path:
     """Windows'ta .exe uzantılı, Linux/macOS'ta uzantısız üretildiği için
     ikisini de dener (bkz. backend/tests/run_tests.py'deki aynı mantık).
@@ -890,6 +892,29 @@ def _draw_negative_current_threshold(ax, series: list, threshold: float):
     )
 
 
+# anomaly_detect.AnomalyEvent.kind -> panelde/mesajda gösterilecek Türkçe etiket.
+ANOMALY_KIND_LABELS = {
+    "voltage_sag": "Voltaj düşüşü",
+    "current_spike": "Akım sıçraması",
+    "propeller_imbalance": "Pervane dengesizliği",
+    "efficiency_drop": "Verim düşüşü",
+}
+
+
+def _draw_anomaly_overlay(ax, events: list, kind_filter: set, target: tuple):
+    """İlgili panele (ax) SADECE o serinin/hedefin (target) ve ilgili anomali
+    türlerinin (kind_filter) zaman pencerelerini axvspan ile hafif renkli bir
+    bant olarak çizer. Severity -> renk eşlemesi COLOR_WARNING/COLOR_CRITICAL'i
+    kullanır (tema geçişinde zaten güncelleniyor, bkz. _on_theme_toggle_click) —
+    yeni bir palet girdisi gerekmiyor. _draw_imbalance_band'in aksine bu, uçuş
+    genelinde sabit bir bant değil, tespit edilen HER pencere için ayrı bir bant."""
+    for event in events:
+        if event.kind not in kind_filter or event.target != target:
+            continue
+        color = COLOR_CRITICAL if event.severity == "critical" else COLOR_WARNING
+        ax.axvspan(event.t_start, event.t_end, color=color, alpha=0.15, zorder=0)
+
+
 def _format_relative_time(when: datetime) -> str:
     """'X dk önce' / '2 saat önce' / 'dün' / '3 gün önce' gibi kısa, göreli
     bir zaman etiketi üretir (Geçmiş Dosyalar listesinde mutlak tarih yerine)."""
@@ -1422,6 +1447,10 @@ class App(ctk.CTk):
         self._last_loaded_path = None
 
         self._current_warnings = []  # PDF raporunun ham uyarı listesine ihtiyacı var
+        # anomaly_detect.detect_all()'ın ürettiği zaman-penceresi bazlı olaylar
+        # (bkz. _plot_power_data) — kural tabanlı warnings'ten farklı olarak
+        # uçuş-bazlı değil, zaman aralığı bazlı.
+        self._anomaly_events = []
         # Tıklanmış uyarının hedef serisi ("Motor", 5) — grafiklerde o seri
         # vurgulanır, panelindeki diğerleri soluklaşır (bkz. _on_warning_click).
         self._highlight_series = None
@@ -1465,6 +1494,7 @@ class App(ctk.CTk):
         self._build_toolbar()
         self._build_stats_row()
         self._build_warnings_area()
+        self._build_anomaly_area()
         self._build_status_label()
         self._build_voltage_view_toggle()
         self._build_battery_view_toggle()
@@ -2949,9 +2979,72 @@ class App(ctk.CTk):
         """Uyarıya tıklanınca hedef seri vurgulanır (aynı hedefe ikinci tık
         vurguyu kaldırır). Basılı görünüm: aktif uyarının zemini tonlanır.
         Replot backend'e gitmeden cache'ten yapılır — tema toggle'ının
-        kullandığı replot kümesiyle aynı, maliyeti bilinir."""
+        kullandığı replot kümesiyle aynı, maliyeti bilinir.
+
+        Anomali paneli (_anomaly_labels) de burada sıfırlanıyor: ikisi AYNI
+        _highlight_series durumunu paylaşıyor, o yüzden bir uyarıya tıklamak
+        önceden tıklanmış bir anomali satırının tonlanmış zeminini de
+        temizlemeli (aksi halde iki panelde aynı anda "basılı" görünen iki
+        farklı satır olurdu)."""
         self._highlight_series = None if self._highlight_series == target else target
         for label in self._warning_labels:
+            label.configure(
+                fg_color=UI_GRIDLINE
+                if (label is clicked_label and self._highlight_series is not None)
+                else "transparent"
+            )
+        for label in self._anomaly_labels:
+            label.configure(fg_color="transparent")
+        self._plot_voltage_panel(self._last_batteries or [])
+        self._plot_battery_currents(self._last_batteries or [])
+        self._plot_motor_currents(self._last_motors or [])
+        self.canvas.draw()
+
+    def _build_anomaly_area(self):
+        """anomaly_detect.detect_all()'ın ürettiği zaman-penceresi bazlı
+        anomali olaylarını gösteren, kaydırılabilir bir liste.
+
+        warnings_frame'den farkı: uyarılar uçuş-bazlı az sayıda kural
+        çıktısıyken, anomaliler zaman penceresi bazlı olduğu için sayısı
+        daha fazla olabilir — bu yüzden sabit yükseklikli, kaydırılabilir
+        bir alan. Olay yoksa warnings_frame'in "boş kalınca yer kaplamaz"
+        davranışıyla tutarlı şekilde tamamen gizli kalır (bkz.
+        _update_anomaly_panel)."""
+        self.anomaly_frame = ctk.CTkScrollableFrame(
+            self.analysis_frame, fg_color="transparent", height=120,
+        )
+        self._anomaly_labels = []
+
+    def _update_anomaly_panel(self, events: list):
+        for label in self._anomaly_labels:
+            label.destroy()
+        self._anomaly_labels = []
+        if not events:
+            self.anomaly_frame.pack_forget()
+            return
+        self.anomaly_frame.pack(side="top", fill="x", padx=16, pady=(0, 4))
+        for event in events:
+            color = UI_COLOR_CRITICAL if event.severity == "critical" else UI_COLOR_WARNING
+            kind_label = ANOMALY_KIND_LABELS.get(event.kind, event.kind)
+            target_label = f"{event.target[0]} {event.target[1]}"
+            text = f"⏱ {event.t_start:.1f}-{event.t_end:.1f}s · {kind_label} · {target_label}"
+            label = ctk.CTkLabel(
+                self.anomaly_frame, text=text, text_color=color,
+                justify="left", anchor="w", cursor="hand2",
+            )
+            label.pack(side="top", fill="x")
+            label.bind("<Button-1>",
+                       lambda _e, t=event.target, l=label: self._on_anomaly_click(t, l))
+            self._anomaly_labels.append(label)
+
+    def _on_anomaly_click(self, target, clicked_label):
+        """_on_warning_click'in anomali paneli eşleniği - AYNI _highlight_series
+        durumunu paylaşır (bkz. o metodun yorumu), bu yüzden uyarı etiketlerini
+        de sıfırlar."""
+        self._highlight_series = None if self._highlight_series == target else target
+        for label in self._warning_labels:
+            label.configure(fg_color="transparent")
+        for label in self._anomaly_labels:
             label.configure(
                 fg_color=UI_GRIDLINE
                 if (label is clicked_label and self._highlight_series is not None)
@@ -3536,6 +3629,8 @@ class App(ctk.CTk):
         self._set_file_label("Henüz dosya seçilmedi.")
         self.status_label.configure(text="")
         self._update_warnings([])
+        self._anomaly_events = []
+        self._update_anomaly_panel([])
         self._update_stats([])
         self._refresh_stats_layout()  # kutucuklar "—"ye döndü, daralabilirler
         self._last_batteries = None
@@ -3627,6 +3722,11 @@ class App(ctk.CTk):
         # sığdığı yeniden hesaplansın.
         self._refresh_stats_layout()
         self._update_warnings(data.get("warnings", []))
+        # anomaly_detect, warnings'in AYNI (zaten normalize edilmiş) veriyle
+        # çalışıyor; panellerin overlay çizebilmesi için plot çağrılarından
+        # ÖNCE hazır olmalı (bkz. _draw_anomaly_overlay çağrıları aşağıda).
+        self._anomaly_events = anomaly_detect.detect_all(data)
+        self._update_anomaly_panel(self._anomaly_events)
 
         self._plot_voltage_panel(batteries)
 
@@ -3693,6 +3793,9 @@ class App(ctk.CTk):
             if battery["voltage_v"]:
                 _draw_voltage_sag_line(self.ax_voltage, battery["voltage_v"][0],
                                        voltage_sag_threshold, color, alpha_factor=alpha)
+            _draw_anomaly_overlay(
+                self.ax_voltage, self._anomaly_events, {"voltage_sag"}, ("Batarya", battery["id"]),
+            )
 
         if len(batteries) > 1:
             self.ax_voltage.legend(
@@ -3780,6 +3883,9 @@ class App(ctk.CTk):
                 battery["time_s"], battery["current_a"], color=color, linestyle=linestyle,
                 linewidth=2, label=label,
                 alpha=_series_highlight_alpha(self._highlight_series, label, panel_labels),
+            )
+            _draw_anomaly_overlay(
+                self.ax_current, self._anomaly_events, {"current_spike"}, ("Batarya", battery["id"]),
             )
             plotted += 1
 
@@ -3908,6 +4014,11 @@ class App(ctk.CTk):
                 motor["time_s"], motor["current_a"], color=color, linestyle=linestyle,
                 linewidth=2, label=label,
                 alpha=_series_highlight_alpha(self._highlight_series, label, panel_labels),
+            )
+            _draw_anomaly_overlay(
+                self.ax_motors, self._anomaly_events,
+                {"current_spike", "propeller_imbalance", "efficiency_drop"},
+                ("Motor", motor["id"]),
             )
             plotted += 1
 

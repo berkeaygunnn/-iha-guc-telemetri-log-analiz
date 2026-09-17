@@ -40,7 +40,9 @@ Birden fazla batarya ya da motor olabileceği için ikisi de dizi.
       "id": number,              // motor/ESC sırası (1, 2, 3, ...)
       "time_s": [number, ...],
       "current_a": [number, ...], // o motorun çektiği akım
-      "has_current_data": boolean // bataryadaki alanın birebir eşleniği
+      "has_current_data": boolean, // bataryadaki alanın birebir eşleniği
+      "rpm": [number, ...],       // motor devri (RPM), current_a ile aynı uzunlukta
+      "has_rpm_data": boolean     // current_a alanının has_current_data eşleniği
     }
   ],
   "pwm_outputs": [
@@ -132,6 +134,21 @@ tipinde ama akım sensörü VAR: 712 örnek 0.0 ile 7.12 A arasında değişiyor
 "rover mu?" diye değil "veri var mı?" diye sormak zorunda. Bu araçta da ESC
 telemetrisi yok (`motors: []`), yani sensörün varlığı motor verisinin
 varlığını da garanti etmiyor — üç durum birbirinden bağımsız.
+
+## `rpm` / `has_rpm_data` alanları
+
+Motor devri (RPM) — ArduPilot `ESC` mesajının `RPM` alanından, PX4
+`esc_status`'un `esc_report[].esc_rpm` alanından. Log bu alanı hiç
+içermiyorsa (birçok gerçek log öyle) `rpm` dizisi `current_a` ile aynı
+uzunlukta ama tamamen 0.0 ile dolu gelir; `has_rpm_data`, `has_current_data`
+ile BİREBİR aynı kural/sınırlamayı taşır: **tüm** örnekler tam 0.0 ise
+`false`. Yani bir motor gerçekten hiç dönmediyse de RPM alanı hiç yoksa da
+sonuç aynı görünür, ikisi ayırt edilemez.
+
+**Titreşim (VIBE / sensor_accel) verisi bu şemada YOK** — bilinçli olarak v1
+kapsamı dışı bırakıldı (backend'de hiç ayrıştırılmıyor). Pervane
+dengesizliği tespiti bu yüzden titreşimin kendisine değil, akım/RPM
+sinyalinin dolaylı spektral analizine dayanır.
 
 ## `pwm_outputs` alanı
 

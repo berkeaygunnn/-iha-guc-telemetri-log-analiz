@@ -1474,6 +1474,114 @@ class PwmOutputTests(unittest.TestCase):
         self.assertEqual(len(run_backend(DATA_DIR / "px4_hexarotor_flight.ulg")["warnings"]), 2)
 
 
+class MotorRpmTests(unittest.TestCase):
+    """motors[].rpm / has_rpm_data: ESC mesajının (ArduPilot "RPM" alanı) /
+    esc_report'un (PX4 "esc_rpm" alanı) RPM verisi varsa okunur, yoksa
+    (birçok gerçek log öyle) has_current_data'nın RPM eşleniği olan
+    has_rpm_data ile "ölçüm yok" durumu ayırt edilir (bkz.
+    shared/power_log_schema.md)."""
+
+    def test_ardupilot_rpm_parsed_when_field_present(self):
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.ESC_TYPE, "ESC", "QBff", "TimeUS,Instance,Curr,RPM"
+        )
+        out += make_synthetic_log.build_esc_message_with_rpm(0.0, 0, 5.0, 3200.0)
+        out += make_synthetic_log.build_esc_message_with_rpm(1.0, 0, 6.0, 3300.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            motor = motor_by_id(run_backend(path), 1)
+            self.assertEqual(motor["rpm"], [3200.0, 3300.0])
+            self.assertTrue(motor["has_rpm_data"])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_ardupilot_no_rpm_field_yields_has_rpm_data_false(self):
+        """RPM alanı hiç yoksa (mevcut varsayılan sentetik fixture gibi) rpm
+        dizisi current_a ile aynı uzunlukta ama tamamen 0.0 olmalı - motorun
+        gerçekten 0 RPM döndüğü ile ölçümün hiç olmadığı burada ayırt
+        edilemez, has_current_data'daki bilinen sınırlamayla aynı."""
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(make_synthetic_log.generate())
+            path = Path(f.name)
+        try:
+            motor = motor_by_id(run_backend(path), 1)
+            self.assertEqual(motor["rpm"], [0.0] * len(motor["current_a"]))
+            self.assertFalse(motor["has_rpm_data"])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_px4_esc_rpm_parsed_when_field_present(self):
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float voltage_v;float current_a;"
+        )
+        out += make_synthetic_ulog.build_format_message(
+            "esc_status:uint64_t timestamp;uint8_t esc_count;esc_report[1] esc;"
+        )
+        out += make_synthetic_ulog.build_format_message(
+            "esc_report:uint64_t timestamp;float esc_current;float esc_rpm;"
+        )
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += make_synthetic_ulog.build_subscription_message(2, "esc_status", multi_id=0)
+        out += make_synthetic_ulog.build_battery_data_message(1, 0.0, 16.5, 12.0)
+        out += make_synthetic_ulog.build_esc_status_data_message_with_rpm(0.0, [5.0], [3200.0])
+        out += make_synthetic_ulog.build_esc_status_data_message_with_rpm(1.0, [6.0], [3300.0])
+
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            motor = motor_by_id(run_backend(path), 1)
+            self.assertEqual(motor["rpm"], [3200.0, 3300.0])
+            self.assertTrue(motor["has_rpm_data"])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_px4_esc_report_without_rpm_field_degrades_gracefully(self):
+        """Eski (RPM'siz) esc_report format string'i (generate()'in
+        varsayılanı) - geriye dönük uyumluluk: alan bulunamadığında crash
+        değil, sadece has_rpm_data:false."""
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(make_synthetic_ulog.generate())
+            path = Path(f.name)
+        try:
+            motor = motor_by_id(run_backend(path), 1)
+            self.assertEqual(motor["rpm"], [0.0] * len(motor["current_a"]))
+            self.assertFalse(motor["has_rpm_data"])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_real_px4_hexarotor_log_has_genuine_varying_rpm(self):
+        """px4_hexarotor_flight.ulg ölçüldü: 6 motorun hepsinde gerçekten
+        değişen RPM verisi var (0 ile ~4900-5300 arası) - ESC akımındaki
+        bazı SITL placeholder sabitlerinin (bkz. rover/ArduPlane notları)
+        aksine bu gerçek, kullanışlı bir sinyal."""
+        data = run_backend(DATA_DIR / "px4_hexarotor_flight.ulg")
+        for motor_id in range(1, 7):
+            motor = motor_by_id(data, motor_id)
+            self.assertTrue(motor["has_rpm_data"])
+            self.assertGreater(max(motor["rpm"]), 4900.0)
+
+    def test_real_arduplane_flyeachframe_log_rpm_only_on_some_motors(self):
+        """ArduPlane-FlyEachFrame-00000182.BIN ölçüldü: 5 motordan sadece
+        3 numaralı motorda gerçek RPM var (0-6999.96), diğer dördünde
+        (5,6,7,8) RPM alanı hiç yok - has_current_data'daki gibi karma bir
+        durum, tek bir ESC dizisinde bile motor motor değişebiliyor."""
+        data = run_backend(DATA_DIR / "ArduPlane-FlyEachFrame-00000182.BIN")
+        motor3 = motor_by_id(data, 3)
+        self.assertTrue(motor3["has_rpm_data"])
+        self.assertGreater(max(motor3["rpm"]), 6900.0)
+        for motor_id in (5, 6, 7, 8):
+            motor = motor_by_id(data, motor_id)
+            self.assertFalse(motor["has_rpm_data"])
+
+
 class RealLogRegressionTests(unittest.TestCase):
     """Gerçek örnek loglarla önceden doğrulanmış değerlere karşı regresyon çapası."""
 
@@ -1653,7 +1761,7 @@ class SchemaConformanceTests(unittest.TestCase):
         "id", "time_s", "voltage_v", "current_a", "has_current_data",
         "capacity_used_mah", "remaining_pct", "temperature_c",
     }
-    MOTOR_FIELDS = {"id", "time_s", "current_a", "has_current_data"}
+    MOTOR_FIELDS = {"id", "time_s", "current_a", "has_current_data", "rpm", "has_rpm_data"}
     PWM_FIELDS = {"id", "label", "time_s", "pwm_us"}
     META_FIELDS = {"source_file", "format", "vehicle_type", "duration_s"}
 
@@ -1670,6 +1778,7 @@ class SchemaConformanceTests(unittest.TestCase):
         for motor in data["motors"]:
             self.assertEqual(set(motor.keys()), self.MOTOR_FIELDS)
             self.assertEqual(len(motor["time_s"]), len(motor["current_a"]))
+            self.assertEqual(len(motor["time_s"]), len(motor["rpm"]))
         for output in data["pwm_outputs"]:
             self.assertEqual(set(output.keys()), self.PWM_FIELDS)
             self.assertEqual(len(output["time_s"]), len(output["pwm_us"]))

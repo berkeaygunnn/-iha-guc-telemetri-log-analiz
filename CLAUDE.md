@@ -475,6 +475,71 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   hale getirildi (Windows + Linux uyumlu). Linux paketleme/test henüz
   yapılmadı, bir Linux ortamı (WSL vb.) gerektiğinde ele alınacak.
 
+- **Güç/motor anomali tespiti:** Voltaj düşüşü, akım sıçraması, pervane
+  dengesizliği ve verim düşüşü için zaman-penceresi bazlı bir tespit katmanı
+  eklendi — mevcut kural tabanlı `warnings` (uçuş-bazlı, tek sayı) katmanının
+  ÜSTÜNE, onu değiştirmeden.
+
+  **Mimari karar:** İstek Python'da pymavlink/pyulog ile ayrı bir ham-log
+  ayrıştırıcı kurulmasını öneriyordu, ama bu projenin "tek ayrıştırma kaynağı
+  C++ backend" ilkesiyle (bkz. yukarıdaki Mimari bölümü) çelişiyordu — iki
+  dilde aynı format için iki ayrı ayrıştırıcı bakım yükü ve tutarsızlık riski
+  demek. Bunun yerine backend'e (`extractEscSample`, `extractUlogEscSamples`)
+  RPM okuma eklendi (`motors[].rpm` / `has_rpm_data`, `has_current_data`
+  ile birebir aynı desen), anomali MATEMATİĞİNİN tamamı (resample, öznitelik,
+  spektral, eşik) Python'da SADECE JSON'dan çalışıyor. pymavlink/pyulog
+  projeye hiç eklenmedi.
+
+  Titreşim (ArduPilot VIBE / PX4 sensor_accel) verisi bilinçli olarak
+  kapsam dışı bırakıldı — backend'de hiç ayrıştırılmıyor, sıfırdan yeni bir
+  parser gerektirirdi. Pervane dengesizliği bu yüzden gerçek titreşim
+  ölçümü değil, akım/RPM sinyalinin Welch PSD analiziyle DOLAYLI tahmini
+  (`frontend/anomaly_spectral.py`).
+
+  **scikit-learn/IsolationForest bilerek eklenmedi** — mevcut "Yapay zeka /
+  makine öğrenmesi entegrasyonu KESİN OLARAK YAPILMAYACAK" kararıyla
+  (aşağıya bakınız) tutarlı; kodda tek satırlık bir TODO notu dışında hiç
+  iz yok.
+
+  Yeni dosyalar (`frontend/`, hepsi Tk'siz/bağımsız test edilebilir):
+  `flight_series.py` (JSON→numpy adaptörü), `resample.py` (sabit hıza
+  yeniden örnekleme — PX4/ArduPilot'un farklı örnekleme hızlarını
+  eşitlemek için), `anomaly_features.py` (RMS/tepe/dV/dt/ripple),
+  `anomaly_spectral.py` (scipy.signal.welch tabanlı dengesizlik skoru,
+  projeye ilk kez `scipy` bağımlılığı eklendi), `anomaly_detect.py`
+  (kayan pencere z-score motoru + `AnomalyEvent` + orkestratör).
+
+  **Gerçek bir hata ölçülüp düzeltildi:** RPM'siz motorlar için tasarlanan
+  "PSD tepe/ortalama oranı" yedek skoru, ölçüldüğünde SAF BEYAZ GÜRÜLTÜDE
+  bile ~14 gibi sahte-yüksek bir "dengesizlik" skoru üretiyordu — sebep,
+  hedef hıza (`target_rate_hz`) sinyalin GERÇEK örnekleme hızından daha
+  yükseğe resample etmenin, interpolasyonun alçak-geçiren etkisiyle yüksek
+  frekans bantlarını neredeyse sıfıra düşürmesi (bu da PSD'yi yapay olarak
+  "tepeli" gösteriyor). Düzeltme: hedef hız artık her zaman
+  `min(target_rate_hz, orijinal_hız)` ile sınırlanıyor
+  (`anomaly_spectral._resample_and_welch`). Gerçek loglarla (px4_hexarotor_
+  flight.ulg, ArduPlane-FlyEachFrame-00000182.BIN) doğrulandı: sağlıklı
+  motorlar 0.004-0.005 gibi düşük skorlar alıyor, yanlış alarm yok.
+
+  UI entegrasyonu (`frontend/main.py`): mevcut `warnings_frame`/
+  `_on_warning_click`/`WARNING_TARGET_RE` tıkla-vurgula mekanizması aynen
+  yeniden kullanıldı (`AnomalyEvent.target` bilerek aynı `("Batarya", N)`/
+  `("Motor", N)` sözleşmesinde) — yeni bir kaydırılabilir panel
+  (`anomaly_frame`, olay yoksa tamamen gizli) ve panellerdeki mevcut
+  zaman serisi çizgilerinin üzerine `axvspan` ile renkli bantlar
+  (`_draw_anomaly_overlay`, `_draw_imbalance_band` ile aynı üslupta).
+  Hover tooltip desteği overlay bantlarına eklenmedi (bilinçli, küçük adım
+  tercihi — `_on_plot_hover` sadece `Line2D` okuyor, `axvspan` bir
+  `Polygon` döndürüyor).
+
+  Eşik değerleri (z-score, pencere genişliği, skor eşiği) gerçek anormal
+  bir log elde bulunmadığı için KALİBRE EDİLMEMİŞ başlangıç değerleri —
+  `warnings` kuralının %15/%20 eşiklerinin aksine gerçek bozuk bir motor
+  örneğiyle doğrulanmadı.
+
+  Backend 97→103, frontend (Tk'siz beş yeni test dosyası + test_smoke.py
+  eklentileri) toplamda 36 yeni bağımsız test + 158 smoke testi (155→158).
+
 ## Kapsam dışı bırakılan fikirler
 
 - **Yapay zeka / makine öğrenmesi entegrasyonu:** Değerlendirildi, KESİN
