@@ -537,6 +537,22 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   `warnings` kuralının %15/%20 eşiklerinin aksine gerçek bozuk bir motor
   örneğiyle doğrulanmadı.
 
+  **Kalibrasyon için gerçek arızalı log arandı, bulunamadı (CURR2/CURR3
+  ile aynı kategori — kapsam dışı kalan, gerçek örnek şartı karşılanamayan
+  bir konu):** ArduPilot ve PX4 forumlarında motor/ESC arızası, pervane
+  dengesizliği tartışan başlıklar tarandı. Tek indirilebilir gerçek log
+  (ArduPilot, arızalı ESC teşhisi konmuş bir hexacopter,
+  `discuss.ardupilot.org/t/oscillation-and-propeller-noise-issue/127804`)
+  indirilip backend'den geçirildi — ama bu logda hiç ESC/motor telemetrisi
+  yok (`motors: []`, sadece batarya verisi), yani `propeller_imbalance`/
+  `efficiency_drop` (ikisi de RPM/motor akımı gerektiriyor) hiç test
+  edilemedi. Batarya seviyesinde de `anomaly_detect.detect_all` hiç olay
+  üretmedi — pozitif bir kalibrasyon kanıtı değil ama bir negatif-kontrol:
+  gerçek, bilinen bir donanım sorunu taşıyan bir uçuşta yanlış alarm
+  çıkmadı. RPM/motor-akımı seviyesinde herkese açık, indirilebilir,
+  bilinen-arızalı bir log bulunamadı; PX4 taraftaki adaylarda (ESC desync/
+  motor arızası, RPM dengesizliği başlıkları) hiç log linki paylaşılmamıştı.
+
   Backend 97→103, frontend (Tk'siz beş yeni test dosyası + test_smoke.py
   eklentileri) toplamda 36 yeni bağımsız test + 158 smoke testi (155→158).
 
