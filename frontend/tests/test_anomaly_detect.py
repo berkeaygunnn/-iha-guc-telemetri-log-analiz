@@ -124,5 +124,100 @@ class CleanFlightControlTests(unittest.TestCase):
         self.assertEqual(anomaly_detect.detect_all({}), [])
 
 
+def _motor(motor_id, current_mean, rpm_mean=None, n=100, dt=0.1):
+    t = (np.arange(n) * dt).tolist()
+    current = (np.full(n, current_mean) + np.random.default_rng(motor_id).normal(0, 0.1, n)).tolist()
+    json_dict = {"id": motor_id, "time_s": t, "current_a": current, "has_current_data": True}
+    if rpm_mean is not None:
+        json_dict["rpm"] = (np.full(n, rpm_mean)).tolist()
+        json_dict["has_rpm_data"] = True
+    return flight_series.motor_series(json_dict)
+
+
+class MotorImbalanceEventsTests(unittest.TestCase):
+    def test_deviating_motor_current_is_flagged(self):
+        # 3 motor ~10A, biri ~15A (%50 sapma, eşiğin (0.20) çok üstünde).
+        motors = [_motor(1, 10.0), _motor(2, 10.0), _motor(3, 15.0)]
+        events = anomaly_detect.detect_motor_imbalance_events(motors)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].target, ("Motor", 3))
+        self.assertIn("akım", events[0].message)
+
+    def test_deviating_motor_rpm_is_also_flagged(self):
+        motors = [
+            _motor(1, 10.0, rpm_mean=3000.0), _motor(2, 10.0, rpm_mean=3000.0),
+            _motor(3, 10.0, rpm_mean=1800.0),  # akım aynı, RPM %40 düşük
+        ]
+        events = anomaly_detect.detect_motor_imbalance_events(motors)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].target, ("Motor", 3))
+        self.assertIn("RPM", events[0].message)
+        self.assertEqual(events[0].severity, "warning")  # tek metrikte sapma
+
+    def test_deviating_in_both_metrics_is_critical(self):
+        motors = [
+            _motor(1, 10.0, rpm_mean=3000.0), _motor(2, 10.0, rpm_mean=3000.0),
+            _motor(3, 15.0, rpm_mean=1800.0),  # hem akım hem RPM sapıyor
+        ]
+        events = anomaly_detect.detect_motor_imbalance_events(motors)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].severity, "critical")
+
+    def test_balanced_motors_produce_no_events(self):
+        motors = [_motor(1, 10.0), _motor(2, 10.1), _motor(3, 9.9)]
+        self.assertEqual(anomaly_detect.detect_motor_imbalance_events(motors), [])
+
+    def test_fewer_than_two_usable_motors_returns_empty(self):
+        motors = [_motor(1, 10.0)]
+        self.assertEqual(anomaly_detect.detect_motor_imbalance_events(motors), [])
+
+
+class PwmChannelImbalanceNotesTests(unittest.TestCase):
+    def _channel(self, label, mean_pwm, n=50):
+        return {"id": 1, "label": label, "time_s": list(range(n)), "pwm_us": [mean_pwm] * n}
+
+    def test_deviating_channel_produces_note_with_channel_label_not_motor(self):
+        channels = [self._channel("Kanal 1", 1500), self._channel("Kanal 2", 1500),
+                    self._channel("Kanal 3", 2200)]
+        notes = anomaly_detect.detect_pwm_channel_imbalance_notes(channels)
+        self.assertEqual(len(notes), 1)
+        self.assertIn("Kanal 3", notes[0])
+        self.assertNotIn("Motor", notes[0])
+
+    def test_balanced_channels_produce_no_notes(self):
+        channels = [self._channel("Kanal 1", 1500), self._channel("Kanal 2", 1510)]
+        self.assertEqual(anomaly_detect.detect_pwm_channel_imbalance_notes(channels), [])
+
+    def test_fewer_than_two_channels_returns_empty(self):
+        self.assertEqual(anomaly_detect.detect_pwm_channel_imbalance_notes([self._channel("Kanal 1", 1500)]), [])
+
+
+class DetectMotorImbalanceOrchestratorTests(unittest.TestCase):
+    def test_uses_current_rpm_path_when_motors_have_current_data(self):
+        data = {
+            "motors": [
+                {"id": 1, "time_s": list(range(50)), "current_a": [10.0] * 50, "has_current_data": True},
+                {"id": 2, "time_s": list(range(50)), "current_a": [15.0] * 50, "has_current_data": True},
+            ],
+            "pwm_outputs": [],
+        }
+        events, notes = anomaly_detect.detect_motor_imbalance(data)
+        self.assertTrue(events)
+        self.assertEqual(notes, [])
+
+    def test_falls_back_to_pwm_when_no_motor_current_data(self):
+        data = {
+            "motors": [],
+            "pwm_outputs": [
+                {"id": 1, "label": "Kanal 1", "time_s": list(range(50)), "pwm_us": [1500] * 50},
+                {"id": 2, "label": "Kanal 2", "time_s": list(range(50)), "pwm_us": [2500] * 50},
+            ],
+        }
+        events, notes = anomaly_detect.detect_motor_imbalance(data)
+        self.assertEqual(events, [])
+        self.assertTrue(notes)
+        self.assertNotIn("Motor", notes[0])
+
+
 if __name__ == "__main__":
     unittest.main()

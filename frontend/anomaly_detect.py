@@ -208,6 +208,106 @@ def detect_efficiency_drop_events(motor: dict, window_s: float = 10.0, slope_thr
     return events
 
 
+# Backend'in appendImbalanceWarnings'teki (backend/src/main.cpp) akım
+# dengesizlik eşiğiyle AYNI değer - tutarlılık için. RPM/PWM eşikleri için
+# kalibre edilmiş bir referans yok, aynı başlangıç değeri kullanılıyor.
+DEFAULT_MOTOR_IMBALANCE_THRESHOLD = 0.20
+
+
+def detect_motor_imbalance_events(motors: list, current_threshold: float = DEFAULT_MOTOR_IMBALANCE_THRESHOLD,
+                                   rpm_threshold: float = DEFAULT_MOTOR_IMBALANCE_THRESHOLD) -> list:
+    """motors: flight_series.motor_series() çıktılarının listesi. Motorlar
+    arasında akım VE (varsa) RPM ortalamalarını kıyaslar - backend'in
+    appendImbalanceWarnings'teki "ortalamaların ortalaması ± eşik%" mantığının
+    AYNISI, RPM boyutu eklenmiş hali (backend sadece akıma bakıyor). Bir motor
+    HER İKİ metrikte de sapıyorsa mesajda ikisi de belirtilir, severity
+    "critical" olur (tek metrikte sapma "warning").
+
+    En az 2 motor has_current_data taşımıyorsa (kıyaslanacak bir şey yok) boş
+    liste döner - bu durumda çağıran (bkz. detect_motor_imbalance) PWM kanal
+    fallback'ine düşmeli."""
+    usable = [m for m in motors if m["has_current_data"] and len(m["current_a"]) > 0]
+    if len(usable) < 2:
+        return []
+
+    current_means = {m["id"]: float(np.mean(m["current_a"])) for m in usable}
+    overall_current_mean = float(np.mean(list(current_means.values())))
+
+    rpm_capable = [m for m in usable if m["has_rpm_data"] and len(m["rpm"]) > 0]
+    rpm_means, overall_rpm_mean = {}, None
+    if len(rpm_capable) >= 2:
+        rpm_means = {m["id"]: float(np.mean(m["rpm"])) for m in rpm_capable}
+        overall_rpm_mean = float(np.mean(list(rpm_means.values())))
+
+    events = []
+    for motor in usable:
+        deviations = []
+        if overall_current_mean > 0:
+            current_dev = (current_means[motor["id"]] - overall_current_mean) / overall_current_mean
+            if abs(current_dev) >= current_threshold:
+                deviations.append(f"akım %{current_dev * 100:.0f}")
+        if overall_rpm_mean and motor["id"] in rpm_means:
+            rpm_dev = (rpm_means[motor["id"]] - overall_rpm_mean) / overall_rpm_mean
+            if abs(rpm_dev) >= rpm_threshold:
+                deviations.append(f"RPM %{rpm_dev * 100:.0f}")
+        if not deviations:
+            continue
+        events.append(AnomalyEvent(
+            kind="motor_imbalance",
+            target=("Motor", motor["id"]),
+            t_start=float(motor["t"][0]), t_end=float(motor["t"][-1]),
+            severity="critical" if len(deviations) >= 2 else "warning",
+            message=f"Motor {motor['id']}: diğer motorlardan sistematik sapma ({', '.join(deviations)}).",
+        ))
+    return events
+
+
+def detect_pwm_channel_imbalance_notes(pwm_outputs: list, threshold: float = DEFAULT_MOTOR_IMBALANCE_THRESHOLD) -> list:
+    """pwm_outputs: backend JSON'daki ham liste (id/label/time_s/pwm_us).
+
+    ESC telemetrisi (akım/RPM) hiç yoksa, PWM kanalları üzerinde AYNI
+    "ortalamaların ortalaması ± eşik%" mantığı uygulanır - ama sonuç bir
+    AnomalyEvent (motor hedefi) DEĞİL, düz metin notu olarak döner. Sebep:
+    PWM kanalının hangi motora ait olduğu loglarda hiç yazmıyor (bkz.
+    shared/power_log_schema.md "Kanal ≠ motor") - backend bu yüzden tahmin
+    yürütmüyor, bu fonksiyon da aynı disipline uyuyor: kanal etiketiyle
+    ("Kanal 1"/"MAIN 2") raporlar, motor numarası İDDİA ETMEZ."""
+    channels = [ch for ch in pwm_outputs if ch.get("pwm_us")]
+    if len(channels) < 2:
+        return []
+
+    means = {ch["label"]: float(np.mean(ch["pwm_us"])) for ch in channels}
+    overall_mean = float(np.mean(list(means.values())))
+    if overall_mean <= 0:
+        return []
+
+    notes = []
+    for label, mean in means.items():
+        deviation = (mean - overall_mean) / overall_mean
+        if abs(deviation) >= threshold:
+            notes.append(
+                f"{label}: ortalama PWM'den %{deviation * 100:.0f} sapma "
+                "(ESC telemetrisi yok - kanal bazlı karşılaştırma, motor eşlemesi garanti değil)."
+            )
+    return notes
+
+
+def detect_motor_imbalance(data: dict, current_threshold: float = DEFAULT_MOTOR_IMBALANCE_THRESHOLD,
+                            rpm_threshold: float = DEFAULT_MOTOR_IMBALANCE_THRESHOLD,
+                            pwm_threshold: float = DEFAULT_MOTOR_IMBALANCE_THRESHOLD):
+    """Motorlar arası dengesizlik tespitinin orkestratörü. Önce akım/RPM ile
+    dener (detect_motor_imbalance_events); HİÇBİR motorda (ya da 2'den azında)
+    akım verisi yoksa PWM kanal fallback'ine düşer (detect_pwm_channel_
+    imbalance_notes) - kanal bazlı, motor iddiası taşımayan ayrı bir liste.
+
+    Döner: (motor_events: list[AnomalyEvent], pwm_notes: list[str])."""
+    motors = [flight_series.motor_series(m) for m in data.get("motors", [])]
+    usable = [m for m in motors if m["has_current_data"] and len(m["current_a"]) > 0]
+    if len(usable) >= 2:
+        return detect_motor_imbalance_events(usable, current_threshold, rpm_threshold), []
+    return [], detect_pwm_channel_imbalance_notes(data.get("pwm_outputs", []), pwm_threshold)
+
+
 def detect_all(data: dict) -> list:
     """Backend JSON'ından (_normalize_time_axis sonrası) TÜM anomali
     olaylarını üretir. Sensörsüz seriler (has_current_data/has_rpm_data

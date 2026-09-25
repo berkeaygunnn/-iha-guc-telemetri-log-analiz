@@ -556,6 +556,70 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   Backend 97→103, frontend (Tk'siz beş yeni test dosyası + test_smoke.py
   eklentileri) toplamda 36 yeni bağımsız test + 158 smoke testi (155→158).
 
+- **Üç yeni analiz özelliği: iç direnç trendi, motor dengesizliği, PWM
+  doygunluğu.** Hepsi anomali tespiti katmanının üzerine, tamamen Python
+  tarafında eklendi — backend'e (`backend/src/main.cpp`) HİÇ dokunulmadı,
+  mevcut JSON şeması yeterliydi.
+
+  **Batarya iç direnç tahmini iyileştirildi** (`frontend/battery_resistance.py`,
+  yeni): eski `_battery_internal_resistance_estimate` tüm uçuşun ham
+  örneklerine filtresiz tek regresyon uyguluyordu; yerini alan yeni modül
+  önce kenar-düzeltilmiş bir kayan ortalamayla gürültüyü azaltıyor, sonra
+  akımın yerel standart sapmasının genele göre düşük kaldığı (durağan/
+  hover) pencereleri eleyip sadece "belirgin değişen" örneklerle regresyon
+  yapıyor, R² değerini güven göstergesi ("yüksek/orta/düşük") olarak
+  döndürüyor. Karşılaştırma dialoguna uçuşlar arası trend grafiği eklendi.
+
+  **Gerçek bir hata ölçülüp düzeltildi:** `np.convolve(mode="same")` kenar
+  noktalarında sıfır-dolgu (zero-padding) yüzünden ilk/son birkaç örneği
+  gerçek değerinin ~1/5'ine düşürüyordu — bu 1-2 bozuk uç nokta 200 örneklik
+  regresyonu domine edip R²'yi 0.999'dan 0.08'e çöktürüyordu. Düzeltme: pay
+  ve payda aynı şekilde konvolve edilip bölünüyor (kenarlarda gerçek katkı
+  sayısına göre normalize), mutasyonla doğrulandı.
+
+  **Motor dengesizliği** (`anomaly_detect.detect_motor_imbalance_events`):
+  backend'in mevcut akım-bazlı "ortalamaların ortalaması ±%20" kuralının
+  AYNISI, RPM boyutu eklenmiş hali — ikisinde de sapan motor "critical"
+  sayılıyor. **ESC telemetrisi (akım/RPM) hiçbir motorda yoksa** PWM
+  kanalları üzerinde aynı mantıkla bir fallback çalışıyor
+  (`detect_pwm_channel_imbalance_notes`) — ama bu, motor hedefi taşıyan bir
+  `AnomalyEvent` DEĞİL, tıklanamaz, kanal etiketiyle ("Kanal 1"/"MAIN 2")
+  raporlanan ayrı bir not listesi. Sebep: PWM kanalının hangi motora ait
+  olduğu loglarda hiç yazmıyor (bkz. `shared/power_log_schema.md`
+  "Kanal ≠ motor") — kullanıcıya soruldu, kanal-bazlı raporlama (motor
+  iddiası taşımayan) seçildi.
+
+  **PWM doygunluğu** (`frontend/pwm_saturation.py`, yeni): her PWM kanalı
+  için değerin yapılandırılabilir bir eşiğin (varsayılan 1900µs) üstünde
+  kaldığı örnek yüzdesi + kanallar arası ortalama. Sonuç yine kanal
+  etiketiyle raporlanıyor, "motor" denmiyor.
+
+  **Gerçek loglarla ilginç bir doğrulama:** `px4_hexarotor_flight.ulg`'de
+  gerçek motor kanalları (AUX 1-6) %0 doygun çıktı, ama motor OLMAYAN
+  MAIN 2/3 kanalları %97 doygun çıktı — "kanal ≠ motor" kuralının somut
+  kanıtı: motor etiketi kullanılsaydı "2 motor sürekli tam gazda" gibi
+  yanlış bir sonuç raporlanırdı.
+
+  Ayarlar dialoguna iki yeni, araç tipinden BAĞIMSIZ (Python tarafında
+  hesaplandığı için backend'in `--vehicle-thresholds` mekanizmasına hiç
+  bağlanmayan) global alan eklendi: "Motor RPM Dengesizliği Eşiği (%)" ve
+  "PWM Doygunluk Eşiği (µs)". Akım dengesizlik eşiği mevcut genel ayarı
+  paylaşıyor, gereksiz üçüncü bir alan açılmadı.
+
+  Mevcut `synthetic_test_log.BIN` fixture'ının motorlarının BİLEREK
+  dengesiz kurulmuş olduğu (0.8x/1.25x çarpanlarla, satırlar ayırt
+  edilebilsin diye) ortaya çıktı — yeni motor dengesizliği tespiti bunu
+  doğru şekilde yakalayınca eski bir "temiz uçuş" testi kırıldı (hata
+  testteydi, tespitte değil); gerçekten dengeli yeni bir fixture ile
+  düzeltildi. Ayrıca iki eski PWM-görünümü testi ham `ax.get_lines()`
+  sayısına bakıyordu — projenin "eşik/dekoratif çizgiler `_` önekiyle
+  filtrelenir" kuralına (`_data_lines`) uydurulmaları gerekti.
+
+  Backend'e dokunulmadı (97 test aynen kaldı). Frontend: 2 yeni Tk'siz test
+  dosyası (`test_battery_resistance.py` 9 test, `test_pwm_saturation.py` 7
+  test) + `test_anomaly_detect.py`'a 16 yeni test + `test_smoke.py`'a 5 yeni
+  test, toplam 163 smoke testi (158→163).
+
 ## Kapsam dışı bırakılan fikirler
 
 - **Yapay zeka / makine öğrenmesi entegrasyonu:** Değerlendirildi, KESİN
