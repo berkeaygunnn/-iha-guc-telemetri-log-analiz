@@ -620,6 +620,71 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   test) + `test_anomaly_detect.py`'a 16 yeni test + `test_smoke.py`'a 5 yeni
   test, toplam 163 smoke testi (158→163).
 
+- **Arayüz görsel profesyonelleştirme (tema modülü, Matplotlib stili,
+  sidebar, marka bütünlüğü).** Kod incelemesi kullanıcının varsaydığından
+  farklı bir durum ortaya çıkardı: renkler zaten merkeziydi (`DARK_PALETTE`/
+  `LIGHT_PALETTE`/`UI_*`/`LANDING_*`), sadece fontlar (22 dağınık
+  `CTkFont(size=...)` çağrısı) ve spacing (77 dağınık `padx`/`pady`) gerçekten
+  dağınıktı; Matplotlib tarafında zoom/pan senkronu (`sharex`), eşik/anomali
+  bantları (`axhspan`/`axvspan`) ve hover tooltip zaten VARDI — bunlar için
+  yeni kod yazılmadı, sadece 3 ana panelin dışındaki (giriş ekranı, karşılaştırma
+  dialogu) tekrarlı eksen stili `_style_landing_axes`'te birleştirildi.
+
+  **Yeni `frontend/theme.py`:** renk paletleri + `UI_*`/`LANDING_*` çiftleri
+  davranış değiştirilmeden buraya taşındı; `FONT_SIZES` (mevcut boyutların
+  isimlendirilmiş sınıflandırması), `SPACING` (4/8/12/16/24) ve
+  `MONO_FONT_FAMILY` eklendi — bilerek SADECE bu turda dokunulan alanlarda
+  (yeni sidebar, stat kutucuğu değeri) kullanıldı, dosya genelinde 77 çağrıyı
+  toplu değiştirmek önceden ("büyük diff riski" diye) bilerek ertelenmişti.
+
+  **Sidebar (gezinme rayı):** voltaj/akım/motor paneli TEK birleşik Figure
+  olarak (senkron zoom) kalmalı diye kullanıcıyla netleştirildi — sidebar
+  bunu bölen bir `tkraise` değil, sadece "İstatistikler"/"Anomaliler/Uyarılar"
+  ikincil panellerini açıp kapatan iki `CTkSwitch`. İlk denemede sidebar
+  toolbar'ın CAVITY'sini de paylaşıyordu ve 800px'de bir buton sıkışıyordu
+  (toolbar'ın önceden ince marjlı, `_toolbar_single_row_width` ile ayarlanmış
+  dar-ekran davranışını bozdu) — kullanıcıya soruldu, sidebar toolbar'ın
+  ALTINA alındı: yeni bir `analysis_content` çerçevesi stats_row/warnings/
+  anomaly/status_label/motor-görünüm toggle'ları/grafik alanının gerçek
+  ebeveyni oldu, toolbar tam genişlikte kalıp hiç etkilenmedi.
+
+  **İki gerçek hata bulunup düzeltildi** (ikisi de Tk'nin "pack_forget()
+  sonrası çıplak pack() widget'ı sıranın SONUNA ekler" davranışından):
+  (1) `anomaly_frame` ilk kez `_update_anomaly_panel`'de paketlendiğinde
+  (inşa sırasında bilerek paketlenmiyor) sıranın sonuna düşüp canvas'ın
+  (`fill="both", expand=True`) ALTINDA neredeyse sıfır yüksekliğe
+  sıkışıyordu — `pack_slaves()` ile ölçülüp doğrulandı (`h=1`), `before=
+  self.status_label` ile düzeltildi. Bu araştırma sırasında customtkinter'ın
+  `CTkScrollableFrame.pack()`/`pack_forget()`'ının `self`'i değil dahili
+  `self._parent_frame`'i çağırdığı da ortaya çıktı (ctk_scrollable_frame.py)
+  — testlerde `winfo_manager()`/`winfo_y()` bu yüzden `_parent_frame`'e
+  bakmalı, `anomaly_frame`'in kendisine değil. (2) `stats_row`'un sabit
+  `before=self.warnings_frame` çapası, anomali switch'i KAPALIYKEN (yani
+  warnings_frame de pack_forget durumundayken) istatistik switch'i kapatılıp
+  açılırsa TclError fırlatıyordu ("... isn't packed") — gerçek loglarla
+  uçtan uca denemede yakalandı, çapa artık dinamik (warnings_frame paketliyse
+  ona, değilse her zaman paketli olan status_label'a). İkisi de mutasyonla
+  doğrulandı.
+
+  **Installer ikon düzeltmesi:** `iha_setup.iss`'teki `SetupIconFile` satırı
+  hem yorum satırıydı hem de var olmayan bir dosyayı (`drone_logo.ico`)
+  gösteriyordu; artık etkin ve uygulamanın kendi ikonuna (`frontend/assets/
+  uygulama.ico`, pencere/görev çubuğunda zaten kullanılan) işaret ediyor —
+  gerçek bir `ISCC.exe` derlemesiyle doğrulandı. `WizardImageFile` için uygun
+  boyutta mevcut bir görsel bulunamadı, yeni görsel üretilmedi (kapsam dışı
+  bırakıldı).
+
+  **Kapsam dışı bırakılanlar (kullanıcıya soruldu, bilerek):** sürükle-bırak
+  dosya yükleme (yeni `tkinterdnd2` bağımlılığı gerektirir, boş ekran zaten
+  olgun); gerçek yüzdeli ilerteme çubuğu (backend IPC protokolü değişikliği
+  gerektirir, backend'e dokunmama kararıyla çelişir); spacing skalasının
+  dosya geneline toplu uygulanması.
+
+  Backend'e dokunulmadı (103 test aynen kaldı). Frontend: `test_smoke.py`'a
+  6 yeni test (sidebar varlığı/varsayılan durum, toolbar'ın daralmadığı,
+  iki switch'in doğru sırayla paket/pack_forget, iki switch'in ETKİLEŞİMİ —
+  gerçek hatanın yakalandığı senaryo), toplam 169 smoke testi (163→169).
+
 ## Kapsam dışı bırakılan fikirler
 
 - **Yapay zeka / makine öğrenmesi entegrasyonu:** Değerlendirildi, KESİN
