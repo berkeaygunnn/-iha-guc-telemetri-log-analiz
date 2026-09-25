@@ -685,6 +685,51 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   iki switch'in doğru sırayla paket/pack_forget, iki switch'in ETKİLEŞİMİ —
   gerçek hatanın yakalandığı senaryo), toplam 169 smoke testi (163→169).
 
+- **Uygulama içi güncelleme kontrolü.** Kullanıcı, insanların yeni sürümü
+  elle indirip yeniden kurmadan haberdar olabilmesini istedi. Tam sessiz/
+  kendi-kendini-güncelleyen bir sistem (kod imzalama sertifikası yok, her
+  yeni `.exe` SmartScreen tetikliyor; çalışan `.exe` kendini değiştiremez)
+  orantısız risk taşıdığı için kullanıcıyla konuşulup orta yol seçildi:
+  açılışta arka planda GitHub Releases kontrol edilir, yeni sürüm varsa
+  dialog gösterilir, "İndir ve Kur" tıklanınca installer indirilip
+  `os.startfile` ile başlatılır ve uygulama kendini kapatır — kurulumun
+  gerisi tamamen mevcut Inno Setup sihirbazına bırakılır.
+
+  **Yeni `frontend/update_check.py`** (Tk'siz, `flight_series.py` deseniyle):
+  `parse_version`/`is_newer_version` (belirsizlikte temkinli `False`),
+  `fetch_latest_release` — stdlib `urllib.request` ile GitHub Releases API'si
+  (yeni bağımlılık eklenmedi), ağ hatası/timeout/bozuk yanıt/eşleşen `.exe`
+  asset'i yokluğu dahil HER başarısızlıkta sessizce `None` döner, asla
+  exception fırlatmaz — bu, arka plan kontrolünün internet yokken kullanıcıyı
+  hiç rahatsız etmemesinin garantisi.
+
+  **Mimari:** `_load_file`'ın (backend çağrısı) AYNI queue+thread+after
+  deseni hem kontrol hem indirme için yeniden kullanıldı — Tk ana thread'i
+  ağ isteği sırasında donmuyor. `sys.frozen` ayrımıyla (mevcut
+  `_find_backend_exe` deseni) kontrol SADECE paketlenmiş sürümde çalışır;
+  kaynaktan çalıştırılan bir kopyaya "installer indir" önermek anlamsız
+  olurdu. Otomatik kontrol günde en fazla bir kez (ayarda kapatılabilir,
+  varsayılan açık); elle "Şimdi kontrol et" bu sınırı yok sayar. Kullanıcı
+  bir sürümü "atlarsa" o sürüm için otomatik kontrolde bir daha sorulmaz.
+
+  `iha_setup.iss`'e `CloseApplications=force` eklendi — uygulama installer'ı
+  başlatıp kendini kapatana kadarki küçük zamanlama penceresinde hâlâ açık
+  kalırsa installer'ın devam edebilmesi için güvenlik ağı.
+
+  **Test disiplini:** Hiçbir testte gerçek ağ isteği ya da gerçek installer
+  çalıştırma YOK — hepsi `unittest.mock.patch` ile sahtelendi (geliştirme
+  makinesinde yanlışlıkla gerçek bir kurulum tetiklenmesin diye). Gerçek
+  doğrulama paketlenmiş `.exe`'nin GERÇEK GitHub Releases'e karşı çalıştırılıp
+  (mevcut sürüm zaten en güncel olduğu için) sessizce "güncel" sonucunu
+  `settings.json`'a yazdığının ölçülmesiyle yapıldı — gerçek bir indirme/kurulum
+  hiç tetiklenmedi (deneyecek daha yeni bir sürüm olmadığı için).
+
+  Backend'e dokunulmadı (103 test aynen kaldı), yeni bağımlılık eklenmedi.
+  Frontend: yeni `test_update_check.py` (16 test, tamamı mock'lu) +
+  `test_smoke.py`'a 13 yeni test (günlük kontrol sınırı, dialog/atla/güncel
+  senaryoları, indirme başarı/hata yolu, Ayarlar'daki bölümün sadece
+  paketlenmiş sürümde göründüğü), toplam 182 smoke testi (169→182).
+
 ## Kapsam dışı bırakılan fikirler
 
 - **Yapay zeka / makine öğrenmesi entegrasyonu:** Değerlendirildi, KESİN
