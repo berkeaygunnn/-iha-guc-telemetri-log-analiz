@@ -35,6 +35,17 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 import anomaly_detect
 import battery_resistance
 import pwm_saturation
+from theme import (
+    DARK_PALETTE, LIGHT_PALETTE,
+    UI_SURFACE, UI_TEXT_PRIMARY, UI_TEXT_SECONDARY, UI_TEXT_MUTED,
+    UI_GRIDLINE, UI_AXIS_LINE, UI_COLOR_CRITICAL, UI_COLOR_WARNING,
+    FONT_SIZES, MONO_FONT_FAMILY, SPACING,
+    LANDING_BG, LANDING_ACCENT, LANDING_ACCENT_BRIGHT, LANDING_TEXT,
+    LANDING_CARD, LANDING_CARD_BORDER, LANDING_BADGE_ULOG, LANDING_BADGE_BIN,
+    LANDING_TEXT_SECONDARY, LANDING_FOOTER_TEXT, LANDING_SIDEBAR_WIDTH,
+    LANDING_ROW_STRIPE, LANDING_WARNING, LANDING_CRITICAL,
+    ANALYSIS_SIDEBAR_WIDTH,
+)
 
 def _find_backend_exe() -> Path:
     """Windows'ta .exe uzantılı, Linux/macOS'ta uzantısız üretildiği için
@@ -117,82 +128,9 @@ def _save_settings(settings: dict):
         json.dump(settings, f, ensure_ascii=False, indent=2)
 
 
-# Koyu ve açık tema renk paletleri (koyu, dataviz rehberinin doğrulanmış
-# referans paletinden). Grafik burada kendi renklerini tanımlıyor ki
-# CustomTkinter'ın appearance mode'uyla birebir uyumlu olsun; matplotlib'in
-# varsayılan beyaz arka planı kullanılmıyor. Giriş ekranının kendi ayrı
-# LANDING_* paleti (aşağıda) bilinçli olarak bundan bağımsız kalır — zaten
-# analiz ekranının teması ne olursa olsun sabit/"dikkat çekici" olacak
-# şekilde tasarlanmıştı.
-DARK_PALETTE = {
-    "SURFACE": "#1a1a19",
-    "TEXT_PRIMARY": "#ffffff",
-    "TEXT_SECONDARY": "#c3c2b7",
-    "TEXT_MUTED": "#898781",
-    "GRIDLINE": "#2c2c2a",
-    "AXIS_LINE": "#383835",
-    "COLOR_CRITICAL": "#d03b3b",  # durum paleti: kritik/hata (backend hatası)
-    "COLOR_WARNING": "#d9a334",   # durum paleti: uyarı (backend'in kural tabanlı yorumları)
-    # PWM sapma ısı haritasının ıraksak (diverging) skalası: soğuk uç
-    # (ortalamanın altı) → NÖTR GRİ orta nokta (sapma yok) → sıcak uç
-    # (ortalamanın üstü). Orta noktanın gri olması şart: sapmasız bölgeler
-    # göze çarpmamalı, dikkat sapmanın olduğu yere gitmeli. Durum paletiyle
-    # (COLOR_WARNING/CRITICAL) bilerek aynı tonlar seçilmedi — bu bir ölçüm
-    # skalası, "uyarı" değil.
-    "PWM_DEVIATION_COLORS": ("#5aa9f0", "#2c2c2a", "#eb9b4f"),
-    # Seri (batarya/motor/PWM kanalı) renkleri — kategori kimliği. Koyu
-    # zeminde parlaklığı yüksek tonlar; açık temada bunlar soluk kaldığı
-    # için LIGHT_PALETTE kendi (daha koyu/doygun) sürümünü taşır. Slot
-    # sırası iki temada da AYNI varlığa denk gelir (Batarya 1 hep mavi).
-    "SERIES_COLORS": (
-        "#3987e5", "#008300", "#d55181", "#c98500",
-        "#8a5fd1", "#1fada4", "#e0574a", "#b8b83c",
-    ),
-    # Isı haritası ardışık skalası: koyu yüzeyden markaya ait maviden (seri
-    # slot 1 ile aynı ton) açık uca — düşük değer yüzeyde erir, yüksek değer
-    # parlar.
-    "HEATMAP_COLORS": ("#141a22", "#3987e5", "#cde2fb"),
-}
-LIGHT_PALETTE = {
-    "SURFACE": "#f4f5f2",
-    "TEXT_PRIMARY": "#1c1c1a",
-    # İkincil/soluk tonlar bilerek koyu temadaki muadilleriyle AYNI kontrast
-    # oranına ayarlandı; ilk değerleri açık zeminde soluk kalıyordu. Ölçüm
-    # (WCAG, yüzey / istatistik kutucuğu zemini üzerinde):
-    #   TEXT_SECONDARY  8.15 -> 9.83  (koyu temada 9.72)
-    #   TEXT_MUTED      4.48 -> 6.06  ve kutucukta 3.74 -> 5.05; eskisi normal
-    #                                  metin için AA sınırının (4.5) altındaydı
-    #   COLOR_WARNING   4.12 -> 5.58  (uyarı satırları için)
-    # Tonlar korundu, sadece açıklık düşürüldü.
-    "TEXT_SECONDARY": "#3e3e39",
-    "TEXT_MUTED": "#615c54",
-    "GRIDLINE": "#e1e1db",
-    "AXIS_LINE": "#c6c6bf",
-    "COLOR_CRITICAL": "#b5231f",
-    "COLOR_WARNING": "#8b5616",
-    # Koyu temanın tersi yönde: açık zeminde uçların KOYU, orta noktanın açık
-    # gri olması gerekiyor ki aynı "sapma parlar, sapmasızlık geri çekilir"
-    # okuması korunsun. (Ardışık HEATMAP_COLORS'ın aksine bu skala temaya göre
-    # değişiyor; orta noktanın zeminle uyumlu kalması buna bağlı.)
-    "PWM_DEVIATION_COLORS": ("#1f6fb8", "#e1e1db", "#c2701a"),
-    # Koyu temadaki tonların açık zemin (#f4f5f2) için koyulaştırılmış/
-    # doygunlaştırılmış halleri — koyu paletteki değerler açık zeminde soluk
-    # kalıp birbirine karışıyordu (kullanıcı geri bildirimi). Slot başına ton
-    # kimliği korunur (Batarya 1 iki temada da mavi). Değerler ölçülerek
-    # seçildi: her renk zemine karşı yeterli kontrast taşıyor ve ardışık
-    # çiftler renk körlüğü simülasyonunda da ayrışıyor; 7. (kırmızı) bilerek
-    # daha koyu, 8. (zeytin) bilerek daha açık — naif koyulaştırılmış çift
-    # protanopide birbirinin aynısı çıkıyordu.
-    "SERIES_COLORS": (
-        "#2a78d6", "#006f00", "#c13d6c", "#9c6a00",
-        "#6d44b8", "#147d77", "#b03225", "#8f9422",
-    ),
-    # Açık zeminde yön ters (PWM_DEVIATION_COLORS'daki açık-tema notuyla aynı
-    # mantık): düşük uç zemine karışacak kadar açık, yüksek uç koyulaşarak
-    # öne çıkar — "düşük değer erir, yüksek değer belirginleşir" okuması
-    # iki temada da korunur.
-    "HEATMAP_COLORS": ("#dce8f7", "#2a78d6", "#0d366b"),
-}
+# Renk paletleri (DARK_PALETTE/LIGHT_PALETTE) ve CTk widget renk çiftleri
+# (UI_*) theme.py'den import edildi (bkz. dosya başı) — davranış değişmedi,
+# sadece tanım yeri merkezi bir modüle taşındı.
 
 # Tema tercihi yeniden başlatınca uygulanır (canlı geçiş değil — bkz. tema
 # butonunun yorumu): renkler burada, uygulama içindeki her widget'tan ÖNCE,
@@ -215,26 +153,6 @@ COLOR_WARNING = _ACTIVE_PALETTE["COLOR_WARNING"]
 PWM_DEVIATION_COLORS = _ACTIVE_PALETTE["PWM_DEVIATION_COLORS"]
 SERIES_COLORS = _ACTIVE_PALETTE["SERIES_COLORS"]
 HEATMAP_COLORS = _ACTIVE_PALETTE["HEATMAP_COLORS"]
-
-# CustomTkinter widget'ları için (AÇIK, KOYU) renk ÇİFTLERİ. Yukarıdaki tekil
-# sabitlerle (SURFACE, ...) FARKI ve NEDEN ikisi de gerekli:
-#   - Tekil sabitler matplotlib figürü, giriş ekranı ve ham Tk navigasyon
-#     toolbar'ı için kullanılır (bunları ctk yönetmez). Tema değişince
-#     _on_theme_toggle_click içinde elle güncellenip grafik yeniden çizilir.
-#   - Bir CTk widget'ına renk ÇİFTİ verilirse, ctk.set_appearance_mode()
-#     çağrısında widget'ı PENCEREYE DOKUNMADAN, yerinde otomatik yeniden
-#     renklendirir. Canlı tema geçişinin (pencereyi gizleyip yeniden kurmadan,
-#     titremeden) çalışmasının anahtarı bu — analiz ekranındaki her CTk widget
-#     bu UI_* çiftleriyle kurulur. Sıra (açık, koyu) olmalı; ctk "Light"i 0,
-#     "Dark"ı 1. indeks olarak okur.
-UI_SURFACE = (LIGHT_PALETTE["SURFACE"], DARK_PALETTE["SURFACE"])
-UI_TEXT_PRIMARY = (LIGHT_PALETTE["TEXT_PRIMARY"], DARK_PALETTE["TEXT_PRIMARY"])
-UI_TEXT_SECONDARY = (LIGHT_PALETTE["TEXT_SECONDARY"], DARK_PALETTE["TEXT_SECONDARY"])
-UI_TEXT_MUTED = (LIGHT_PALETTE["TEXT_MUTED"], DARK_PALETTE["TEXT_MUTED"])
-UI_GRIDLINE = (LIGHT_PALETTE["GRIDLINE"], DARK_PALETTE["GRIDLINE"])
-UI_AXIS_LINE = (LIGHT_PALETTE["AXIS_LINE"], DARK_PALETTE["AXIS_LINE"])
-UI_COLOR_CRITICAL = (LIGHT_PALETTE["COLOR_CRITICAL"], DARK_PALETTE["COLOR_CRITICAL"])
-UI_COLOR_WARNING = (LIGHT_PALETTE["COLOR_WARNING"], DARK_PALETTE["COLOR_WARNING"])
 
 # Backend'deki computeWarnings'in kendi varsayılanlarıyla (main.cpp,
 # DEFAULT_VOLTAGE_SAG_WARNING_THRESHOLD vb.) BİREBİR AYNI kalmalı — ayarlar
@@ -336,40 +254,7 @@ def _get_warning_thresholds(vehicle_type: str = None) -> dict:
             return override
     return _get_general_thresholds()
 
-# Giriş (splash) ekranı için ayrı, "dikkat çekici" bir palet — sadece landing
-# ekranında kullanılır, analiz ekranının sakin koyu teması (SURFACE vb.)
-# bundan etkilenmez. Ana mavi (SERIES_COLORS[0]) ile aynı aile, ama daha
-# doygun/parlak.
-LANDING_BG = "#07131f"              # koyu lacivert taban
-LANDING_ACCENT = "#3987e5"          # mevcut ana mavi ile tutarlılık
-LANDING_ACCENT_BRIGHT = "#5fd4ff"   # parlak camgöbeği, ikon/vurgu için
-LANDING_TEXT = "#eaf4ff"
-LANDING_CARD = "#152d45"            # geçmiş dosya kartlarının arka planı — sidebar
-                                     # zemininden (#0c1e30) belirgin ayrışsın diye
-                                     # bilerek epey açık, artık gerçek bir "kutu" gibi okunuyor
-LANDING_CARD_BORDER = "#24445f"      # kartın ince kenarlığı, dikdörtgen sınırı netleştirir
-LANDING_BADGE_ULOG = "#1c3f66"       # .ulog/.ulg format rozeti — LANDING_ACCENT'tan (hover rengi)
-                                     # BİLEREK farklı, daha koyu lacivert: aksi halde imleç kartın
-                                     # üzerine gelince rozet arka planla aynı renge karışıp kayboluyordu
-LANDING_BADGE_BIN = "#c9822f"        # .bin format rozeti (ULG'den ayırt edilsin diye sıcak ton)
-LANDING_TEXT_SECONDARY = "#a9c3de"   # geçmiş kartlarındaki "az önce · 1544s" meta yazısı — TEXT_SECONDARY
-                                     # KASITLI olarak kullanılmıyor: o tema değişince (koyu/açık) değişen bir
-                                     # sabit, LANDING_CARD'ın her zaman koyu lacivert kalan zeminiyle açık
-                                     # temada neredeyse hiç kontrastı kalmazdı (koyu gri/koyu lacivert)
-LANDING_FOOTER_TEXT = "#3a5a78"      # alt bilgi satırı ("... MIT Lisansı ile açık kaynak ...") — bilerek
-                                     # soluk: sayfanın en az önemli metni, dikkat çekmemeli
-LANDING_SIDEBAR_WIDTH = 290          # _build_recent_sidebar'daki sabit genişlik; başlık/açıklama
-                                     # metinlerinin kalan alana göre ne zaman sarması gerektiğini
-                                     # hesaplayabilmek için burada da adlandırılmış halde tutuluyor
-# "Uçuşları Karşılaştır" penceresi SADECE giriş ekranından açılıyor ve giriş
-# ekranı temadan bağımsız hep koyu lacivert — dialog aktif temayı takip
-# edince açık temada "koyu zemin üstünde beyaz pencere" gibi kopuk duruyordu
-# (kullanıcı geri bildirimi). Dialog bu yüzden LANDING paletiyle çiziliyor.
-LANDING_ROW_STRIPE = "#0f2236"       # karşılaştırma tablosunun zebra bandı: LANDING_BG ile
-                                     # LANDING_CARD arasında bir ara ton
-LANDING_WARNING = DARK_PALETTE["COLOR_WARNING"]    # koyu zeminde okunan uyarı/kritik tonları —
-LANDING_CRITICAL = DARK_PALETTE["COLOR_CRITICAL"]  # temalı singles açık temada laciverte karşı
-                                                   # okunaksız kalabilirdi, sabitlere bağlandı
+# Giriş (splash) ekranı paleti (LANDING_*) de theme.py'den import edildi.
 
 # Birden fazla batarya/motor olduğunda her birine sabit sırada, kategorik bir
 # renk atamak için (kategori kimliği). Bir bataryanın voltaj ve akım çizgisi
@@ -1492,6 +1377,14 @@ class App(ctk.CTk):
         # (bkz. _plot_power_data) — kural tabanlı warnings'ten farklı olarak
         # uçuş-bazlı değil, zaman aralığı bazlı.
         self._anomaly_events = []
+        # Sidebar'daki "Anomaliler/Uyarılar" anahtarının kullanıcı tercihi
+        # (bkz. _build_analysis_sidebar/_on_toggle_anomaly_panel) - anomali
+        # panelinin kendi içerik-bazlı gizleme mantığının (_update_anomaly_panel:
+        # olay/not yoksa gizle) ÜSTÜNE eklenen ayrı bir kapı; ikisi de True
+        # olmalı ki panel görünsün.
+        self._anomaly_panel_visible_pref = True
+        self._last_anomaly_events = []  # _on_toggle_anomaly_panel'in yeniden çizim için okuduğu önbellek
+        self._last_pwm_notes = []
         # Tıklanmış uyarının hedef serisi ("Motor", 5) — grafiklerde o seri
         # vurgulanır, panelindeki diğerleri soluklaşır (bkz. _on_warning_click).
         self._highlight_series = None
@@ -1532,7 +1425,20 @@ class App(ctk.CTk):
 
         self._build_landing_screen()
 
+        # Sıra önemli: toolbar ÖNCE paketlenip analysis_frame'in üst şeridini
+        # tam genişlikte alır (Tk pack cavity'si çağrı sırasına göre bölünüyor)
+        # — sidebar bunun SEBEBİYLE toolbar'ın altına, sadece kalan dikey
+        # alanda yer alıyor, toolbar'ın (dar ekranda zaten ince marjlı) tek/
+        # iki satır kararını hiç etkilemiyor (bkz. _build_analysis_sidebar).
         self._build_toolbar()
+        self._build_analysis_sidebar()
+        # analysis_content: sidebar'ın SAĞINDAKİ, geri kalan her şeyin
+        # (istatistikler, uyarılar, anomaliler, grafik alanı) gerçek ebeveyni
+        # — bu sayede bunların kendi <Configure>/winfo_width() ölçümleri
+        # sidebar'ın kapladığı payı zaten dışlamış olur, elle çıkarma gerekmez.
+        self.analysis_content = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
+        self.analysis_content.pack(side="left", fill="both", expand=True)
+
         self._build_stats_row()
         self._build_warnings_area()
         self._build_anomaly_area()
@@ -1927,7 +1833,7 @@ class App(ctk.CTk):
         gridspec'e dokunmadan, delaxes+add_subplot yerine burada sadece
         ax_voltage'ı temizleyip yeniden çiziyoruz, çünkü ikisi de düz çizgi
         grafiği — heatmap gibi ayrı bir colorbar ekseni gerekmiyor)."""
-        toggle_row = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
+        toggle_row = ctk.CTkFrame(self.analysis_content, fg_color="transparent")
         toggle_row.pack(side="top", fill="x", padx=16, pady=(0, 8))
 
         ctk.CTkLabel(
@@ -1955,7 +1861,7 @@ class App(ctk.CTk):
         arasında değiştiren seçici. Birden fazla batarya (ör. yedekli güç
         hattı) olduğunda hangi busbar'ın ne zaman daha yüklü olduğunu
         karşılaştırmak için kullanışlı."""
-        toggle_row = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
+        toggle_row = ctk.CTkFrame(self.analysis_content, fg_color="transparent")
         toggle_row.pack(side="top", fill="x", padx=16, pady=(0, 8))
 
         ctk.CTkLabel(
@@ -1981,7 +1887,7 @@ class App(ctk.CTk):
         değiştiren seçici. PWM ayrı bir panel değil bu panelin üçüncü modu:
         akım sensörü olmayan araçlarda (birçok rover) motor akımı zaten hiç
         yok, PWM tam onun yerine geçiyor."""
-        toggle_row = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
+        toggle_row = ctk.CTkFrame(self.analysis_content, fg_color="transparent")
         toggle_row.pack(side="top", fill="x", padx=16, pady=(0, 8))
 
         ctk.CTkLabel(
@@ -2003,6 +1909,88 @@ class App(ctk.CTk):
             self._plot_motor_currents(self._last_motors or [])
             self.canvas.draw()
             self.nav_toolbar.push_current()  # yeni görünüm "başa dön" hedefi olsun
+
+    def _build_analysis_sidebar(self):
+        """Analiz ekranının sol gezinme rayı.
+
+        Voltaj/toplam akım/motor akımı paneli TEK birleşik Matplotlib
+        Figure'ında, ortak x-ekseniyle (bkz. _build_plot_area, sharex) — bu
+        BİLİNÇLİ bir tasarım kararı (çift y-ekseni yanıltıcı olur) ve zoom/pan
+        senkronu buna bağlı. Sidebar bu yüzden TAM bir bölüm değişimi (tkraise)
+        değil: grafik alanı HER ZAMAN görünür kalır, sadece iki İKİNCİL paneli
+        (istatistik kutucukları, anomali/uyarı listesi) açıp kapatan iki anahtar
+        sunuyor. Varsayılan durum (ikisi de AÇIK) mevcut davranışla birebir
+        aynı — sidebar eklenmeden önce bu paneller hep görünürdü, hiçbir şey
+        öntanımlı olarak gizlenmiyor.
+
+        analysis_frame'e toolbar'dan HEMEN SONRA, analysis_content'ten ÖNCE
+        paketlenmeli (bkz. _build_ui çağrı sırası) — Tk'nin pack cavity'si
+        çağrı sırasına göre bölündüğü için: toolbar önce tam genişlikte üst
+        şeridi alır (dar ekranda zaten ince marjlı tek/iki satır kararı hiç
+        etkilenmesin diye — ölçüldü, sidebar toolbar'ın kendi cavity'sindeyse
+        800px'de bir buton sıkışıyordu), sidebar kalan dikey alanın solunu,
+        analysis_content de son olarak geri kalanı alır."""
+        self.analysis_sidebar = ctk.CTkFrame(
+            self.analysis_frame, fg_color=UI_GRIDLINE, width=ANALYSIS_SIDEBAR_WIDTH, corner_radius=0,
+        )
+        self.analysis_sidebar.pack(side="left", fill="y")
+        self.analysis_sidebar.pack_propagate(False)  # içerik ne olursa olsun genişlik sabit kalsın
+
+        ctk.CTkLabel(
+            self.analysis_sidebar, text="Görünüm", text_color=UI_TEXT_MUTED,
+            font=ctk.CTkFont(size=FONT_SIZES["label"], weight="bold"), anchor="w",
+        ).pack(fill="x", padx=SPACING["md"], pady=(SPACING["md"], SPACING["sm"]))
+
+        self.stats_panel_switch = ctk.CTkSwitch(
+            self.analysis_sidebar, text="İstatistikler", command=self._on_toggle_stats_panel,
+            font=ctk.CTkFont(size=FONT_SIZES["body"]),
+        )
+        self.stats_panel_switch.select()  # varsayılan: açık (mevcut davranışla aynı)
+        self.stats_panel_switch.pack(fill="x", padx=SPACING["md"], pady=(0, SPACING["sm"]), anchor="w")
+
+        self.anomaly_panel_switch = ctk.CTkSwitch(
+            self.analysis_sidebar, text="Anomaliler/Uyarılar", command=self._on_toggle_anomaly_panel,
+            font=ctk.CTkFont(size=FONT_SIZES["body"]),
+        )
+        self.anomaly_panel_switch.select()
+        self.anomaly_panel_switch.pack(fill="x", padx=SPACING["md"], pady=(0, SPACING["sm"]), anchor="w")
+
+    def _on_toggle_stats_panel(self):
+        """stats_row hiçbir yerde ELSE pack_forget/pack edilmiyor (tek pack
+        çağrısı _build_stats_row'da) — bu yüzden Tk'nin "yeniden pack'lenen
+        widget sıranın SONUNA eklenir" tuzağına (bkz. anomaly_frame'deki
+        gerçek hata, _update_anomaly_panel) karşı before= ile sabit bir
+        çapaya bağlanıyor.
+
+        Çapa SABİT warnings_frame DEĞİL: warnings_frame kendisi de
+        anomaly switch'i kapalıyken pack_forget durumunda olabilir — bu
+        durumda "before=<paketlenmemiş widget>" TclError fırlatır (ölçüldü:
+        gerçek loglarla uçtan uca testte yakalandı, iki switch belirli bir
+        sırayla kapatılıp açılınca). Bu yüzden warnings_frame paketliyse ona,
+        değilse HER ZAMAN paketli olan status_label'a çapalanıyor — ikisi de
+        orijinal inşa sırasında (stats_row → warnings_frame → ... →
+        status_label) stats_row'dan SONRA gelir, hangisi kullanılırsa
+        kullanılsın doğru göreli sıra korunur."""
+        if self.stats_panel_switch.get():
+            anchor = self.warnings_frame if self.warnings_frame.winfo_manager() else self.status_label
+            self.stats_row.pack(before=anchor, side="top", fill="x", padx=16, pady=(0, 8))
+        else:
+            self.stats_row.pack_forget()
+
+    def _on_toggle_anomaly_panel(self):
+        """warnings_frame de aynı before= çapa deseniyle geri paketleniyor.
+        anomaly_frame'in KENDİ görünürlüğü zaten içerik-bazlı (bkz.
+        _update_anomaly_panel: olay/not yoksa gizli kalır) — burada sadece
+        kullanıcı tercihi (_anomaly_panel_visible_pref) güncellenip önbellekteki
+        son veriyle (_last_anomaly_events/_last_pwm_notes) o fonksiyon yeniden
+        çağrılıyor, veri tekrar HESAPLANMIYOR."""
+        show = bool(self.anomaly_panel_switch.get())
+        self._anomaly_panel_visible_pref = show
+        if show:
+            self.warnings_frame.pack(before=self.status_label, side="top", fill="x", padx=16, pady=(0, 4))
+        else:
+            self.warnings_frame.pack_forget()
+        self._update_anomaly_panel(self._last_anomaly_events, self._last_pwm_notes)
 
     def _build_toolbar(self):
         """Üst kısımdaki dosya yükleme/dışa aktarma/temizle butonları, son
@@ -2767,7 +2755,7 @@ class App(ctk.CTk):
         — veri/stil mantığı tek yerde. Dialog hep LANDING paletinde olduğu
         için renkler DARK_PALETTE'ten sabit alınıyor -- tema-takip eden modül
         sabitleri açık temada bu koyu zemine karşı yanlış olurdu."""
-        ax.set_facecolor(LANDING_BG)
+        self._style_landing_axes(ax)
         colors = DARK_PALETTE["SERIES_COLORS"]
         for i, (name, battery) in enumerate(overlays):
             ax.plot(
@@ -2776,10 +2764,6 @@ class App(ctk.CTk):
             )
         ax.set_xlabel("Zaman (s)", color=LANDING_TEXT_SECONDARY, fontsize=9)
         ax.set_ylabel("Voltaj (V)", color=LANDING_TEXT_SECONDARY, fontsize=9)
-        ax.tick_params(colors=LANDING_TEXT_SECONDARY, labelsize=8)
-        for spine in ax.spines.values():
-            spine.set_color(LANDING_CARD_BORDER)
-        ax.grid(True, color=LANDING_CARD_BORDER, alpha=0.3)
         ax.legend(
             loc="upper right", facecolor=LANDING_CARD, edgecolor=LANDING_CARD_BORDER,
             labelcolor=LANDING_TEXT_SECONDARY, fontsize=8,
@@ -2843,17 +2827,13 @@ class App(ctk.CTk):
 
         figure = Figure(figsize=(8.6, 2.2), dpi=100, facecolor=LANDING_BG)
         ax = figure.add_subplot(111)
-        ax.set_facecolor(LANDING_BG)
+        self._style_landing_axes(ax)
         names = [_middle_ellipsis(name) for name, _ in points]
         values = [value for _, value in points]
         ax.plot(range(len(points)), values, marker="o", color=DARK_PALETTE["SERIES_COLORS"][0], linewidth=1.5)
         ax.set_xticks(range(len(points)))
         ax.set_xticklabels(names, rotation=20, ha="right", fontsize=7)
         ax.set_ylabel("İç Direnç (mΩ)", color=LANDING_TEXT_SECONDARY, fontsize=9)
-        ax.tick_params(colors=LANDING_TEXT_SECONDARY, labelsize=8)
-        for spine in ax.spines.values():
-            spine.set_color(LANDING_CARD_BORDER)
-        ax.grid(True, color=LANDING_CARD_BORDER, alpha=0.3)
         figure.tight_layout()
 
         canvas = FigureCanvasTkAgg(figure, master=parent)
@@ -2973,7 +2953,7 @@ class App(ctk.CTk):
         dar bir pencereye sığmıyor ve sağdakiler kesiliyordu. Sütun sayısı
         pencere genişliğine göre seçilip artan kutucuklar alt satıra iniyor
         (bkz. _layout_stats_row)."""
-        self.stats_row = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
+        self.stats_row = ctk.CTkFrame(self.analysis_content, fg_color="transparent")
         self.stats_row.pack(side="top", fill="x", padx=16, pady=(0, 8))
 
         self.stat_labels = {}
@@ -2988,7 +2968,8 @@ class App(ctk.CTk):
                 tile, text=title, text_color=UI_TEXT_MUTED, font=ctk.CTkFont(size=11)
             ).pack(fill="x", anchor="center", padx=12, pady=(8, 0))
             value_label = ctk.CTkLabel(
-                tile, text="—", text_color=UI_TEXT_PRIMARY, font=ctk.CTkFont(size=15, weight="bold")
+                tile, text="—", text_color=UI_TEXT_PRIMARY,
+                font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=15, weight="bold"),
             )
             value_label.pack(fill="x", anchor="center", padx=12, pady=(0, 8))
             self.stat_labels[key] = value_label
@@ -3071,7 +3052,7 @@ class App(ctk.CTk):
         "Batarya N:"/"Motor N:" ile başlayanlar tıklanabilir ve tıklanınca
         ilgili seri grafikte vurgulanıyor (diğerleri soluklaşıyor) — tek
         etikette hangi satıra tıklandığı bilinemezdi."""
-        self.warnings_frame = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
+        self.warnings_frame = ctk.CTkFrame(self.analysis_content, fg_color="transparent")
         self.warnings_frame.pack(side="top", fill="x", padx=16, pady=(0, 4))
         self._warning_labels = []
         self._warning_wraplength = 1000  # ilk <Configure>'a kadar yer tutucu
@@ -3134,7 +3115,7 @@ class App(ctk.CTk):
         davranışıyla tutarlı şekilde tamamen gizli kalır (bkz.
         _update_anomaly_panel)."""
         self.anomaly_frame = ctk.CTkScrollableFrame(
-            self.analysis_frame, fg_color="transparent", height=120,
+            self.analysis_content, fg_color="transparent", height=120,
         )
         self._anomaly_labels = []
 
@@ -3143,15 +3124,29 @@ class App(ctk.CTk):
         fallback çıktısı (ESC telemetrisi yoksa). AnomalyEvent'lerden farklı
         olarak TIKLANAMAZ - motor hedefi taşımıyorlar (bkz.
         detect_pwm_channel_imbalance_notes'taki "Kanal ≠ motor" notu), bu
-        yüzden cursor/click-binding yok, sadece soluk bir bilgi satırı."""
+        yüzden cursor/click-binding yok, sadece soluk bir bilgi satırı.
+
+        Sonuç (events, pwm_notes) sidebar'daki anahtar tekrar açıldığında
+        veriyi yeniden HESAPLAMADAN aynı görünümü kurabilsin diye saklanır
+        (bkz. _on_toggle_anomaly_panel)."""
         pwm_notes = pwm_notes or []
+        self._last_anomaly_events = events
+        self._last_pwm_notes = pwm_notes
         for label in self._anomaly_labels:
             label.destroy()
         self._anomaly_labels = []
-        if not events and not pwm_notes:
+        if (not events and not pwm_notes) or not self._anomaly_panel_visible_pref:
             self.anomaly_frame.pack_forget()
             return
-        self.anomaly_frame.pack(side="top", fill="x", padx=16, pady=(0, 4))
+        # before=self.status_label ŞART: anomaly_frame ilk kez burada paketleniyor
+        # (_build_anomaly_area'da bilerek paketlenmiyor, bkz. o fonksiyonun
+        # yorumu) ve pack_forget() sonrası çıplak pack() çağrısı widget'ı
+        # paketleme sırasının SONUNA ekler (Tk'nin belgeli davranışı) — bu da
+        # onu canvas'ın (fill="both", expand=True) ALTINA düşürüp neredeyse
+        # sıfır yüksekliğe sıkıştırıyordu (ölçüldü: pack_slaves() sıradaki son
+        # widget h=1 çıkıyordu). before= ile orijinal inşa sırasındaki (warnings
+        # → anomaly → status_label) konumuna geri yerleştiriliyor.
+        self.anomaly_frame.pack(before=self.status_label, side="top", fill="x", padx=16, pady=(0, 4))
         for event in events:
             color = UI_COLOR_CRITICAL if event.severity == "critical" else UI_COLOR_WARNING
             kind_label = ANOMALY_KIND_LABELS.get(event.kind, event.kind)
@@ -3201,19 +3196,24 @@ class App(ctk.CTk):
         # warnings_label da aynı sorunu yaşıyordu (hiç wraplength'i yoktu),
         # o yüzden ikisi birlikte tek bir <Configure> bağıyla güncelleniyor.
         self.status_label = ctk.CTkLabel(
-            self.analysis_frame, text="", text_color=UI_COLOR_CRITICAL, justify="left", anchor="w",
+            self.analysis_content, text="", text_color=UI_COLOR_CRITICAL, justify="left", anchor="w",
             wraplength=1000,
         )
         self.status_label.pack(side="top", fill="x", padx=16, pady=(0, 4))
-        self.analysis_frame.bind("<Configure>", self._on_analysis_frame_configure)
+        self.analysis_content.bind("<Configure>", self._on_analysis_frame_configure)
 
     def _on_analysis_frame_configure(self, event=None):
         """Dar pencerede uzun bir uyarı/hata metni görünür genişlikten daha
         geniş bir noktada sarmasın diye wraplength'i güncel genişliğe göre
         yeniden hesaplar (bkz. _toolbar_width — aynı `<Configure>` sırasında
         `winfo_width()` eski değeri verme tuzağı burada da geçerli, bu yüzden
-        olay nesnesinin genişliği kullanılıyor)."""
-        width = event.width if event is not None else self.analysis_frame.winfo_width()
+        olay nesnesinin genişliği kullanılıyor).
+
+        analysis_content'e (analysis_frame'in TAMAMINA değil) bağlı: sidebar'ın
+        sağındaki kalan alanın genişliğini zaten kendi başına doğru veriyor,
+        ayrıca ANALYSIS_SIDEBAR_WIDTH çıkarmaya gerek yok (bkz. _build_ui'daki
+        analysis_content yorumu)."""
+        width = event.width if event is not None else self.analysis_content.winfo_width()
         wraplength = max(1, width - 32)  # padx=16 iki yandan
         # Saklanıyor: uyarı etiketleri her _update_warnings'te yeniden
         # kurulduğu için yenileri de güncel genişlikle doğmalı.
@@ -3265,13 +3265,13 @@ class App(ctk.CTk):
         self._motors_cax.axis("off")
 
         self.figure = figure
-        self.canvas = FigureCanvasTkAgg(figure, master=self.analysis_frame)
+        self.canvas = FigureCanvasTkAgg(figure, master=self.analysis_content)
 
         # Zoom/pan araç çubuğu: matplotlib'in hazır gelen NavigationToolbar2Tk'ı.
         # canvas'ın hemen üstüne, side="top" ile paketlenen son widget olarak
-        # eklenir (analysis_frame'de bu noktaya kadar "top" dışında bir side
+        # eklenir (analysis_content'te bu noktaya kadar "top" dışında bir side
         # kullanılmadığı için mevcut düzeni bozmaz).
-        nav_toolbar_frame = ctk.CTkFrame(self.analysis_frame, fg_color="transparent")
+        nav_toolbar_frame = ctk.CTkFrame(self.analysis_content, fg_color="transparent")
         nav_toolbar_frame.pack(side="top", fill="x", padx=16)
         self.nav_toolbar = _PanPreviewToolbar(self.canvas, nav_toolbar_frame)
         self.nav_toolbar.update()
@@ -3339,13 +3339,30 @@ class App(ctk.CTk):
         ax.set_facecolor(SURFACE)
         ax.set_ylabel(ylabel, color=TEXT_SECONDARY)
         ax.format_coord = _make_format_coord(ylabel)
-        ax.grid(True, color=GRIDLINE, linewidth=1, linestyle="-")
+        ax.grid(True, color=GRIDLINE, linewidth=0.5, linestyle="-")
         ax.set_axisbelow(True)
         ax.tick_params(colors=TEXT_MUTED)
         for side in ("top", "right"):
             ax.spines[side].set_visible(False)
         for side in ("bottom", "left"):
             ax.spines[side].set_color(AXIS_LINE)
+
+    def _style_landing_axes(self, ax):
+        """_style_axes'in LANDING paleti sürümü: giriş ekranı/karşılaştırma
+        dialogundaki küçük grafikler (_plot_comparison_overlay,
+        _build_resistance_trend_chart) temayı takip ETMEZ, hep LANDING_BG
+        zemininde çizilir (bkz. o fonksiyonların kendi yorumu) — bu yüzden
+        _style_axes'ten AYRI: oradaki tema-takip eden SURFACE/GRIDLINE/
+        TEXT_MUTED yerine sabit LANDING_* renkleri kullanır ve üst/sağ
+        çerçeveyi gizlemek yerine (koyu, kapalı bir "kutu" hissi istendiği
+        için) dört kenarı da LANDING_CARD_BORDER ile boyar. Eksen etiketi
+        (ylabel) çağıran tarafta ayrı ayarlanıyor çünkü ikisinde de farklı
+        (Voltaj/İç Direnç)."""
+        ax.set_facecolor(LANDING_BG)
+        ax.tick_params(colors=LANDING_TEXT_SECONDARY, labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_color(LANDING_CARD_BORDER)
+        ax.grid(True, color=LANDING_CARD_BORDER, alpha=0.3)
 
     def _on_plot_hover(self, event):
         """Fare grafik üzerindeyken imlecin altındaki örneğin/hücrenin

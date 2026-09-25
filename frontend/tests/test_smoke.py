@@ -1256,18 +1256,142 @@ class SmokeTests(unittest.TestCase):
         _warning_wraplength yeni etiketler kurulurken uygulanan güncel
         değeri saklıyor; ayrıca YÜKLÜ bir uyarı varken gerçek etikete de
         yansıdığını doğruluyoruz."""
+        # _warning_wraplength artık analysis_content'in genişliğine göre
+        # hesaplanıyor (sidebar'ın SAĞINDAKİ kalan alan, bkz.
+        # _on_analysis_frame_configure) — pencere genişliğinden
+        # ANALYSIS_SIDEBAR_WIDTH kadar az.
+        sidebar_w = frontend_main.ANALYSIS_SIDEBAR_WIDTH
         self._resize(1400)
-        self.assertEqual(self.app._warning_wraplength, 1400 - 32)
-        self.assertEqual(self.app.status_label.cget("wraplength"), 1400 - 32)
+        self.assertEqual(self.app._warning_wraplength, 1400 - sidebar_w - 32)
+        self.assertEqual(self.app.status_label.cget("wraplength"), 1400 - sidebar_w - 32)
 
         self._load_and_plot("synthetic_test_log.BIN")  # motor dengesizlik uyarısı üretir
         self.assertTrue(self.app._warning_labels)
-        self.assertEqual(self.app._warning_labels[0].cget("wraplength"), 1400 - 32)
+        self.assertEqual(self.app._warning_labels[0].cget("wraplength"), 1400 - sidebar_w - 32)
 
         self._resize(700)
-        self.assertEqual(self.app._warning_wraplength, 700 - 32)
-        self.assertEqual(self.app._warning_labels[0].cget("wraplength"), 700 - 32)
-        self.assertEqual(self.app.status_label.cget("wraplength"), 700 - 32)
+        self.assertEqual(self.app._warning_wraplength, 700 - sidebar_w - 32)
+        self.assertEqual(self.app._warning_labels[0].cget("wraplength"), 700 - sidebar_w - 32)
+        self.assertEqual(self.app.status_label.cget("wraplength"), 700 - sidebar_w - 32)
+
+    # --- Analiz ekranı sidebar'ı (gezinme rayı) --------------------------------
+
+    @staticmethod
+    def _is_packed(widget) -> bool:
+        """winfo_ismapped() pencere gerçekten deiconify/haritalanmış olmasını
+        gerektiriyor (bkz. _resize'daki aynı not); pack_forget()/pack()
+        döngüsünü test etmek için asıl önemli olan geometri yöneticisinin
+        widget'ı YÖNETİP yönetmediği.
+
+        winfo_manager() KULLANILMIYOR: CTkScrollableFrame (anomaly_frame)
+        için ölçüldüğünde pack durumundan bağımsız hep "canvas" döndürüyor.
+        Kaynağı bulundu: customtkinter'ın CTkScrollableFrame.pack()/
+        pack_forget() metodları `self`'i DEĞİL, gerçekte pack-yönetilen
+        `self._parent_frame`'i çağırıyor (ctk_scrollable_frame.py) — `self`
+        (anomaly_frame) kaydırma canvas'ının İÇİNDEKİ ayrı bir widget, hiç
+        pack ile yönetilmiyor. Bu yüzden gerçek pack durumu için var olan
+        _parent_frame'e (öyle bir öznitelik yoksa widget'ın kendisine)
+        bakılıyor."""
+        target = getattr(widget, "_parent_frame", widget)
+        return target in target.master.pack_slaves()
+
+    @staticmethod
+    def _outer(widget):
+        """_is_packed'daki aynı _parent_frame düzeltmesi — winfo_y() gibi
+        gerçek ekran geometrisi sorgularının da CTkScrollableFrame için
+        (anomaly_frame) pack-yönetilen asıl widget'a (_parent_frame)
+        bakması gerekiyor, kendisine değil."""
+        return getattr(widget, "_parent_frame", widget)
+
+    def test_analysis_sidebar_has_two_switches_both_on_by_default(self):
+        """Varsayılan durum mevcut davranışla birebir aynı olmalı: sidebar
+        eklenmeden önce stats_row/warnings_frame hep görünürdü, hiçbir şey
+        öntanımlı olarak gizlenmemeli."""
+        self.app._show_analysis()
+        self.assertTrue(self._is_packed(self.app.analysis_sidebar))
+        self.assertEqual(self.app.stats_panel_switch.get(), 1)
+        self.assertEqual(self.app.anomaly_panel_switch.get(), 1)
+        self.assertTrue(self._is_packed(self.app.stats_row))
+        self.assertTrue(self._is_packed(self.app.warnings_frame))
+
+    def test_sidebar_does_not_narrow_toolbar(self):
+        """Sidebar toolbar'ın ALTINA alınmalı (bkz. _build_ui yorumu) —
+        toolbar tam pencere genişliğinde kalmalı, sidebar'ın payını hiç
+        paylaşmamalı. Bu, dar ekranda toolbar'ın ince marjlı tek/iki satır
+        kararını sidebar'ın bozmadığının garantisi."""
+        self._resize(1400)
+        self.assertAlmostEqual(self.app.toolbar.winfo_width(), 1400 - 32, delta=4)
+
+    def test_stats_panel_switch_hides_and_restores_stats_row_in_place(self):
+        self._resize(1050)  # deiconify + gerçek geometriye kadar bekler (bkz. _resize)
+        self.app.stats_panel_switch.deselect()
+        self.app._on_toggle_stats_panel()
+        self.app.update()
+        self.assertFalse(self._is_packed(self.app.stats_row))
+
+        self.app.stats_panel_switch.select()
+        self.app._on_toggle_stats_panel()
+        self.app.update()
+        self.assertTrue(self._is_packed(self.app.stats_row))
+        # before=self.warnings_frame ile geri paketlendiği için stats_row
+        # hâlâ warnings_frame'in ÜSTÜNDE olmalı (Tk'nin "yeniden pack'lenen
+        # widget sıranın sonuna eklenir" tuzağına düşmemeli, bkz.
+        # anomaly_frame'deki gerçek hata/düzeltme).
+        self.assertLess(self.app.stats_row.winfo_y(), self.app.warnings_frame.winfo_y())
+
+    def test_anomaly_panel_switch_hides_warnings_and_anomaly_together(self):
+        self._resize(1050)  # deiconify + gerçek geometriye kadar bekler (bkz. _resize)
+        self._load_and_plot("synthetic_test_log.BIN")  # uyarı + motor dengesizlik anomalisi üretir
+        self.app.update()
+        self.assertTrue(self.app._warning_labels)
+        self.assertTrue(self.app._anomaly_labels)
+        self.assertTrue(self._is_packed(self.app.warnings_frame))
+        self.assertTrue(self._is_packed(self.app.anomaly_frame))
+
+        self.app.anomaly_panel_switch.deselect()
+        self.app._on_toggle_anomaly_panel()
+        self.app.update()
+        self.assertFalse(self._is_packed(self.app.warnings_frame))
+        self.assertFalse(self._is_packed(self.app.anomaly_frame))
+
+        self.app.anomaly_panel_switch.select()
+        self.app._on_toggle_anomaly_panel()
+        self.app.update()
+        self.assertTrue(self._is_packed(self.app.warnings_frame))
+        self.assertTrue(self._is_packed(self.app.anomaly_frame))
+        # Sıra korunmalı: warnings_frame -> anomaly_frame -> status_label.
+        self.assertLess(self.app.warnings_frame.winfo_y(), self._outer(self.app.anomaly_frame).winfo_y())
+        self.assertLess(self._outer(self.app.anomaly_frame).winfo_y(), self.app.status_label.winfo_y())
+
+    def test_stats_panel_switch_survives_warnings_frame_being_hidden(self):
+        """Gerçek log ile uçtan uca denemede yakalanan bir hata: anomali
+        switch'i KAPALIYKEN (warnings_frame pack_forget durumundayken)
+        istatistik switch'i kapatılıp tekrar açılırsa, eski kod
+        `before=self.warnings_frame` sabit çapasıyla TclError fırlatıyordu
+        ("window ... isn't packed") — çünkü before= hedefinin KENDİSİ de o
+        an paketli olmalı. Şimdi warnings_frame paketli değilse status_label'a
+        düşüyor (bkz. _on_toggle_stats_panel)."""
+        self._load_and_plot("synthetic_test_log.BIN")
+        self.app.anomaly_panel_switch.deselect()
+        self.app._on_toggle_anomaly_panel()
+        self.assertFalse(self._is_packed(self.app.warnings_frame))
+
+        self.app.stats_panel_switch.deselect()
+        self.app._on_toggle_stats_panel()  # TclError fırlatmamalı
+        self.app.stats_panel_switch.select()
+        self.app._on_toggle_stats_panel()  # burada da fırlatmamalı (asıl hata buradaydı)
+        self.assertTrue(self._is_packed(self.app.stats_row))
+
+    def test_anomaly_panel_switch_off_then_new_data_stays_hidden(self):
+        """Kullanıcı tercihi (_anomaly_panel_visible_pref) yeni bir dosya
+        yüklenene kadar hatırlanmalı — anomali içeriği olsa bile kullanıcı
+        paneli kapattıysa tekrar açılmamalı."""
+        self.app.anomaly_panel_switch.deselect()
+        self.app._on_toggle_anomaly_panel()
+        self._load_and_plot("synthetic_test_log.BIN")
+        self.app.update()
+        self.assertTrue(self.app._anomaly_events)  # veri var
+        self.assertFalse(self._is_packed(self.app.anomaly_frame))  # ama tercih kapalı
 
     # --- Araç tipi başına uyarı eşikleri ---------------------------------------
 
