@@ -11,6 +11,7 @@ Kullanım: python test_smoke.py  (frontend/tests/ içinden)
 import csv
 import itertools
 import shutil
+import struct
 import sys
 import tempfile
 import threading
@@ -23,12 +24,14 @@ from unittest.mock import patch
 FRONTEND_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = FRONTEND_DIR.parent / "data"
 sys.path.insert(0, str(FRONTEND_DIR))
-# backend testleriyle AYNI sentetik .bin üretici — 3+ batarya gibi fixture'lar
-# için byte inşa mantığını burada tekrar yazmamak adına yeniden kullanılıyor.
+# backend testleriyle AYNI sentetik .bin/.ulog üretici — 3+ batarya, PWM
+# fallback gibi fixture'lar için byte inşa mantığını burada tekrar yazmamak
+# adına yeniden kullanılıyor.
 sys.path.insert(0, str(FRONTEND_DIR.parent / "backend" / "tests"))
 
 import main as frontend_main
 import make_synthetic_log
+import make_synthetic_ulog
 
 
 class SmokeTests(unittest.TestCase):
@@ -881,7 +884,7 @@ class SmokeTests(unittest.TestCase):
         self.app.motor_view_toggle.set("PWM Çıkışı")
         self.app._on_motor_view_change("PWM Çıkışı")
 
-        lines = self.app.ax_motors.get_lines()
+        lines = self._data_lines(self.app.ax_motors)
         self.assertEqual([line.get_label() for line in lines], ["Kanal 1", "Kanal 3"])
         self.assertIn("µs", self.app.ax_motors.get_ylabel())
 
@@ -909,7 +912,7 @@ class SmokeTests(unittest.TestCase):
         self.app.motor_view_toggle.set("PWM Çıkışı")
         self.app._on_motor_view_change("PWM Çıkışı")
 
-        lines = self.app.ax_motors.get_lines()
+        lines = self._data_lines(self.app.ax_motors)
         self.assertEqual(len(lines), 2)
         self.assertIn("µs", self.app.ax_motors.get_ylabel())
         self.assertEqual([line.get_label() for line in lines], ["MAIN 2", "MAIN 4"])
@@ -2403,13 +2406,143 @@ class SmokeTests(unittest.TestCase):
         finally:
             path.unlink(missing_ok=True)
 
+    def _write_bin_with_balanced_motors(self) -> Path:
+        """Motorlar arası GERÇEKTEN dengeli (fark %0) bir fixture.
+        Varsayılan synthetic_test_log.BIN buraya UYMUYOR: motor_factors=
+        [0.8, 0.95, 1.1, 1.25] ile BİLEREK dengesiz üretiliyor (bkz.
+        make_synthetic_log.py, satırları ayırt edilebilsin diye) - bu yüzden
+        anomaly_detect.detect_motor_imbalance_events eklendikten sonra o
+        fixture artık gerçek bir "temiz uçuş" değil, backend'in KENDİ
+        dengesizlik uyarısı da zaten bu dosya için üretiliyordu."""
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr")
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.ESC_TYPE, "ESC", "QBf", "TimeUS,Instance,Curr")
+        n, dt = 200, 0.1
+        for i in range(n):
+            t = i * dt
+            out += make_synthetic_log.build_bat_message(t, 0, 16.8, 10.0)
+            for motor_id in range(4):
+                out += make_synthetic_log.build_esc_message(t, motor_id, 10.0)
+
+        tmp_file = tempfile.NamedTemporaryFile(suffix=".BIN", delete=False)
+        tmp_file.write(bytes(out))
+        tmp_file.close()
+        return Path(tmp_file.name)
+
     def test_clean_flight_shows_no_anomaly_events_or_panel_rows(self):
-        """Sağlıklı bir uçuşta (mevcut varsayılan sentetik fixture, gerçek
-        loglarla da ölçüldü) hiç anomali olayı/panel satırı üretilmemeli —
-        yanlış alarm olmadığının duman testi seviyesindeki kanıtı."""
+        """Sağlıklı, motorları da dengeli bir uçuşta hiç anomali olayı/panel
+        satırı üretilmemeli — yanlış alarm olmadığının duman testi
+        seviyesindeki kanıtı."""
+        path = self._write_bin_with_balanced_motors()
+        try:
+            data = self.app._run_backend(str(path))
+            self.app._plot_power_data(data)
+            self.assertEqual(self.app._anomaly_events, [])
+            self.assertEqual(self.app._anomaly_labels, [])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_synthetic_bin_motor_imbalance_produces_anomaly_event(self):
+        """synthetic_test_log.BIN Motor 1/4'ü bilerek dengesiz üretiyor (bkz.
+        _write_bin_with_balanced_motors'ın yorumu) - Aşama 2 entegrasyonu:
+        bu, self.app._anomaly_events'te bir motor_imbalance olayı olarak
+        görünmeli, panel satırı üretmeli."""
+        data = self._load_and_plot("synthetic_test_log.BIN")
+        imbalance_events = [e for e in self.app._anomaly_events if e.kind == "motor_imbalance"]
+        self.assertTrue(imbalance_events, "Bilerek dengesiz fixture'da motor_imbalance olayı hiç üretilmedi")
+        self.assertEqual(len(self.app._anomaly_labels), len(self.app._anomaly_events))
+
+    def _write_ulog_with_pwm_only_imbalance(self) -> Path:
+        """ESC telemetrisi (esc_status) hiç yok, sadece 2 PWM kanalı var ve
+        bilerek dengesiz (1500 vs 2500 µs, %25 sapma) - motor_imbalance'ın
+        PWM-kanal fallback yoluna (detect_pwm_channel_imbalance_notes)
+        düştüğünü kanıtlamak için."""
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float voltage_v;float current_a;")
+        out += make_synthetic_ulog.build_format_message(
+            "actuator_outputs:uint64_t timestamp;uint32_t noutputs;float[2] output;")
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += make_synthetic_ulog.build_subscription_message(2, "actuator_outputs", multi_id=0)
+        for i in range(50):
+            t = i * 0.1
+            out += make_synthetic_ulog.build_battery_data_message(1, t, 16.8, 0.0)
+            payload = struct.pack("<H", 2) + struct.pack("<QI", int(t * 1e6), 2)
+            # Hafifçe dalgalanan (tamamen sabit DEĞİL) değerler: backend hiç
+            # değişmeyen kanalları JSON'dan tamamen düşürüyor (bkz.
+            # shared/power_log_schema.md "Sabit kanallar yazılmaz") - tam
+            # sabit 1500/2500 kullansaydık pwm_outputs boş çıkardı.
+            payload += struct.pack("<2f", 1500.0 + (i % 5), 2500.0 - (i % 5))
+            out += make_synthetic_ulog.build_message(make_synthetic_ulog.MSG_DATA, payload)
+
+        tmp_file = tempfile.NamedTemporaryFile(suffix=".ulog", delete=False)
+        tmp_file.write(bytes(out))
+        tmp_file.close()
+        return Path(tmp_file.name)
+
+    def test_pwm_fallback_note_is_not_clickable(self):
+        """ESC telemetrisi hiç yoksa (motors: []) ama PWM kanalları bilerek
+        dengesizse panelde bir not görünmeli ama TIKLANAMAMALI - motor
+        hedefi taşımıyor (bkz. detect_pwm_channel_imbalance_notes'taki
+        "Kanal ≠ motor" notu)."""
+        path = self._write_ulog_with_pwm_only_imbalance()
+        try:
+            data = self.app._run_backend(str(path))
+            self.app._plot_power_data(data)
+            self.assertEqual(data["motors"], [])
+            self.assertTrue(self.app._anomaly_labels, "PWM dengesizlik notu hiç görünmedi")
+            for label in self.app._anomaly_labels:
+                self.assertNotEqual(label.cget("cursor"), "hand2")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_pwm_saturation_computed_and_drawn_without_crash(self):
+        """Aşama 3 entegrasyonu: _plot_power_data, pwm_saturation.
+        compute_channel_saturation sonucunu self._pwm_saturation(_overall)'a
+        yazmalı; PWM görünümüne geçmek (eşik çizgisi + köşe metni) çökmemeli.
+        Fixture'da Kanal 1 hep eşiğin (1900µs varsayılan) altında, Kanal 2
+        hep üstünde -> ortalama ~%50 doygunluk beklenir."""
+        path = self._write_ulog_with_pwm_only_imbalance()
+        try:
+            data = self.app._run_backend(str(path))
+            self.app._plot_power_data(data)
+            self.assertEqual(len(self.app._pwm_saturation), 2)
+            self.assertAlmostEqual(self.app._pwm_saturation_overall, 50.0, delta=1.0)
+
+            self.app.motor_view_toggle.set("PWM Çıkışı")
+            self.app._on_motor_view_change("PWM Çıkışı")  # çökmemeli
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_pwm_saturation_none_when_no_pwm_data(self):
+        """PWM verisi hiç yoksa (bkz. synthetic_test_log.BIN'in RCOU
+        içermemesi) hesaplanamadı hali (None) net olmalı, çökme olmamalı."""
         self._load_and_plot("synthetic_test_log.BIN")
-        self.assertEqual(self.app._anomaly_events, [])
-        self.assertEqual(self.app._anomaly_labels, [])
+        self.assertEqual(self.app._pwm_saturation, [])
+        self.assertIsNone(self.app._pwm_saturation_overall)
+
+    def test_pwm_saturation_threshold_setting_changes_result(self):
+        """Ayarlar'daki PWM doygunluk eşiği kaydedilince, aynı dosya yeniden
+        yüklendiğinde farklı bir doygunluk yüzdesi üretmeli - ayarın
+        gerçekten okunduğunun kanıtı."""
+        path = self._write_ulog_with_pwm_only_imbalance()
+        try:
+            data = self.app._run_backend(str(path))
+            self.app._plot_power_data(data)
+            overall_default = self.app._pwm_saturation_overall
+
+            settings = frontend_main._load_settings()
+            settings["pwm_saturation_threshold_us"] = 1000.0  # çok düşük eşik -> iki kanal da doygun
+            frontend_main._save_settings(settings)
+
+            self.app._plot_power_data(data)
+            self.assertGreater(self.app._pwm_saturation_overall, overall_default)
+        finally:
+            path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

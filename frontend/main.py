@@ -33,6 +33,8 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 import anomaly_detect
+import battery_resistance
+import pwm_saturation
 
 def _find_backend_exe() -> Path:
     """Windows'ta .exe uzantılı, Linux/macOS'ta uzantısız üretildiği için
@@ -273,6 +275,38 @@ def _get_general_thresholds() -> dict:
     }
 
 
+DEFAULT_MOTOR_RPM_IMBALANCE_THRESHOLD = 0.20
+
+
+def _get_motor_imbalance_thresholds() -> dict:
+    """Motor dengesizliği tespiti (anomaly_detect.detect_motor_imbalance)
+    için eşikler. Akım eşiği, mevcut GENEL current_imbalance_threshold ile
+    AYNI değeri paylaşır (ikisi de kavramsal olarak "ortalamaların ortalaması
+    ± eşik%" - biri backend'in akım kuralı, diğeri bunun RPM'e genişletilmiş
+    Python tarafı hali, ayrı bir sayı istemek kafa karıştırırdı). RPM eşiği
+    içinse ayrı, tek (araç tipine göre AYRILMAYAN) bir global ayar var -
+    bu hesaplama tamamen Python tarafında olduğu için backend'in
+    --vehicle-thresholds CLI mekanizmasına hiç bağlanmıyor, basit tutuluyor."""
+    settings = _load_settings()
+    return {
+        "current_threshold": settings.get(
+            "current_imbalance_threshold", DEFAULT_CURRENT_IMBALANCE_THRESHOLD
+        ),
+        "rpm_threshold": settings.get(
+            "motor_rpm_imbalance_threshold", DEFAULT_MOTOR_RPM_IMBALANCE_THRESHOLD
+        ),
+    }
+
+
+def _get_pwm_saturation_threshold_us() -> float:
+    """PWM doygunluğu (pwm_saturation.py) için eşik - araç tipine göre
+    AYRILMIYOR, RPM dengesizlik eşiğiyle (_get_motor_imbalance_thresholds)
+    aynı gerekçeyle basit, global bir ayar."""
+    return _load_settings().get(
+        "pwm_saturation_threshold_us", pwm_saturation.DEFAULT_SATURATION_THRESHOLD_US
+    )
+
+
 def _get_vehicle_threshold_overrides() -> dict:
     """Araç tipi -> eşik sözlüğü. Sadece kullanıcının o tip için AYRICA
     kaydettiği eşikler burada bulunur; hepsi backend'e geçirilir ve backend
@@ -387,7 +421,9 @@ STAT_TILE_TOOLTIPS = {
     "peak_power_w": "Anlık voltaj × akım çarpımının en yüksek değeri.",
     "resistance_est": "Voltaj düşümü / akım ilişkisinden (regresyon eğimi) tahmin\n"
                       "edilen iç direnç; B = batarya numarası. Uçuştan uçuşa\n"
-                      "artış, yaşlanan bataryaya işaret eder.",
+                      "artış, yaşlanan bataryaya işaret eder. Parantezdeki güven\n"
+                      "(yüksek/orta/düşük) regresyonun veriye ne kadar iyi\n"
+                      "oturduğunu (R²) gösterir.",
     "capacity_used": "Uçuş kontrolcüsünün raporladığı tüketilen kapasite\n(akım integralinden).",
     "remaining_time": "Kalan % ve şu ana kadarki tüketim hızından kaba tahmin;\n"
                       "uçuş geneli ile son bölümün hızları farklıysa aralık gösterilir.",
@@ -559,26 +595,6 @@ def _battery_peak_power_w(batteries: list) -> float:
     return max(peaks, default=0.0)
 
 
-def _battery_internal_resistance_estimate(batteries: list):
-    """Voltaj~akım arasındaki doğrusal regresyon eğiminden kaba bir iç direnç
-    tahmini (mΩ) çıkarır — bir arıza eşiği DEĞİL, sadece uçuştan uçuşa
-    karşılaştırılabilecek ham bir sayı (artış trendi bataryanın yaşlandığına
-    işaret edebilir). Akım varyasyonu çok düşükse (regresyon anlamsızlaşır)
-    o batarya atlanır. Birden fazla batarya varsa en yükseği (en zayıf
-    görüneni) döner. Hiçbiri için hesaplanamazsa None."""
-    best = None  # (battery_id, resistance_mohm)
-    for battery in batteries:
-        current_a = battery["current_a"]
-        voltage_v = battery["voltage_v"]
-        if len(current_a) < 2 or np.ptp(current_a) < 0.5:
-            continue
-        slope, _ = np.polyfit(current_a, voltage_v, 1)
-        resistance_mohm = abs(slope) * 1000.0
-        if best is None or resistance_mohm > best[1]:
-            best = (battery["id"], resistance_mohm)
-    return best
-
-
 def _remaining_time_range_min(duration_s, remaining_pct, current_a):
     """Tahmini kalan uçuş süresi için (alt, üst) dakika aralığı; hesap
     yapılamıyorsa None. Tek sayı ("~5 dk") tahmin belirsizliğini gizleyip
@@ -653,7 +669,7 @@ def _flight_summary_metrics(data: dict) -> dict:
     all_voltage = [v for battery in batteries for v in battery["voltage_v"]]
     all_current = [c for battery in measured for c in battery["current_a"]]
 
-    resistance = _battery_internal_resistance_estimate(measured)
+    resistance, _resistance_reason = battery_resistance.estimate_worst_battery_resistance(measured)
     capacities = [
         b["capacity_used_mah"] for b in measured if b.get("capacity_used_mah") is not None
     ]
@@ -678,7 +694,8 @@ def _flight_summary_metrics(data: dict) -> dict:
         "energy_wh": _battery_energy_wh(measured) if measured else None,
         "peak_power_w": _battery_peak_power_w(measured) if measured else None,
         "capacity_used_mah": sum(capacities) if capacities else None,
-        "resistance_mohm": resistance[1] if resistance else None,
+        "resistance_mohm": resistance.resistance_mohm if resistance else None,
+        "resistance_confidence": resistance.confidence_label if resistance else None,
         "voltage_sag_pct": voltage_sag_pct,
         "warning_count": len(data.get("warnings", [])),
         # Batarya var ama hiçbirinde gerçek akım verisi yoksa True (rover
@@ -716,7 +733,8 @@ def _format_comparison_value(key: str, metrics: dict) -> str:
     if key == "capacity_used_mah":
         return f"{value:.0f} mAh"
     if key == "resistance_mohm":
-        return f"{value:.0f} mΩ"
+        confidence = metrics.get("resistance_confidence")
+        return f"{value:.0f} mΩ ({confidence})" if confidence else f"{value:.0f} mΩ"
     if key == "voltage_sag_pct":
         return f"%{value:.1f}"
     return str(value)
@@ -892,12 +910,30 @@ def _draw_negative_current_threshold(ax, series: list, threshold: float):
     )
 
 
+def _draw_pwm_saturation_threshold(ax, threshold_us: float, overall_pct):
+    """PWM doygunluk eşiğini _draw_negative_current_threshold ile AYNI
+    üslupta (kesikli, COLOR_WARNING) çizer, köşeye genel doygunluk yüzdesini
+    yazar (_draw_imbalance_band'deki köşe-metni deseniyle aynı). overall_pct
+    None ise (PWM verisi yok) hiçbir şey çizilmez."""
+    if overall_pct is None:
+        return
+    ax.axhline(
+        threshold_us, color=COLOR_WARNING, linestyle="--", linewidth=1, alpha=0.5,
+        label="_pwm_saturation_threshold",
+    )
+    ax.text(
+        0.99, 0.02, f"doygunluk (≥{threshold_us:.0f}µs): ortalama %{overall_pct:.0f}",
+        transform=ax.transAxes, ha="right", va="bottom", fontsize=7, color=TEXT_MUTED,
+    )
+
+
 # anomaly_detect.AnomalyEvent.kind -> panelde/mesajda gösterilecek Türkçe etiket.
 ANOMALY_KIND_LABELS = {
     "voltage_sag": "Voltaj düşüşü",
     "current_spike": "Akım sıçraması",
     "propeller_imbalance": "Pervane dengesizliği",
     "efficiency_drop": "Verim düşüşü",
+    "motor_imbalance": "Motor dengesizliği",
 }
 
 
@@ -1431,6 +1467,11 @@ class App(ctk.CTk):
         # PWM çıkışları motor akımından ayrı bir seri (bkz. _plot_pwm_lines);
         # aynı panelde ama farklı bir görünüm modunda çiziliyor.
         self._last_pwm_outputs = None
+        # pwm_saturation.compute_channel_saturation'ın sonucu (bkz.
+        # _plot_power_data) - PWM panelindeki eşik çizgisi/köşe metni bunu okur.
+        self._pwm_saturation = []
+        self._pwm_saturation_overall = None
+        self._pwm_saturation_threshold = pwm_saturation.DEFAULT_SATURATION_THRESHOLD_US
         # Yüklü logun araç tipi: grafikteki eşik çizgileri backend'in o log
         # için kullandığı eşiklerle AYNI olmalı, o yüzden saklanıyor.
         self._last_vehicle_type = None
@@ -2301,7 +2342,7 @@ class App(ctk.CTk):
         # 400 yükseklik içeriğe yetmiyordu (ölçüldü: gerçek içerik yüksekliği
         # 466px, eşik alanlarının GRIDLINE çerçeveye alınmasından sonra daha
         # da arttı) — buton satırı kırpılıyordu. 480 rahat pay bırakıyor.
-        dialog.geometry("400x480")
+        dialog.geometry("400x640")
         dialog.transient(self)
         dialog.grab_set()
 
@@ -2381,6 +2422,29 @@ class App(ctk.CTk):
         fill_fields(scope_menu.get())
         scope_menu.configure(command=fill_fields)
 
+        # RPM dengesizliği eşiği: yukarıdaki 3 alandan farklı olarak araç
+        # tipine göre AYRILMIYOR (bkz. _get_motor_imbalance_thresholds) - bu
+        # yüzden ayrı, tonsuz bir bölümde ve scope_menu'den bağımsız.
+        ctk.CTkLabel(
+            dialog, text="Motor RPM Dengesizliği Eşiği (%) — tüm araçlar için geçerli",
+            text_color=TEXT_SECONDARY, anchor="w",
+        ).pack(fill="x", padx=20, pady=(4, 0))
+        rpm_imbalance_entry = ctk.CTkEntry(dialog)
+        rpm_imbalance_entry.pack(fill="x", padx=20, pady=(4, 0))
+        rpm_imbalance_entry.insert(
+            0, f"{_get_motor_imbalance_thresholds()['rpm_threshold'] * 100:g}"
+        )
+
+        # PWM doygunluk eşiği: aynı gerekçeyle (Python tarafında, araç
+        # tipinden bağımsız) ayrı bir global alan.
+        ctk.CTkLabel(
+            dialog, text="PWM Doygunluk Eşiği (µs) — tüm araçlar için geçerli",
+            text_color=TEXT_SECONDARY, anchor="w",
+        ).pack(fill="x", padx=20, pady=(8, 0))
+        pwm_saturation_entry = ctk.CTkEntry(dialog)
+        pwm_saturation_entry.pack(fill="x", padx=20, pady=(4, 0))
+        pwm_saturation_entry.insert(0, f"{_get_pwm_saturation_threshold_us():g}")
+
         error_label = ctk.CTkLabel(dialog, text="", text_color=COLOR_CRITICAL)
         error_label.pack(padx=20, pady=(4, 0))
 
@@ -2389,6 +2453,8 @@ class App(ctk.CTk):
                 voltage_sag_pct = float(entries["voltage_sag_pct"].get())
                 current_imbalance_pct = float(entries["current_imbalance_pct"].get())
                 negative_current_a = float(entries["negative_current_a"].get())
+                rpm_imbalance_pct = float(rpm_imbalance_entry.get())
+                pwm_saturation_us = float(pwm_saturation_entry.get())
             except ValueError:
                 error_label.configure(text="Lütfen geçerli sayılar girin.")
                 return
@@ -2397,6 +2463,12 @@ class App(ctk.CTk):
                 return
             if negative_current_a >= 0:
                 error_label.configure(text="Negatif akım eşiği 0'dan küçük olmalı.")
+                return
+            if not (0 < rpm_imbalance_pct < 100):
+                error_label.configure(text="RPM dengesizlik eşiği 0-100 arasında olmalı.")
+                return
+            if pwm_saturation_us <= 0:
+                error_label.configure(text="PWM doygunluk eşiği 0'dan büyük olmalı.")
                 return
 
             values = {
@@ -2414,6 +2486,11 @@ class App(ctk.CTk):
                     by_vehicle = {}
                 by_vehicle[vehicle_type] = values
                 settings[SETTINGS_VEHICLE_THRESHOLDS_KEY] = by_vehicle
+            # Araç tipine göre AYRILMIYOR - scope_menu seçimi ne olursa olsun
+            # her zaman genel ayara yazılır (bkz. _get_motor_imbalance_thresholds,
+            # _get_pwm_saturation_threshold_us).
+            settings["motor_rpm_imbalance_threshold"] = rpm_imbalance_pct / 100
+            settings["pwm_saturation_threshold_us"] = pwm_saturation_us
             _save_settings(settings)
             dialog.destroy()
 
@@ -2576,7 +2653,8 @@ class App(ctk.CTk):
                 return  # kullanıcı pencereyi kapatmış
 
             next_row = self._build_comparison_table(result_frame, results)
-            self._build_comparison_chart(result_frame, next_row, chart_series)
+            next_row = self._build_comparison_chart(result_frame, next_row, chart_series)
+            self._build_resistance_trend_chart(result_frame, next_row, results)
             comparison_state["results"] = results
             comparison_state["chart_series"] = chart_series
             if results and csv_button.winfo_exists():
@@ -2707,19 +2785,23 @@ class App(ctk.CTk):
             labelcolor=LANDING_TEXT_SECONDARY, fontsize=8,
         )
 
-    def _build_comparison_chart(self, parent, row: int, chart_series: list):
+    def _build_comparison_chart(self, parent, row: int, chart_series: list) -> int:
         """Tablo altına, uçuş başına tek çizgi olacak şekilde voltaj overlay
         grafiği çizer (bkz. _overlay_battery_for_flight). Zaman ekseni her
         uçuşta zaten t=0'dan başlıyor (_normalize_time_axis), bu yüzden ek
         hizalama gerekmiyor. Grafiğin küçüklüğü şikayet konusu olduğu için
         üstüne, aynı veriyi büyük bir pencerede yeniden çizen bir "Büyüt"
-        butonu eklendi (bkz. _open_comparison_chart_dialog)."""
+        butonu eklendi (bkz. _open_comparison_chart_dialog).
+
+        Kullandığı son grid satırının bir altını döner ki
+        _build_resistance_trend_chart aynı parent'a alt satırdan devam
+        edebilsin (bkz. _build_comparison_table'daki aynı desen)."""
         overlays = [
             (name, battery) for name, batteries in chart_series
             for battery in [_overlay_battery_for_flight(batteries)] if battery is not None
         ]
         if not overlays:
-            return
+            return row
 
         button_row = row
         ctk.CTkButton(
@@ -2737,6 +2819,47 @@ class App(ctk.CTk):
         canvas.draw()
         canvas.get_tk_widget().grid(
             row=row, column=0, columnspan=len(chart_series) + 1, sticky="nsew", pady=(4, 4),
+        )
+        return row + 1
+
+    def _build_resistance_trend_chart(self, parent, row: int, results: list):
+        """Tablo/voltaj grafiğinin altına, uçuş sırasına göre tahmini iç
+        direnç (mΩ) noktalarını çizer — battery_resistance.py'nin ürettiği
+        değer zaten _flight_summary_metrics içinde hesaplanmış olduğu için
+        (results'ın kendisi), burada YENİDEN backend çağrısı ya da regresyon
+        gerekmiyor, sadece mevcut metrikten okunuyor.
+
+        _build_comparison_chart'tan farklı olarak ham batarya serisi değil,
+        tek bir sayı (uçuş başına) çiziliyor; bu yüzden _plot_comparison_overlay
+        yerine kendi basit çizimini yapıyor. Hesaplanamayan (None) uçuşlar
+        noktadan hariç tutulur, hiçbiri hesaplanamadıysa grafik hiç çizilmez."""
+        points = [
+            (name, metrics["resistance_mohm"])
+            for name, metrics in results
+            if metrics.get("resistance_mohm") is not None
+        ]
+        if len(points) < 2:
+            return  # tek nokta bir "trend" göstermez, gürültü olur
+
+        figure = Figure(figsize=(8.6, 2.2), dpi=100, facecolor=LANDING_BG)
+        ax = figure.add_subplot(111)
+        ax.set_facecolor(LANDING_BG)
+        names = [_middle_ellipsis(name) for name, _ in points]
+        values = [value for _, value in points]
+        ax.plot(range(len(points)), values, marker="o", color=DARK_PALETTE["SERIES_COLORS"][0], linewidth=1.5)
+        ax.set_xticks(range(len(points)))
+        ax.set_xticklabels(names, rotation=20, ha="right", fontsize=7)
+        ax.set_ylabel("İç Direnç (mΩ)", color=LANDING_TEXT_SECONDARY, fontsize=9)
+        ax.tick_params(colors=LANDING_TEXT_SECONDARY, labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_color(LANDING_CARD_BORDER)
+        ax.grid(True, color=LANDING_CARD_BORDER, alpha=0.3)
+        figure.tight_layout()
+
+        canvas = FigureCanvasTkAgg(figure, master=parent)
+        canvas.draw()
+        canvas.get_tk_widget().grid(
+            row=row, column=0, columnspan=len(results) + 1, sticky="nsew", pady=(4, 4),
         )
 
     def _open_comparison_chart_dialog(self, overlays: list):
@@ -3015,11 +3138,17 @@ class App(ctk.CTk):
         )
         self._anomaly_labels = []
 
-    def _update_anomaly_panel(self, events: list):
+    def _update_anomaly_panel(self, events: list, pwm_notes: list = None):
+        """pwm_notes: anomaly_detect.detect_motor_imbalance'ın PWM-kanal
+        fallback çıktısı (ESC telemetrisi yoksa). AnomalyEvent'lerden farklı
+        olarak TIKLANAMAZ - motor hedefi taşımıyorlar (bkz.
+        detect_pwm_channel_imbalance_notes'taki "Kanal ≠ motor" notu), bu
+        yüzden cursor/click-binding yok, sadece soluk bir bilgi satırı."""
+        pwm_notes = pwm_notes or []
         for label in self._anomaly_labels:
             label.destroy()
         self._anomaly_labels = []
-        if not events:
+        if not events and not pwm_notes:
             self.anomaly_frame.pack_forget()
             return
         self.anomaly_frame.pack(side="top", fill="x", padx=16, pady=(0, 4))
@@ -3035,6 +3164,13 @@ class App(ctk.CTk):
             label.pack(side="top", fill="x")
             label.bind("<Button-1>",
                        lambda _e, t=event.target, l=label: self._on_anomaly_click(t, l))
+            self._anomaly_labels.append(label)
+        for note in pwm_notes:
+            label = ctk.CTkLabel(
+                self.anomaly_frame, text=f"ⓘ {note}", text_color=UI_TEXT_SECONDARY,
+                justify="left", anchor="w",
+            )
+            label.pack(side="top", fill="x")
             self._anomaly_labels.append(label)
 
     def _on_anomaly_click(self, target, clicked_label):
@@ -3636,6 +3772,8 @@ class App(ctk.CTk):
         self._last_batteries = None
         self._last_motors = None
         self._last_pwm_outputs = None
+        self._pwm_saturation = []
+        self._pwm_saturation_overall = None
         self._last_loaded_path = None
 
         self._plot_voltage_panel([])
@@ -3726,7 +3864,15 @@ class App(ctk.CTk):
         # çalışıyor; panellerin overlay çizebilmesi için plot çağrılarından
         # ÖNCE hazır olmalı (bkz. _draw_anomaly_overlay çağrıları aşağıda).
         self._anomaly_events = anomaly_detect.detect_all(data)
-        self._update_anomaly_panel(self._anomaly_events)
+        motor_imbalance_thresholds = _get_motor_imbalance_thresholds()
+        motor_imbalance_events, pwm_imbalance_notes = anomaly_detect.detect_motor_imbalance(
+            data,
+            current_threshold=motor_imbalance_thresholds["current_threshold"],
+            rpm_threshold=motor_imbalance_thresholds["rpm_threshold"],
+            pwm_threshold=motor_imbalance_thresholds["current_threshold"],
+        )
+        self._anomaly_events.extend(motor_imbalance_events)
+        self._update_anomaly_panel(self._anomaly_events, pwm_imbalance_notes)
 
         self._plot_voltage_panel(batteries)
 
@@ -3735,6 +3881,12 @@ class App(ctk.CTk):
 
         self._last_motors = data.get("motors", [])
         self._last_pwm_outputs = data.get("pwm_outputs", [])
+        # PWM görünümü seçiliyse _plot_pwm_lines bunlara ihtiyaç duyuyor;
+        # _plot_motor_currents'tan ÖNCE hazır olmalı.
+        self._pwm_saturation_threshold = _get_pwm_saturation_threshold_us()
+        self._pwm_saturation, self._pwm_saturation_overall = pwm_saturation.compute_channel_saturation(
+            self._last_pwm_outputs, self._pwm_saturation_threshold
+        )
         self._plot_motor_currents(self._last_motors)
 
         self.canvas.draw()
@@ -4017,7 +4169,7 @@ class App(ctk.CTk):
             )
             _draw_anomaly_overlay(
                 self.ax_motors, self._anomaly_events,
-                {"current_spike", "propeller_imbalance", "efficiency_drop"},
+                {"current_spike", "propeller_imbalance", "efficiency_drop", "motor_imbalance"},
                 ("Motor", motor["id"]),
             )
             plotted += 1
@@ -4078,6 +4230,9 @@ class App(ctk.CTk):
         self.ax_motors.legend(
             loc="upper right", facecolor=SURFACE, edgecolor=AXIS_LINE,
             labelcolor=TEXT_SECONDARY, fontsize=9, ncol=2 if len(pwm_outputs) > 4 else 1,
+        )
+        _draw_pwm_saturation_threshold(
+            self.ax_motors, self._pwm_saturation_threshold, self._pwm_saturation_overall,
         )
 
     def _plot_pwm_deviation_heatmap(self, pwm_outputs: list):
@@ -4249,12 +4404,14 @@ class App(ctk.CTk):
         self.stat_labels["energy_wh"].configure(text=f"{_battery_energy_wh(measured):.1f} Wh")
         self.stat_labels["peak_power_w"].configure(text=f"{_battery_peak_power_w(measured):.0f} W")
 
-        resistance = _battery_internal_resistance_estimate(measured)
+        resistance, _resistance_reason = battery_resistance.estimate_worst_battery_resistance(measured)
         if resistance is None:
             self.stat_labels["resistance_est"].configure(text="—")
         else:
-            battery_id, resistance_mohm = resistance
-            self.stat_labels["resistance_est"].configure(text=f"B{battery_id}: {resistance_mohm:.0f} mΩ")
+            self.stat_labels["resistance_est"].configure(
+                text=f"B{resistance.battery_id}: {resistance.resistance_mohm:.0f} mΩ "
+                     f"({resistance.confidence_label})"
+            )
 
     def _update_capacity_stats(self, batteries: list):
         """Backend'in (varsa) ürettiği capacity_used_mah/remaining_pct
