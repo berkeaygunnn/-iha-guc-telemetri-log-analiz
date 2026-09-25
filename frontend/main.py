@@ -11,13 +11,15 @@ import csv
 import ctypes
 import json
 import math
+import os
 import queue
 import re
 import subprocess
 import sys
 import tempfile
 import threading
-from datetime import datetime
+import urllib.request
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +37,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 import anomaly_detect
 import battery_resistance
 import pwm_saturation
+import update_check
 from theme import (
     DARK_PALETTE, LIGHT_PALETTE,
     UI_SURFACE, UI_TEXT_PRIMARY, UI_TEXT_SECONDARY, UI_TEXT_MUTED,
@@ -223,6 +226,56 @@ def _get_pwm_saturation_threshold_us() -> float:
     return _load_settings().get(
         "pwm_saturation_threshold_us", pwm_saturation.DEFAULT_SATURATION_THRESHOLD_US
     )
+
+
+# Güncelleme kontrolü sadece paketlenmiş (PyInstaller) sürümde anlamlı -
+# kaynaktan çalıştırılan bir kopyaya "yeni installer indir" önermek anlamsız
+# (bkz. _find_backend_exe'deki aynı sys.frozen ayrımı).
+UPDATE_CHECK_MIN_INTERVAL_HOURS = 24
+
+
+def _get_update_check_enabled() -> bool:
+    return bool(_load_settings().get("update_check_enabled", True))
+
+
+def _get_update_check_last_checked():
+    """ISO metin ya da (hiç kontrol edilmediyse) None döner - günde bir
+    kontrol sınırı için."""
+    return _load_settings().get("update_check_last_checked")
+
+
+def _set_update_check_last_checked(when: datetime):
+    settings = _load_settings()
+    settings["update_check_last_checked"] = when.isoformat()
+    _save_settings(settings)
+
+
+def _get_update_check_skip_version():
+    return _load_settings().get("update_check_skip_version")
+
+
+def _set_update_check_skip_version(version: str):
+    settings = _load_settings()
+    settings["update_check_skip_version"] = version
+    _save_settings(settings)
+
+
+def _should_auto_check_for_update() -> bool:
+    """sys.frozen DEĞİLSE hiç kontrol edilmez (geliştirme ortamı); ayar
+    kapalıysa hiç kontrol edilmez; son kontrol UPDATE_CHECK_MIN_INTERVAL_HOURS'tan
+    daha yeniyse (ağ isteği gürültüsünü azaltmak için) atlanır."""
+    if not getattr(sys, "frozen", False):
+        return False
+    if not _get_update_check_enabled():
+        return False
+    last_checked = _get_update_check_last_checked()
+    if last_checked is None:
+        return True
+    try:
+        last_checked_dt = datetime.fromisoformat(last_checked)
+    except ValueError:
+        return True  # bozuk kayıt - normal bir kontrol tetiklensin
+    return datetime.now() - last_checked_dt > timedelta(hours=UPDATE_CHECK_MIN_INTERVAL_HOURS)
 
 
 def _get_vehicle_threshold_overrides() -> dict:
@@ -1409,6 +1462,9 @@ class App(ctk.CTk):
 
         self._show_landing()
 
+        if _should_auto_check_for_update():
+            self._check_for_update(manual=False)
+
     def _build_ui(self):
         """Tüm widget ağacını (giriş + analiz ekranı) SADECE bir kez, __init__'ten
         kurar. Tema değişiminde ağaç YENİDEN KURULMAZ — analiz ekranındaki CTk
@@ -2312,6 +2368,169 @@ class App(ctk.CTk):
         if handler:
             getattr(self, handler)()
 
+    def _check_for_update(self, manual: bool):
+        """GitHub Releases'teki en son sürümü arka planda kontrol eder.
+        `_load_file`'daki AYNI queue+thread+after deseni (Tk ana thread'i
+        ağ isteği sırasında donmasın diye).
+
+        manual=False (açılıştaki otomatik kontrol): başarısızlık TAMAMEN
+        SESSİZ kalır - internet yoksa kullanıcıyı hiç rahatsız etmemeli.
+        manual=True (Ayarlar'daki "Şimdi kontrol et"): başarısızlıkta ya da
+        zaten güncelken kısa bir durum notu gösterilir, aksi halde "sessizce
+        hiçbir şey olmadı" kafa karıştırıcı olurdu."""
+        result_queue: queue.Queue = queue.Queue()
+
+        def worker():
+            result_queue.put(update_check.fetch_latest_release())
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(100, self._poll_update_check_result, manual, result_queue)
+
+    def _poll_update_check_result(self, manual: bool, result_queue: "queue.Queue"):
+        try:
+            info = result_queue.get_nowait()
+        except queue.Empty:
+            self.after(100, self._poll_update_check_result, manual, result_queue)
+            return
+
+        if info is None:
+            if manual:
+                self.status_label.configure(
+                    text="Güncelleme kontrol edilemedi (internet bağlantısı olmayabilir).",
+                    text_color=UI_TEXT_SECONDARY,
+                )
+            return
+
+        # Sonuç geldi (ağ isteği gerçekten yapıldı) - manuel olsun olmasın
+        # "günde bir" sayacı ilerler.
+        _set_update_check_last_checked(datetime.now())
+
+        if not update_check.is_newer_version(info["version"], APP_VERSION):
+            if manual:
+                self.status_label.configure(
+                    text=f"Zaten güncel sürümdesiniz (v{APP_VERSION}).",
+                    text_color=UI_TEXT_SECONDARY,
+                )
+            return
+
+        if not manual and info["version"] == _get_update_check_skip_version():
+            return  # kullanıcı bu sürümü atladı, otomatik kontrolde tekrar sorulmaz
+
+        self._show_update_available_dialog(info)
+
+    def _show_update_available_dialog(self, info: dict):
+        """Yeni sürüm bulunduğunda gösterilen dialog. UI_* renk çiftleri
+        kullanılır (LANDING_* DEĞİL) - bu dialog hem giriş hem analiz
+        ekranından tetiklenebilir, ikisine de "ait" değil, tema takip etmeli."""
+        dialog = ctk.CTkToplevel(self, fg_color=UI_SURFACE)
+        dialog.title("Yeni Sürüm Mevcut")
+        dialog.geometry("420x220")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ctk.CTkLabel(
+            dialog, text="Yeni Sürüm Mevcut", text_color=UI_TEXT_PRIMARY,
+            font=ctk.CTkFont(size=FONT_SIZES["heading"], weight="bold"),
+        ).pack(pady=(16, 8))
+        ctk.CTkLabel(
+            dialog,
+            text=f"{info['version']} yayınlandı (şu an v{APP_VERSION} kullanıyorsunuz).",
+            text_color=UI_TEXT_SECONDARY, wraplength=380,
+        ).pack(pady=(0, 8), padx=20)
+
+        status_label = ctk.CTkLabel(dialog, text="", text_color=UI_COLOR_CRITICAL, wraplength=380)
+        status_label.pack(pady=(0, 4), padx=20)
+
+        progress = ctk.CTkProgressBar(dialog, mode="indeterminate", width=200)
+
+        button_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        button_row.pack(pady=(8, 16))
+
+        def on_download_and_install():
+            download_button.configure(state="disabled")
+            skip_button.configure(state="disabled")
+            later_button.configure(state="disabled")
+            status_label.configure(text="", text_color=UI_COLOR_CRITICAL)
+            progress.pack(pady=(0, 8))
+            progress.start()
+            buttons = (download_button, later_button, skip_button)
+            self._download_and_install_update(info, dialog, progress, status_label, buttons)
+
+        def on_skip():
+            _set_update_check_skip_version(info["version"])
+            dialog.destroy()
+
+        download_button = ctk.CTkButton(
+            button_row, text="İndir ve Kur", command=on_download_and_install,
+        )
+        download_button.pack(side="left", padx=(0, 8))
+        later_button = ctk.CTkButton(
+            button_row, text="Daha Sonra", fg_color="transparent", border_width=1,
+            border_color=UI_AXIS_LINE, text_color=UI_TEXT_SECONDARY, command=dialog.destroy,
+        )
+        later_button.pack(side="left", padx=(0, 8))
+        skip_button = ctk.CTkButton(
+            button_row, text="Bu Sürümü Atla", fg_color="transparent", border_width=1,
+            border_color=UI_AXIS_LINE, text_color=UI_TEXT_SECONDARY, command=on_skip,
+        )
+        skip_button.pack(side="left")
+
+    def _download_and_install_update(self, info: dict, dialog, progress, status_label, buttons: tuple):
+        """installer'ı geçici klasöre indirir (yine _load_file'daki
+        queue+thread+after deseniyle, ağ isteği Tk'yi bloklamasın diye).
+        Hiçbir dosya/kurulum kullanıcı ONAY VERMEDEN (bu fonksiyon zaten
+        "İndir ve Kur" tıklandıktan SONRA çağrılıyor) değiştirilmez/başlatılmaz."""
+        result_queue: queue.Queue = queue.Queue()
+
+        def worker():
+            try:
+                installer_path = Path(tempfile.gettempdir()) / info["installer_name"]
+                urllib.request.urlretrieve(info["installer_url"], str(installer_path))
+                if installer_path.stat().st_size == 0:
+                    raise OSError("İndirilen dosya boş çıktı.")
+                result_queue.put(("ok", installer_path))
+            except Exception as error:  # ağ hatası, disk hatası vb. - kurulum başlatılmamalı
+                result_queue.put(("error", error))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(200, self._poll_update_download_result, dialog, progress, status_label, buttons, result_queue)
+
+    def _poll_update_download_result(self, dialog, progress, status_label, buttons: tuple, result_queue: "queue.Queue"):
+        try:
+            status, payload = result_queue.get_nowait()
+        except queue.Empty:
+            self.after(200, self._poll_update_download_result, dialog, progress, status_label, buttons, result_queue)
+            return
+
+        progress.stop()
+        progress.pack_forget()
+
+        if status == "error":
+            status_label.configure(text=f"⚠ İndirme başarısız: {payload}", text_color=UI_COLOR_CRITICAL)
+            for button in buttons:
+                button.configure(state="normal")
+            return
+
+        installer_path = payload
+        if not sys.platform.startswith("win"):
+            # Linux/macOS'ta otomatik başlatma bu turda kapsam dışı (proje
+            # Windows-öncelikli; bkz. ICO_PATH/iconbitmap'teki aynı ayrım) -
+            # dosya yine de indirildi, kullanıcı elle çalıştırabilir.
+            status_label.configure(
+                text=f"İndirildi: {installer_path} (bu platformda otomatik başlatma desteklenmiyor)",
+                text_color=UI_TEXT_SECONDARY,
+            )
+            for button in buttons:
+                button.configure(state="normal")
+            return
+
+        os.startfile(str(installer_path))
+        dialog.destroy()
+        # installer dosyaları üzerine yazabilsin diye kendi exe'mizi
+        # kapatıyoruz - küçük bir gecikmeyle, installer'ın gerçekten
+        # başlamasına bir an pay bırakmak için.
+        self.after(500, self.destroy)
+
     def _on_settings_click(self):
         """Uyarı eşiklerini (voltaj düşümü %, akım dengesizliği %, negatif
         akım A) düzenleyen basit bir pencere. Değerler her yüklemede backend'e
@@ -2433,6 +2652,24 @@ class App(ctk.CTk):
         pwm_saturation_entry.pack(fill="x", padx=20, pady=(4, 0))
         pwm_saturation_entry.insert(0, f"{_get_pwm_saturation_threshold_us():g}")
 
+        # Güncelleme kontrolü SADECE paketlenmiş (PyInstaller) sürümde
+        # gösterilir - kaynaktan çalıştırılan bir kopyada "installer indir"
+        # önermek anlamsız (bkz. _should_auto_check_for_update).
+        update_check_switch = None
+        if getattr(sys, "frozen", False):
+            update_row = ctk.CTkFrame(dialog, fg_color="transparent")
+            update_row.pack(fill="x", padx=20, pady=(12, 0))
+            update_check_switch = ctk.CTkSwitch(
+                update_row, text="Güncellemeleri otomatik kontrol et",
+            )
+            if _get_update_check_enabled():
+                update_check_switch.select()
+            update_check_switch.pack(side="left")
+            ctk.CTkButton(
+                update_row, text="Şimdi kontrol et", width=110,
+                command=lambda: self._check_for_update(manual=True),
+            ).pack(side="right")
+
         error_label = ctk.CTkLabel(dialog, text="", text_color=COLOR_CRITICAL)
         error_label.pack(padx=20, pady=(4, 0))
 
@@ -2479,6 +2716,8 @@ class App(ctk.CTk):
             # _get_pwm_saturation_threshold_us).
             settings["motor_rpm_imbalance_threshold"] = rpm_imbalance_pct / 100
             settings["pwm_saturation_threshold_us"] = pwm_saturation_us
+            if update_check_switch is not None:
+                settings["update_check_enabled"] = bool(update_check_switch.get())
             _save_settings(settings)
             dialog.destroy()
 

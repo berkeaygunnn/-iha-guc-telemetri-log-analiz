@@ -36,6 +36,7 @@ jobs:
           python3 frontend/tests/test_anomaly_detect.py
           python3 frontend/tests/test_battery_resistance.py
           python3 frontend/tests/test_pwm_saturation.py
+          python3 frontend/tests/test_update_check.py
 
       - name: xvfb ve python3-tk kur (Tkinter/CustomTkinter için gerekli)
         run: sudo apt-get install -y xvfb python3-tk

@@ -16,8 +16,10 @@ import sys
 import tempfile
 import threading
 import time
+import tkinter as tk
 import types
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,6 +34,7 @@ sys.path.insert(0, str(FRONTEND_DIR.parent / "backend" / "tests"))
 import main as frontend_main
 import make_synthetic_log
 import make_synthetic_ulog
+import update_check
 
 
 class SmokeTests(unittest.TestCase):
@@ -66,6 +69,56 @@ class SmokeTests(unittest.TestCase):
     def _load_file_and_wait(self, file_path: str, timeout_s: float = 5.0):
         self.app._load_file(file_path)
         self._wait_for_load(timeout_s)
+
+    def _wait_until(self, predicate, timeout_s: float = 5.0):
+        """_wait_for_load'ın genel hali - güncelleme kontrolü gibi kendi
+        queue+thread+after döngüsünü kullanan arka plan işleri için Tk event
+        loop'unu predicate doğru olana kadar döndürür."""
+        deadline = time.monotonic() + timeout_s
+        while not predicate() and time.monotonic() < deadline:
+            self.app.update()
+        self.app.update()
+
+    def _set_frozen(self, value: bool):
+        """sys.frozen normalde PyInstaller tarafından set edilir; testte
+        paketlenmiş/geliştirme ayrımını sahtelemek için geçici olarak
+        değiştirilir, test bitince ORİJİNAL duruma (hiç yoksa yine yok)
+        geri döndürülür - başka testlere sızmasın diye."""
+        had_attr = hasattr(sys, "frozen")
+        original = getattr(sys, "frozen", None)
+        sys.frozen = value
+
+        def _restore():
+            if had_attr:
+                sys.frozen = original
+            else:
+                del sys.frozen
+
+        self.addCleanup(_restore)
+
+    @staticmethod
+    def _toplevels(widget):
+        return [w for w in widget.winfo_children() if isinstance(w, tk.Toplevel)]
+
+    @staticmethod
+    def _all_descendants(widget):
+        """widget'ın TÜM alt ağacı (tek seviye winfo_children() değil) -
+        güncelleme dialogundaki bir buton/switch'i metnine göre bulmak için."""
+        result = []
+        for child in widget.winfo_children():
+            result.append(child)
+            result.extend(SmokeTests._all_descendants(child))
+        return result
+
+    @staticmethod
+    def _safe_cget_text(widget):
+        try:
+            return widget.cget("text")
+        except (tk.TclError, ValueError):
+            # CTkFrame gibi "text" seçeneğini desteklemeyen widget'lar
+            # tk.TclError DEĞİL ValueError fırlatıyor (customtkinter'ın
+            # kendi cget() sarmalayıcısı).
+            return None
 
     @staticmethod
     def _data_lines(ax):
@@ -1392,6 +1445,142 @@ class SmokeTests(unittest.TestCase):
         self.app.update()
         self.assertTrue(self.app._anomaly_events)  # veri var
         self.assertFalse(self._is_packed(self.app.anomaly_frame))  # ama tercih kapalı
+
+    # --- Güncelleme kontrolü ---------------------------------------------------
+
+    _FAKE_UPDATE_INFO = {
+        "version": "v9.9.9",
+        "installer_name": "IHA_Log_Analiz_Kurulum_v9.9.9.exe",
+        "installer_url": "https://example.com/IHA_Log_Analiz_Kurulum_v9.9.9.exe",
+    }
+
+    def test_should_auto_check_returns_false_when_not_frozen(self):
+        """Geliştirme ortamında (sys.frozen yok) hiç kontrol tetiklenmemeli -
+        kaynaktan çalıştırılan bir kopyaya "installer indir" önermek anlamsız."""
+        self.assertFalse(hasattr(sys, "frozen"))
+        self.assertFalse(frontend_main._should_auto_check_for_update())
+
+    def test_should_auto_check_returns_false_if_checked_recently(self):
+        self._set_frozen(True)
+        frontend_main._set_update_check_last_checked(datetime.now())
+        self.assertFalse(frontend_main._should_auto_check_for_update())
+
+    def test_should_auto_check_returns_true_if_never_checked(self):
+        self._set_frozen(True)
+        self.assertFalse(frontend_main._get_update_check_last_checked())
+        self.assertTrue(frontend_main._should_auto_check_for_update())
+
+    def test_should_auto_check_returns_true_if_checked_long_ago(self):
+        self._set_frozen(True)
+        old = datetime.now() - timedelta(hours=48)
+        frontend_main._set_update_check_last_checked(old)
+        self.assertTrue(frontend_main._should_auto_check_for_update())
+
+    def test_should_auto_check_returns_false_if_disabled_in_settings(self):
+        self._set_frozen(True)
+        settings = frontend_main._load_settings()
+        settings["update_check_enabled"] = False
+        frontend_main._save_settings(settings)
+        self.assertFalse(frontend_main._should_auto_check_for_update())
+
+    def test_check_for_update_shows_dialog_when_newer_version_available(self):
+        with patch.object(update_check, "fetch_latest_release", return_value=self._FAKE_UPDATE_INFO):
+            self.app._check_for_update(manual=False)
+            self._wait_until(lambda: self._toplevels(self.app))
+        toplevels = self._toplevels(self.app)
+        self.assertEqual(len(toplevels), 1)
+        # last_checked her gerçek denemede ilerlemeli (manuel olsun olmasın).
+        self.assertIsNotNone(frontend_main._get_update_check_last_checked())
+
+    def test_skip_version_suppresses_dialog_in_auto_check(self):
+        """Kullanıcı bir sürümü atladıysa, otomatik kontrol o sürüm için bir
+        daha bildirim göstermemeli (bkz. kullanıcı kararı: 'bu sürümü atla')."""
+        frontend_main._set_update_check_skip_version(self._FAKE_UPDATE_INFO["version"])
+        with patch.object(update_check, "fetch_latest_release", return_value=self._FAKE_UPDATE_INFO):
+            self.app._check_for_update(manual=False)
+            self._wait_until(lambda: frontend_main._get_update_check_last_checked() is not None)
+        self.assertEqual(self._toplevels(self.app), [])
+
+    def test_manual_check_shows_up_to_date_message(self):
+        same_version_info = dict(self._FAKE_UPDATE_INFO, version=f"v{frontend_main.APP_VERSION}")
+        with patch.object(update_check, "fetch_latest_release", return_value=same_version_info):
+            self.app._check_for_update(manual=True)
+            self._wait_until(lambda: "güncel" in self.app.status_label.cget("text").lower())
+        self.assertEqual(self._toplevels(self.app), [])
+
+    def test_manual_check_shows_error_message_on_network_failure(self):
+        with patch.object(update_check, "fetch_latest_release", return_value=None):
+            self.app._check_for_update(manual=True)
+            self._wait_until(lambda: self.app.status_label.cget("text") != "")
+        self.assertIn("kontrol edilemedi", self.app.status_label.cget("text"))
+
+    def test_auto_check_network_failure_is_completely_silent(self):
+        """manual=False'ta ağ hatası kullanıcıyı HİÇ rahatsız etmemeli -
+        internet yoksa uygulama açılışında hiçbir mesaj çıkmamalı."""
+        self.app.status_label.configure(text="")
+        with patch.object(update_check, "fetch_latest_release", return_value=None):
+            self.app._check_for_update(manual=False)
+            time.sleep(0.3)
+            self.app.update()
+        self.assertEqual(self.app.status_label.cget("text"), "")
+
+    def test_download_and_install_launches_installer_on_success(self):
+        def fake_urlretrieve(url, filename):
+            Path(filename).write_bytes(b"fake installer bytes")
+
+        with patch.object(update_check, "fetch_latest_release", return_value=self._FAKE_UPDATE_INFO), \
+             patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve) as mock_retrieve, \
+             patch("os.startfile") as mock_startfile:
+            self.app._check_for_update(manual=False)
+            self._wait_until(lambda: self._toplevels(self.app))
+            dialog = self._toplevels(self.app)[0]
+            download_button = next(
+                w for w in self._all_descendants(dialog)
+                if isinstance(w, type(self.app.load_button)) and w.cget("text") == "İndir ve Kur"
+            )
+            download_button.invoke()
+            self._wait_until(lambda: mock_startfile.called, timeout_s=5.0)
+
+        mock_retrieve.assert_called_once()
+        mock_startfile.assert_called_once()
+        installed_path = Path(mock_startfile.call_args[0][0])
+        self.assertEqual(installed_path.name, self._FAKE_UPDATE_INFO["installer_name"])
+
+    def test_download_failure_shows_error_and_reenables_buttons_without_installing(self):
+        with patch.object(update_check, "fetch_latest_release", return_value=self._FAKE_UPDATE_INFO), \
+             patch("urllib.request.urlretrieve", side_effect=OSError("ağ hatası")), \
+             patch("os.startfile") as mock_startfile:
+            self.app._check_for_update(manual=False)
+            self._wait_until(lambda: self._toplevels(self.app))
+            dialog = self._toplevels(self.app)[0]
+            download_button = next(
+                w for w in self._all_descendants(dialog)
+                if isinstance(w, type(self.app.load_button)) and w.cget("text") == "İndir ve Kur"
+            )
+            download_button.invoke()
+            self._wait_until(lambda: download_button.cget("state") == "normal", timeout_s=5.0)
+
+        mock_startfile.assert_not_called()
+        self.assertEqual(download_button.cget("state"), "normal")
+
+    def test_settings_dialog_shows_update_section_only_when_frozen(self):
+        def _has_update_switch(dialog):
+            return any(
+                hasattr(w, "cget") and self._safe_cget_text(w) == "Güncellemeleri otomatik kontrol et"
+                for w in self._all_descendants(dialog)
+            )
+
+        self._set_frozen(False)
+        self.app._on_settings_click()
+        dialog_without = self._toplevels(self.app)[0]
+        self.assertFalse(_has_update_switch(dialog_without))
+        dialog_without.destroy()
+
+        self._set_frozen(True)
+        self.app._on_settings_click()
+        dialog_with = self._toplevels(self.app)[0]
+        self.assertTrue(_has_update_switch(dialog_with))
+        dialog_with.destroy()
 
     # --- Araç tipi başına uyarı eşikleri ---------------------------------------
 
