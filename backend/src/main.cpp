@@ -9,6 +9,7 @@
 // Kaynak: https://github.com/ArduPilot/ardupilot/blob/master/libraries/AP_Logger/LogStructure.h
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -78,6 +79,26 @@ struct PwmSamplePoint {
     double pwm_us;
 };
 
+// Uçuş modu değişimi ya da hata/uyarı mesajı — grafik üzerinde dikey çizgi
+// olarak gösterilecek ayrık (zaman serisi değil) olaylar. "severity" sadece
+// type=="error" için anlamlı ("info"/"warning"/"error"); type=="mode" için
+// her zaman "info".
+struct FlightEvent {
+    double time_s;
+    std::string type;      // "mode" | "error"
+    std::string label;
+    std::string severity;  // "info" | "warning" | "error"
+    // ArduPilot MODE mesajları ayrıştırma sırasında işlenir ama araç tipi
+    // (vehicleType) o anda henüz kesinleşmemiş olabilir (MSG satırı MODE'dan
+    // sonra da gelebilir, ayrıca VTOL override'ı post-process). Bu yüzden
+    // ArduPilot mod olayları ham numarayla oluşturulur, isim çözümü
+    // ayrıştırma TAMAMEN bittikten sonra resolveModeEventLabels() ile
+    // yapılır. PX4 nav_state olayları ve ArduPilot ERR olayları bu alanı
+    // kullanmaz (label anında kesin).
+    bool needsArduPilotModeLabel = false;
+    int rawArduPilotModeNumber = 0;
+};
+
 // Batarya (BAT) ve motor (ESC) mesajlarından çıkarılan tüm veriler.
 // Her ikisi de anahtarı 1'den başlayan motor/batarya no olan bir map: birden
 // fazla batarya/motor varsa hepsi ayrı ayrı tutulur.
@@ -103,6 +124,11 @@ struct ParsedLog {
     // YAZMIYOR; bu yüzden burada tahmin yürütülmüyor, kanallar oldukları gibi
     // aktarılıyor.
     std::map<std::string, std::vector<PwmSamplePoint>> pwmOutputs;
+    // Uçuş modu değişimleri (ArduPilot MODE / PX4 vehicle_status.nav_state
+    // değişimi) ve hata/uyarı mesajları (ArduPilot ERR / PX4 'L' logged
+    // message). Zaman serisi değil, ayrık olaylar — grafik üzerinde dikey
+    // çizgi olarak gösteriliyor.
+    std::vector<FlightEvent> events;
     // PX4'te bazı araçlar (ör. bazı Rover yapılandırmaları) hiç "battery_status"
     // yayınlamıyor, sadece dahili güç hatlarını raporlayan "system_power"ı
     // kullanıyor. Bu, ana batarya voltajı/akımı DEĞİL (5V/payload hattı gibi
@@ -431,6 +457,127 @@ void extractParamSample(const uint8_t* payload, const FormatDef& def, size_t pay
     }
 }
 
+// ArduPilot mod numarası -> insan okunur ad tabloları. Kaynak: ArduPilot
+// GitHub reposu (master dalı), her birinin kendi "Mode::Number" enum'u:
+//   ArduCopter/mode.h, ArduPlane/mode.h, Rover/mode.h, ArduSub/mode.h
+// (2026-10, gerçek kaynak dosyalarından satır satır teyit edildi — tahmin
+// yürütülmedi). QuadPlane (vehicleType=="vtol") ArduPlane firmware'inin bir
+// parçası olduğu için ArduPlane tablosunu kullanır (Q_STABILIZE=17 vb. aynı
+// enum'da tanımlı).
+const std::map<int, std::string>& arduCopterModeNames() {
+    static const std::map<int, std::string> table = {
+        {0, "STABILIZE"}, {1, "ACRO"}, {2, "ALT_HOLD"}, {3, "AUTO"},
+        {4, "GUIDED"}, {5, "LOITER"}, {6, "RTL"}, {7, "CIRCLE"},
+        {9, "LAND"}, {11, "DRIFT"}, {13, "SPORT"}, {14, "FLIP"},
+        {15, "AUTOTUNE"}, {16, "POSHOLD"}, {17, "BRAKE"}, {18, "THROW"},
+        {19, "AVOID_ADSB"}, {20, "GUIDED_NOGPS"}, {21, "SMART_RTL"},
+        {22, "FLOWHOLD"}, {23, "FOLLOW"}, {24, "ZIGZAG"}, {25, "SYSTEMID"},
+        {26, "AUTOROTATE"}, {27, "AUTO_RTL"}, {28, "TURTLE"},
+    };
+    return table;
+}
+
+const std::map<int, std::string>& arduPlaneModeNames() {
+    static const std::map<int, std::string> table = {
+        {0, "MANUAL"}, {1, "CIRCLE"}, {2, "STABILIZE"}, {3, "TRAINING"},
+        {4, "ACRO"}, {5, "FLY_BY_WIRE_A"}, {6, "FLY_BY_WIRE_B"},
+        {7, "CRUISE"}, {8, "AUTOTUNE"}, {10, "AUTO"}, {11, "RTL"},
+        {12, "LOITER"}, {13, "TAKEOFF"}, {14, "AVOID_ADSB"}, {15, "GUIDED"},
+        {16, "INITIALISING"}, {17, "QSTABILIZE"}, {18, "QHOVER"},
+        {19, "QLOITER"}, {20, "QLAND"}, {21, "QRTL"}, {22, "QAUTOTUNE"},
+        {23, "QACRO"}, {24, "THERMAL"}, {25, "LOITER_ALT_QLAND"},
+        {26, "AUTOLAND"},
+    };
+    return table;
+}
+
+const std::map<int, std::string>& roverModeNames() {
+    static const std::map<int, std::string> table = {
+        {0, "MANUAL"}, {1, "ACRO"}, {3, "STEERING"}, {4, "HOLD"},
+        {5, "LOITER"}, {6, "FOLLOW"}, {7, "SIMPLE"}, {8, "DOCK"},
+        {9, "CIRCLE"}, {10, "AUTO"}, {11, "RTL"}, {12, "SMART_RTL"},
+        {15, "GUIDED"}, {16, "INITIALISING"},
+    };
+    return table;
+}
+
+const std::map<int, std::string>& arduSubModeNames() {
+    static const std::map<int, std::string> table = {
+        {0, "STABILIZE"}, {1, "ACRO"}, {2, "ALT_HOLD"}, {3, "AUTO"},
+        {4, "GUIDED"}, {7, "CIRCLE"}, {9, "SURFACE"}, {16, "POSHOLD"},
+        {19, "MANUAL"}, {20, "MOTOR_DETECT"}, {21, "SURFTRAK"},
+    };
+    return table;
+}
+
+// vehicleType'a göre doğru tabloyu seçip mod numarasını isme çevirir.
+// Tabloda yoksa (tanınmayan/yeni bir sürümdeki mod numarası) ya da
+// vehicleType hiçbirine uymuyorsa ham numara ("Mod N") döner — isim
+// uydurulmaz.
+std::string ardupilotModeLabel(const std::string& vehicleType, int modeNum) {
+    const std::map<int, std::string>* table = nullptr;
+    if (vehicleType == "multirotor") table = &arduCopterModeNames();
+    else if (vehicleType == "fixed_wing" || vehicleType == "vtol") table = &arduPlaneModeNames();
+    else if (vehicleType == "rover") table = &roverModeNames();
+    else if (vehicleType == "submarine") table = &arduSubModeNames();
+
+    if (table != nullptr) {
+        auto it = table->find(modeNum);
+        if (it != table->end()) return it->second;
+    }
+    return "Mod " + std::to_string(modeNum);
+}
+
+// "MODE" mesajının payload'ından TimeUS + Mode (ya da ModeNum, versiyona
+// göre hangisi varsa) alanını okur. İsim çözümü burada YAPILMAZ çünkü
+// vehicleType ayrıştırma sırasında henüz kesinleşmemiş olabilir (bkz.
+// FlightEvent.needsArduPilotModeLabel); resolveModeEventLabels() parse
+// bittikten sonra bunu doldurur.
+void extractModeEvent(const uint8_t* payload, const FormatDef& def, size_t payloadSize,
+                       ParsedLog& result) {
+    FieldLocator timeField = locateField(def, "TimeUS", payloadSize);
+    FieldLocator modeField = locateField(def, "ModeNum", payloadSize);
+    if (!modeField.found) modeField = locateField(def, "Mode", payloadSize);
+    if (!timeField.found || !modeField.found) return;
+
+    double timeUs = readFieldAsDouble(payload + timeField.byteOffset, timeField.formatChar);
+    double modeNum = readFieldAsDouble(payload + modeField.byteOffset, modeField.formatChar);
+    if (!std::isfinite(timeUs) || !std::isfinite(modeNum)) return;
+
+    FlightEvent event;
+    event.time_s = timeUs / 1e6;
+    event.type = "mode";
+    event.severity = "info";
+    event.needsArduPilotModeLabel = true;
+    event.rawArduPilotModeNumber = static_cast<int>(modeNum);
+    result.events.push_back(event);
+}
+
+// "ERR" mesajının payload'ından TimeUS/Subsys/ECode okur. İsim tablosu
+// bilerek YOK — ArduPilot'ta subsys/ecode kombinasyonu çok geniş ve bu
+// mesaj gerçek loglarda çok seyrek (genelde 0-1 örnek); ham kod olarak
+// gösterilir (bkz. plan: "düşük hacim, düşük değer/efor oranı").
+void extractErrEvent(const uint8_t* payload, const FormatDef& def, size_t payloadSize,
+                      ParsedLog& result) {
+    FieldLocator timeField = locateField(def, "TimeUS", payloadSize);
+    FieldLocator subsysField = locateField(def, "Subsys", payloadSize);
+    FieldLocator ecodeField = locateField(def, "ECode", payloadSize);
+    if (!timeField.found || !subsysField.found || !ecodeField.found) return;
+
+    double timeUs = readFieldAsDouble(payload + timeField.byteOffset, timeField.formatChar);
+    double subsys = readFieldAsDouble(payload + subsysField.byteOffset, subsysField.formatChar);
+    double ecode = readFieldAsDouble(payload + ecodeField.byteOffset, ecodeField.formatChar);
+    if (!std::isfinite(timeUs) || !std::isfinite(subsys) || !std::isfinite(ecode)) return;
+
+    FlightEvent event;
+    event.time_s = timeUs / 1e6;
+    event.type = "error";
+    event.severity = "error";
+    event.label = "Subsys " + std::to_string(static_cast<int>(subsys))
+                + " / ECode " + std::to_string(static_cast<int>(ecode));
+    result.events.push_back(event);
+}
+
 // ArduPilot .bin buffer'ını baştan sona tarar: FMT mesajlarından sözlüğü
 // kurar, "BAT" ve "ESC" mesajlarını tek geçişte çözer.
 ParsedLog parseArduPilotBuffer(const std::vector<uint8_t>& buffer) {
@@ -482,6 +629,10 @@ ParsedLog parseArduPilotBuffer(const std::vector<uint8_t>& buffer) {
             extractVehicleTypeFromMsg(buffer.data() + pos + 3, def, payloadSize, result);
         } else if (def.name == "PARM") {
             extractParamSample(buffer.data() + pos + 3, def, payloadSize, result);
+        } else if (def.name == "MODE") {
+            extractModeEvent(buffer.data() + pos + 3, def, payloadSize, result);
+        } else if (def.name == "ERR") {
+            extractErrEvent(buffer.data() + pos + 3, def, payloadSize, result);
         }
 
         pos += def.length;
@@ -768,6 +919,58 @@ void extractUlogVehicleType(const uint8_t* payload, const ULogFormatDef& def, si
     }
 }
 
+// PX4 "vehicle_status.nav_state" -> insan okunur isim. Kaynak: PX4-Autopilot
+// GitHub reposu, msg/versioned/VehicleStatus.msg içindeki NAVIGATION_STATE_*
+// sabitleri (2026-10, gerçek kaynak dosyasından satır satır teyit edildi —
+// tahmin yürütülmedi). Tabloda yoksa (yeni bir PX4 sürümünde eklenmiş bir
+// durum) ham numara ("Durum N") döner.
+const std::map<int, std::string>& px4NavStateNames() {
+    static const std::map<int, std::string> table = {
+        {0, "MANUAL"}, {1, "ALTCTL"}, {2, "POSCTL"}, {3, "AUTO_MISSION"},
+        {4, "AUTO_LOITER"}, {5, "AUTO_RTL"}, {6, "POSITION_SLOW"},
+        {7, "GUIDED_COURSE"}, {8, "ALTITUDE_CRUISE"}, {9, "MANUAL_PARKING"},
+        {10, "ACRO"}, {11, "FREE2"}, {12, "DESCEND"}, {13, "TERMINATION"},
+        {14, "OFFBOARD"}, {15, "STAB"}, {16, "FREE1"}, {17, "AUTO_TAKEOFF"},
+        {18, "AUTO_LAND"}, {19, "AUTO_FOLLOW_TARGET"}, {20, "AUTO_PRECLAND"},
+        {21, "ORBIT"}, {22, "AUTO_VTOL_TAKEOFF"},
+    };
+    return table;
+}
+
+std::string px4NavStateLabel(int navState) {
+    const auto& table = px4NavStateNames();
+    auto it = table.find(navState);
+    if (it != table.end()) return it->second;
+    return "Durum " + std::to_string(navState);
+}
+
+// "vehicle_status.nav_state" değişimlerini uçuş olayı olarak üretir —
+// SADECE önceki örnekten FARKLIYSA (bu alan HER D-mesajında gelir, aynı
+// değeri tekrar tekrar olay yapmak gürültü olurdu; ArduPilot'ta MODE mesajı
+// zaten sadece değişimde loglanıyor, burada aynı davranış elle taklit
+// ediliyor). lastNavState, parseUlogBuffer'ın D-mesaj döngüsünde tutulan
+// yerel bir durumdur, ParsedLog'a girmez.
+void extractUlogNavStateEvent(const uint8_t* payload, const ULogFormatDef& def, size_t payloadSize,
+                               int& lastNavState, ParsedLog& result) {
+    ULogFieldLocator timeField = locateUlogField(def, "timestamp", payloadSize);
+    ULogFieldLocator navField = locateUlogField(def, "nav_state", payloadSize);
+    if (!timeField.found || !navField.found) return;
+
+    double timestamp = readUlogFieldAsDouble(payload + timeField.byteOffset, timeField.field->elementType);
+    int navState = static_cast<int>(
+        readUlogFieldAsDouble(payload + navField.byteOffset, navField.field->elementType));
+    if (!std::isfinite(timestamp)) return;
+    if (navState == lastNavState) return;
+    lastNavState = navState;
+
+    FlightEvent event;
+    event.time_s = timestamp / 1e6;
+    event.type = "mode";
+    event.severity = "info";
+    event.label = px4NavStateLabel(navState);
+    result.events.push_back(event);
+}
+
 // "esc_status" mesajından, içindeki "esc_report" dizisinin her elemanı için
 // akım değerini çıkarır (motor numarası = dizi indeksi + 1).
 void extractUlogEscSamples(const uint8_t* payload, const ULogFormatDef& escStatusDef, size_t payloadSize,
@@ -886,6 +1089,40 @@ void extractUlogActuatorOutputs(const uint8_t* payload, const ULogFormatDef& def
     }
 }
 
+// PX4 ULog "'L'" (logged string message) mesajı -- ArduPilot'un ERR'sinin
+// karşılığı, ama ERR'nin aksine ZATEN İNSAN OKUNUR hazır metin taşıyor
+// (örn. "[commander] Armed by RC switch"). 'A'/'D' mesajlarının aksine bir
+// subscription/msg_id referansı yok, bu yüzden doğrudan ham payload'dan
+// okunuyor: payload[0] = syslog seviyesi (ASCII rakam '0'-'7'),
+// payload[1..8] = uint64 mikrosaniye timestamp, payload[9..] = UTF-8 metin.
+// Sadece WARNING ve üstü (syslog seviyesi <=4: EMERG/ALERT/CRIT/ERR/WARNING)
+// olay olarak alınır; INFO/DEBUG (>4) gürültü olurdu (bkz. plan kararı).
+void extractUlogLogMessageEvent(const uint8_t* payload, size_t msgSize, ParsedLog& result) {
+    if (msgSize < 9) return;
+    char levelChar = static_cast<char>(payload[0]);
+    if (levelChar < '0' || levelChar > '7') return;
+    int level = levelChar - '0';
+    if (level > 4) return;
+
+    uint64_t timestampUs;
+    std::memcpy(&timestampUs, payload + 1, 8);
+
+    std::string text(reinterpret_cast<const char*>(payload + 9), msgSize - 9);
+    // Bazı PX4 log mesajları sonunda sekme/boşluk karakteri taşıyor (gerçek
+    // loglarla gözlendi, ör. "Armed by RC switch\t") -- görüntülenecek bir
+    // etiket için temizleniyor.
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) {
+        text.pop_back();
+    }
+
+    FlightEvent event;
+    event.time_s = static_cast<double>(timestampUs) / 1e6;
+    event.type = "error";
+    event.severity = (level <= 3) ? "error" : "warning";
+    event.label = text;
+    result.events.push_back(event);
+}
+
 // PX4 .ulog buffer'ını iki geçişte tarar: önce tüm Format (F) mesajlarını
 // toplayıp nested tiplerin (esc_report gibi) boyutlarını çözer, sonra
 // Subscription (A) ve Logged Data (D) mesajlarını bu sözlüğe göre işler.
@@ -916,6 +1153,9 @@ ParsedLog parseUlogBuffer(const std::vector<uint8_t>& buffer) {
     resolveNestedSizes(formats);
 
     std::map<uint16_t, ULogSubscription> subscriptions;  // msg_id -> abonelik
+    // nav_state her D-mesajında tekrar gelir (zaman serisi gibi); olay
+    // SADECE önceki örnekten farklıysa üretilmeli (bkz. extractUlogNavStateEvent).
+    int lastNavState = -1;
 
     pos = ULOG_HEADER_LENGTH;
     while (pos + 3 <= buffer.size()) {
@@ -965,6 +1205,8 @@ ParsedLog parseUlogBuffer(const std::vector<uint8_t>& buffer) {
                                 extractUlogEscSamples(payload + 2, fmtIt->second, actualSize, formats, result.motors);
                             } else if (fmtIt->second.name == "vehicle_status" && subIt->second.multiId == 0) {
                                 extractUlogVehicleType(payload + 2, fmtIt->second, actualSize, result);
+                                extractUlogNavStateEvent(payload + 2, fmtIt->second, actualSize,
+                                                          lastNavState, result);
                             } else if (fmtIt->second.name == "actuator_outputs") {
                                 extractUlogActuatorOutputs(payload + 2, fmtIt->second, actualSize,
                                                             subIt->second.multiId, result.pwmOutputs);
@@ -973,8 +1215,10 @@ ParsedLog parseUlogBuffer(const std::vector<uint8_t>& buffer) {
                     }
                 }
             }
+        } else if (msgType == 'L') {
+            extractUlogLogMessageEvent(payload, msgSize, result);
         }
-        // Diğer tipler (B, I, M, P, Q, L, C, S, O, R) şimdilik atlanıyor;
+        // Diğer tipler (B, I, M, P, Q, C, S, O, R) şimdilik atlanıyor;
         // msg_size zaten bilindiği için atlamak güvenli.
 
         pos = payloadStart + msgSize;
@@ -1006,6 +1250,18 @@ ParsedLog parseUlogBuffer(const std::vector<uint8_t>& buffer) {
 void applyVtolOverride(ParsedLog& result) {
     if (result.vehicleType == "fixed_wing" && result.hasQEnableParam && result.qEnableValue != 0.0) {
         result.vehicleType = "vtol";
+    }
+}
+
+// ArduPilot mod olaylarının ham numarasını (bkz. extractModeEvent) nihai
+// vehicleType'a (applyVtolOverride'dan SONRA, yani kesinleşmiş) göre insan
+// okunur isme çevirir. PX4 nav_state olayları ve ArduPilot ERR olayları bu
+// bayrağı hiç taşımadığı için dokunulmaz.
+void resolveModeEventLabels(ParsedLog& result) {
+    for (FlightEvent& event : result.events) {
+        if (!event.needsArduPilotModeLabel) continue;
+        event.label = ardupilotModeLabel(result.vehicleType, event.rawArduPilotModeNumber);
+        event.needsArduPilotModeLabel = false;
     }
 }
 
@@ -1046,9 +1302,12 @@ ParsedLog parseLog(const std::string& logPath) {
 
     ParsedLog result = isUlogFile(buffer) ? parseUlogBuffer(buffer) : parseArduPilotBuffer(buffer);
     applyVtolOverride(result);
+    resolveModeEventLabels(result);
     sortSamplesByTime(result.batteries);
     sortSamplesByTime(result.motors);
     sortSamplesByTime(result.pwmOutputs);
+    std::stable_sort(result.events.begin(), result.events.end(),
+                      [](const FlightEvent& a, const FlightEvent& b) { return a.time_s < b.time_s; });
     return result;
 }
 
@@ -1174,6 +1433,23 @@ void writePwmOutputs(std::ostream& out,
         writeNumberArray(out, pwm_us);
         out << "\n    }";
         if (i + 1 < active.size()) out << ",";
+        out << "\n";
+    }
+    out << "  ]";
+}
+
+void writeEvents(std::ostream& out, const std::vector<FlightEvent>& events) {
+    out << "  \"events\": [\n";
+    for (size_t i = 0; i < events.size(); ++i) {
+        const FlightEvent& event = events[i];
+        out << "    {\n      \"time_s\": " << event.time_s << ",\n      \"type\": ";
+        writeJsonString(out, event.type);
+        out << ",\n      \"label\": ";
+        writeJsonString(out, event.label);
+        out << ",\n      \"severity\": ";
+        writeJsonString(out, event.severity);
+        out << "\n    }";
+        if (i + 1 < events.size()) out << ",";
         out << "\n";
     }
     out << "  ]";
@@ -1491,6 +1767,8 @@ bool writePowerLogJson(const std::string& inputLogPath, const std::string& outpu
     writeMotors(out, parsed.motors);
     out << ",\n";
     writePwmOutputs(out, parsed.pwmOutputs);
+    out << ",\n";
+    writeEvents(out, parsed.events);
     out << ",\n  \"warnings\": ";
     writeStringArray(out, warnings);
     out << "\n}\n";

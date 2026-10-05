@@ -53,6 +53,15 @@ Birden fazla batarya ya da motor olabileceği için ikisi de dizi.
       "pwm_us": [number, ...]  // darbe genişliği (mikrosaniye), time_s ile aynı uzunlukta
     }
   ],
+  "events": [
+    {
+      "time_s": number,      // diğer serilerle aynı zaman tabanında
+      "type": "mode" | "error",
+      "label": string,       // "mode" için insan okunur mod adı (ör. "RTL"),
+                              // "error" için hazır metin (bkz. aşağı)
+      "severity": "info" | "warning" | "error"  // "mode" için hep "info"
+    }
+  ],
   "warnings": [string, ...]  // kural tabanlı, hazır gösterilecek uyarı cümleleri (bkz. aşağı)
 }
 ```
@@ -232,6 +241,39 @@ ve `multirotor` tiplerinin hem ESC telemetrisi olanı hem olmayanı var
 içermiyor, `px4_hexarotor_flight.ulg` içeriyor). "Rover ise motor panelini
 gizle" gibi bir kural, akım sensörlü bir rover'da paneli haksız yere gizler,
 ESC'siz bir multirotor'da ise sahte sıfırı göstermeye devam ederdi.
+
+## `events` alanı
+
+Uçuş modu değişimleri ve hata/uyarı mesajları — zaman serisi DEĞİL, ayrık
+olaylar (grafik üzerinde dikey kesikli çizgi olarak gösterilir). Kaynak:
+ArduPilot `MODE`/`ERR` mesajları, PX4 `vehicle_status.nav_state` değişimleri
+ve `'L'` (logged string message) mesajları.
+
+**`type: "mode"`:** `label` insan okunur mod adı. ArduPilot tarafında araç
+tipine göre seçilen resmi mod adı tablosu kullanılır (`ArduCopter/mode.h`,
+`ArduPlane/mode.h`, `Rover/mode.h`, `ArduSub/mode.h` — QuadPlane/`"vtol"`
+ArduPlane tablosunu kullanır, çünkü QuadPlane modları aynı `Mode::Number`
+enum'unda); tabloda olmayan bir numara görülürse (yeni bir ArduPilot sürümü)
+ham numara (`"Mod N"`) döner, isim uydurulmaz. PX4 tarafında
+`vehicle_status.nav_state`'in GitHub'daki `msg/versioned/VehicleStatus.msg`
+dosyasındaki `NAVIGATION_STATE_*` sabitlerine göre adı kullanılır (tabloda
+yoksa `"Durum N"`). PX4 `nav_state` her örnekte (D mesajı) tekrar geldiği
+için SADECE önceki örnekten farklıysa olay üretilir — ArduPilot `MODE`
+mesajı zaten sadece değişimde loglandığı için orada bu filtre gerekmez.
+
+**`type: "error"`:** ArduPilot `ERR` mesajında `label` ham sayısal kod
+(`"Subsys N / ECode M"`) — bu mesajda insan okunur bir metin YOK ve
+subsys/ecode kombinasyonu çok geniş olduğu için bir isim tablosu
+oluşturulmadı (bilinçli kapsam dışı, gerçek loglarda da çok seyrek: 0-1
+örnek/log). PX4 tarafında ERR'nin karşılığı `'L'` mesajlarıdır — bunlar
+ZATEN insan okunur hazır metin taşır (örn. `"[commander] Armed by RC
+switch"`, gerçek bir logda `"[health_and_arming_checks] Preflight Fail:
+Motor failure detected"` gibi gerçek bir arıza bile yakalandı); SADECE
+WARNING ve üstü severity (syslog seviyesi ≤4) olay olarak alınır, INFO/DEBUG
+(seviye >4) gürültü olacağı için filtrelenir.
+
+`events` boşsa dizi `[]` olur; frontend bu durumda ilgili göstergeyi hiç
+çizmez (çökme yok).
 
 ## `warnings` alanı
 
