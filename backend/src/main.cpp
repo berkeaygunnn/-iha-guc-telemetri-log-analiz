@@ -99,6 +99,19 @@ struct FlightEvent {
     int rawArduPilotModeNumber = 0;
 };
 
+// Bir IMU'nun titreşim örneği. magnitude, üç eksenin vektör büyüklüğüdür ve
+// birimi m/s²'dir. ArduPilot VIBE zaten titreşim seviyesi olduğu için doğrudan
+// bileşenlerinin büyüklüğü alınır; PX4 sensor_accel ise HAM ivmedir (içinde
+// ~9.81 m/s² yerçekimi var), bu yüzden yerçekimi çıkarılıp mutlak sapma
+// alınır (bkz. extractUlogAccelSample). Her iki durum da yaklaşık bir değerdir
+// ve yön bilgisi kaybolur; titreşim IMU'ya aittir, hangi motora ait olduğu
+// bilinmez. clipCount, sensörün doygunluğa ulaştığı örnek sayısıdır.
+struct VibrationSamplePoint {
+    double time_s;
+    double magnitude;
+    uint32_t clipCount;
+};
+
 // Batarya (BAT) ve motor (ESC) mesajlarından çıkarılan tüm veriler.
 // Her ikisi de anahtarı 1'den başlayan motor/batarya no olan bir map: birden
 // fazla batarya/motor varsa hepsi ayrı ayrı tutulur.
@@ -129,6 +142,9 @@ struct ParsedLog {
     // message). Zaman serisi değil, ayrık olaylar — grafik üzerinde dikey
     // çizgi olarak gösteriliyor.
     std::vector<FlightEvent> events;
+    // IMU titreşim serileri (id = IMU/instance numarası + 1). Log bu veriyi
+    // hiç içermiyorsa harita boş kalır ve JSON'a [] yazılır.
+    std::map<int, std::vector<VibrationSamplePoint>> vibration;
     // PX4'te bazı araçlar (ör. bazı Rover yapılandırmaları) hiç "battery_status"
     // yayınlamıyor, sadece dahili güç hatlarını raporlayan "system_power"ı
     // kullanıyor. Bu, ana batarya voltajı/akımı DEĞİL (5V/payload hattı gibi
@@ -578,6 +594,35 @@ void extractErrEvent(const uint8_t* payload, const FormatDef& def, size_t payloa
     result.events.push_back(event);
 }
 
+// "VIBE" mesajının payload'ından IMU numarası ve üç eksen titreşim seviyesini
+// okur (bkz. VibrationSamplePoint). Bir logda binlerce örnek olabilir.
+void extractVibeSample(const uint8_t* payload, const FormatDef& def, size_t payloadSize,
+                        ParsedLog& result) {
+    FieldLocator timeField = locateField(def, "TimeUS", payloadSize);
+    FieldLocator imuField = locateField(def, "IMU", payloadSize);
+    FieldLocator vxField = locateField(def, "VibeX", payloadSize);
+    FieldLocator vyField = locateField(def, "VibeY", payloadSize);
+    FieldLocator vzField = locateField(def, "VibeZ", payloadSize);
+    FieldLocator clipField = locateField(def, "Clip", payloadSize);
+    if (!timeField.found || !imuField.found || !vxField.found || !vyField.found || !vzField.found) return;
+
+    double timeUs = readFieldAsDouble(payload + timeField.byteOffset, timeField.formatChar);
+    int imu = static_cast<int>(readFieldAsDouble(payload + imuField.byteOffset, imuField.formatChar));
+    double vx = readFieldAsDouble(payload + vxField.byteOffset, vxField.formatChar);
+    double vy = readFieldAsDouble(payload + vyField.byteOffset, vyField.formatChar);
+    double vz = readFieldAsDouble(payload + vzField.byteOffset, vzField.formatChar);
+    if (!std::isfinite(timeUs) || !std::isfinite(vx) || !std::isfinite(vy) || !std::isfinite(vz)) return;
+
+    uint32_t clipCount = 0;
+    if (clipField.found) {
+        double clip = readFieldAsDouble(payload + clipField.byteOffset, clipField.formatChar);
+        if (std::isfinite(clip) && clip > 0) clipCount = static_cast<uint32_t>(clip);
+    }
+
+    double magnitude = std::sqrt(vx * vx + vy * vy + vz * vz);
+    result.vibration[imu + 1].push_back(VibrationSamplePoint{timeUs / 1e6, magnitude, clipCount});
+}
+
 // ArduPilot .bin buffer'ını baştan sona tarar: FMT mesajlarından sözlüğü
 // kurar, "BAT" ve "ESC" mesajlarını tek geçişte çözer.
 ParsedLog parseArduPilotBuffer(const std::vector<uint8_t>& buffer) {
@@ -633,6 +678,8 @@ ParsedLog parseArduPilotBuffer(const std::vector<uint8_t>& buffer) {
             extractModeEvent(buffer.data() + pos + 3, def, payloadSize, result);
         } else if (def.name == "ERR") {
             extractErrEvent(buffer.data() + pos + 3, def, payloadSize, result);
+        } else if (def.name == "VIBE") {
+            extractVibeSample(buffer.data() + pos + 3, def, payloadSize, result);
         }
 
         pos += def.length;
@@ -1123,6 +1170,39 @@ void extractUlogLogMessageEvent(const uint8_t* payload, size_t msgSize, ParsedLo
     result.events.push_back(event);
 }
 
+// Standart yerçekimi ivmesi (m/s²). PX4 sensor_accel ham ivme verir; vektör
+// büyüklüğü yerçekimi yüzünden ~9.81 civarında durur, titreşimi görmek için bu
+// sabit çıkarılıyor. Yönelime bağlı değildir (|g| sabittir), bu yüzden
+// büyüklükten çıkarmak güvenli bir yaklaşım; manevra ivmesi hâlâ dahildir.
+constexpr double STANDARD_GRAVITY_MS2 = 9.80665;
+
+void extractUlogAccelSample(const uint8_t* payload, const ULogFormatDef& def, size_t payloadSize,
+                             int multiId, ParsedLog& result) {
+    ULogFieldLocator timeField = locateUlogField(def, "timestamp", payloadSize);
+    ULogFieldLocator xField = locateUlogField(def, "x", payloadSize);
+    ULogFieldLocator yField = locateUlogField(def, "y", payloadSize);
+    ULogFieldLocator zField = locateUlogField(def, "z", payloadSize);
+    ULogFieldLocator clipField = locateUlogField(def, "clip_counter", payloadSize);
+    if (!timeField.found || !xField.found || !yField.found || !zField.found) return;
+
+    double timestamp = readUlogFieldAsDouble(payload + timeField.byteOffset, timeField.field->elementType);
+    double ax = readUlogFieldAsDouble(payload + xField.byteOffset, xField.field->elementType);
+    double ay = readUlogFieldAsDouble(payload + yField.byteOffset, yField.field->elementType);
+    double az = readUlogFieldAsDouble(payload + zField.byteOffset, zField.field->elementType);
+    if (!std::isfinite(timestamp) || !std::isfinite(ax) || !std::isfinite(ay) || !std::isfinite(az)) return;
+
+    uint32_t clipCount = 0;
+    if (clipField.found) {
+        // clip_counter uint8_t[3]: üç eksenin doygunluk sayaçları; toplam tek sayıya indirgenir.
+        for (size_t i = 0; i < clipField.field->size; ++i) {
+            clipCount += payload[clipField.byteOffset + i];
+        }
+    }
+
+    double magnitude = std::fabs(std::sqrt(ax * ax + ay * ay + az * az) - STANDARD_GRAVITY_MS2);
+    result.vibration[multiId + 1].push_back(VibrationSamplePoint{timestamp / 1e6, magnitude, clipCount});
+}
+
 // PX4 .ulog buffer'ını iki geçişte tarar: önce tüm Format (F) mesajlarını
 // toplayıp nested tiplerin (esc_report gibi) boyutlarını çözer, sonra
 // Subscription (A) ve Logged Data (D) mesajlarını bu sözlüğe göre işler.
@@ -1210,6 +1290,9 @@ ParsedLog parseUlogBuffer(const std::vector<uint8_t>& buffer) {
                             } else if (fmtIt->second.name == "actuator_outputs") {
                                 extractUlogActuatorOutputs(payload + 2, fmtIt->second, actualSize,
                                                             subIt->second.multiId, result.pwmOutputs);
+                            } else if (fmtIt->second.name == "sensor_accel") {
+                                extractUlogAccelSample(payload + 2, fmtIt->second, actualSize,
+                                                        subIt->second.multiId, result);
                             }
                         }
                     }
@@ -1306,6 +1389,7 @@ ParsedLog parseLog(const std::string& logPath) {
     sortSamplesByTime(result.batteries);
     sortSamplesByTime(result.motors);
     sortSamplesByTime(result.pwmOutputs);
+    sortSamplesByTime(result.vibration);
     std::stable_sort(result.events.begin(), result.events.end(),
                       [](const FlightEvent& a, const FlightEvent& b) { return a.time_s < b.time_s; });
     return result;
@@ -1433,6 +1517,29 @@ void writePwmOutputs(std::ostream& out,
         writeNumberArray(out, pwm_us);
         out << "\n    }";
         if (i + 1 < active.size()) out << ",";
+        out << "\n";
+    }
+    out << "  ]";
+}
+
+void writeVibration(std::ostream& out, const std::map<int, std::vector<VibrationSamplePoint>>& vibration) {
+    out << "  \"vibration\": [\n";
+    size_t written = 0;
+    for (const auto& entry : vibration) {
+        std::vector<double> time_s, magnitude, clip_count;
+        for (const VibrationSamplePoint& point : entry.second) {
+            time_s.push_back(point.time_s);
+            magnitude.push_back(point.magnitude);
+            clip_count.push_back(static_cast<double>(point.clipCount));
+        }
+        out << "    {\n      \"id\": " << entry.first << ",\n      \"time_s\": ";
+        writeNumberArray(out, time_s);
+        out << ",\n      \"magnitude\": ";
+        writeNumberArray(out, magnitude);
+        out << ",\n      \"clip_count\": ";
+        writeNumberArray(out, clip_count);
+        out << "\n    }";
+        if (++written < vibration.size()) out << ",";
         out << "\n";
     }
     out << "  ]";
@@ -1769,6 +1876,8 @@ bool writePowerLogJson(const std::string& inputLogPath, const std::string& outpu
     writePwmOutputs(out, parsed.pwmOutputs);
     out << ",\n";
     writeEvents(out, parsed.events);
+    out << ",\n";
+    writeVibration(out, parsed.vibration);
     out << ",\n  \"warnings\": ";
     writeStringArray(out, warnings);
     out << "\n}\n";

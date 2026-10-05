@@ -496,7 +496,7 @@ def _normalize_time_axis(data: dict) -> dict:
     süre/enerji/kapasite gibi tüm istatistikler zaman FARKLARINA dayandığı
     için kaydırmadan etkilenmez. Backend JSON'ına dokunulmaz (şemadaki
     time_s mutlak kalır); bu sadece görüntüleme katmanının normalizasyonu."""
-    series_keys = ("batteries", "motors", "pwm_outputs")
+    series_keys = ("batteries", "motors", "pwm_outputs", "vibration")
     starts = [series["time_s"][0]
               for key in series_keys
               for series in data.get(key, []) if series.get("time_s")]
@@ -893,6 +893,11 @@ def _draw_anomaly_overlay(ax, events: list, kind_filter: set, target: tuple):
 
 
 FLIGHT_EVENT_LABEL_MAX_CHARS = 28
+
+# Titreşim satırının yüksekliği: veri yoksa neredeyse sıfır (diğer paneller
+# yerini korur), varsa diğer üç panelin yanında görünür bir pay.
+VIBRATION_HIDDEN_RATIO = 0.0001
+VIBRATION_VISIBLE_RATIO = 0.8
 
 
 def _flight_event_color(event: dict) -> str:
@@ -1465,6 +1470,8 @@ class App(ctk.CTk):
         self._last_batteries = None
         self._flight_events = []
         self._flight_events_visible_pref = True
+        self._last_vibration = []
+        self._vibration_panel_visible_pref = True
         # _load_file arka plan thread'i çalışırken True; testlerin yükleme
         # bitene kadar beklemesi için dışarıdan okunabilir basit bir bayrak.
         self._is_loading = False
@@ -2065,6 +2072,13 @@ class App(ctk.CTk):
         self.flight_events_switch.select()
         self.flight_events_switch.pack(fill="x", padx=SPACING["md"], pady=(0, SPACING["sm"]), anchor="w")
 
+        self.vibration_panel_switch = ctk.CTkSwitch(
+            self.analysis_sidebar, text="Titreşim", command=self._on_toggle_vibration_panel,
+            font=ctk.CTkFont(size=FONT_SIZES["body"]),
+        )
+        self.vibration_panel_switch.select()
+        self.vibration_panel_switch.pack(fill="x", padx=SPACING["md"], pady=(0, SPACING["sm"]), anchor="w")
+
     def _on_toggle_stats_panel(self):
         """stats_row hiçbir yerde ELSE pack_forget/pack edilmiyor (tek pack
         çağrısı _build_stats_row'da) — bu yüzden Tk'nin "yeniden pack'lenen
@@ -2106,6 +2120,11 @@ class App(ctk.CTk):
         self._flight_events_visible_pref = bool(self.flight_events_switch.get())
         self._plot_voltage_panel(self._last_batteries or [])
         self._plot_battery_currents(self._last_batteries or [])
+        self._plot_motor_currents(self._last_motors or [])
+        self.canvas.draw()
+
+    def _on_toggle_vibration_panel(self):
+        self._vibration_panel_visible_pref = bool(self.vibration_panel_switch.get())
         self._plot_motor_currents(self._last_motors or [])
         self.canvas.draw()
 
@@ -3544,20 +3563,26 @@ class App(ctk.CTk):
         # sağa/sola kayıyor" görünümüne yol açıyordu. Sabit kenar boşluğu,
         # görünüm (çizgi/ısı haritası) ne olursa olsun panelin konumunu
         # değiştirmez.
+        # Dördüncü satır (titreşim) veri yokken neredeyse sıfır yükseklikte
+        # kalır (bkz. _plot_vibration_panel); satır sayısı değişmediği için
+        # sabit kenar boşlukları ve diğer panellerin konumu korunur.
         gs = figure.add_gridspec(
-            3, 2, width_ratios=[40, 1],
+            4, 2, width_ratios=[40, 1], height_ratios=[1, 1, 1, VIBRATION_HIDDEN_RATIO],
             left=0.11, right=0.90, top=0.97, bottom=0.08, hspace=0.35, wspace=0.05,
         )
+        self._plot_gs = gs
         self._current_gs_cell = gs[1, 0]
         self._motors_gs_cell = gs[2, 0]
 
         self.ax_voltage = figure.add_subplot(gs[0, 0])
         self.ax_current = figure.add_subplot(self._current_gs_cell, sharex=self.ax_voltage)
         self.ax_motors = figure.add_subplot(self._motors_gs_cell, sharex=self.ax_voltage)
+        self.ax_vibration = figure.add_subplot(gs[3, 0], sharex=self.ax_voltage)
         self._style_axes(self.ax_voltage, "Voltaj (V)")
         self._style_axes(self.ax_current, "Toplam Akım (A)")
         self._style_axes(self.ax_motors, "Motor Akımı (A)")
         self.ax_motors.set_xlabel("Zaman (s)", color=TEXT_SECONDARY)
+        self.ax_vibration.set_visible(False)
 
         self._current_cax = figure.add_subplot(gs[1, 1])
         self._current_cax.axis("off")
@@ -3675,7 +3700,8 @@ class App(ctk.CTk):
             self._hover_annotation = None
 
         ax = event.inaxes
-        if ax not in (self.ax_voltage, self.ax_current, self.ax_motors) or event.xdata is None:
+        if ax not in (self.ax_voltage, self.ax_current, self.ax_motors, self.ax_vibration) \
+                or event.xdata is None:
             self.canvas.draw_idle()
             return
 
@@ -3766,6 +3792,8 @@ class App(ctk.CTk):
         elif ax is self.ax_motors and self.motor_view_mode == "pwm":
             # PWM bir akım değil; bu dal olmadan tooltip "1650.00A" yazıyordu.
             value_text = f"{y:.0f} µs"
+        elif ax is self.ax_vibration:
+            value_text = f"{y:.2f} m/s²"
         else:
             value_text = f"{y:.2f}A"
         return label, x, y, value_text
@@ -4129,6 +4157,7 @@ class App(ctk.CTk):
         self._pwm_saturation_overall = None
         self._last_loaded_path = None
         self._flight_events = []
+        self._last_vibration = []
 
         self._plot_voltage_panel([])
         self._plot_battery_currents([])
@@ -4229,6 +4258,7 @@ class App(ctk.CTk):
         self._update_anomaly_panel(self._anomaly_events, pwm_imbalance_notes)
 
         self._flight_events = data.get("events", [])
+        self._last_vibration = data.get("vibration", [])
         self._plot_voltage_panel(batteries)
 
         self._last_batteries = batteries
@@ -4280,6 +4310,45 @@ class App(ctk.CTk):
     def _draw_flight_events(self, ax, show_labels: bool):
         events = self._flight_events if self._flight_events_visible_pref else []
         _draw_flight_events_overlay(ax, events, show_labels)
+
+    def _vibration_layout_visible(self) -> bool:
+        return bool(self._last_vibration) and self._vibration_panel_visible_pref
+
+    def _sync_vibration_layout(self):
+        """Satır oranını mevcut duruma göre ayarlar. Eksenler bu oran
+        ayarlanmadan ÖNCE oluşturulursa konumları sonradan yanlış hesaplanıyor
+        (ısı haritası geçişinde panel kayıyordu) — bu yüzden her çizim
+        geçişinin başında çağrılır."""
+        ratio = VIBRATION_VISIBLE_RATIO if self._vibration_layout_visible() else VIBRATION_HIDDEN_RATIO
+        self._plot_gs.set_height_ratios([1, 1, 1, ratio])
+
+    def _plot_vibration_panel(self, vibration: list):
+        """Titreşim (IMU) panelini çizer. Veri yoksa veya kullanıcı kapattıysa
+        satır neredeyse sıfır yüksekliğe iner ve alt eksen etiketi motor
+        panelinde kalır; veri varsa satır görünür olur ve alt etiket oraya
+        taşınır. Motor paneli her yeniden çizimde yeniden oluşturulduğu için
+        bu fonksiyon HER ZAMAN _plot_motor_currents'tan sonra çağrılmalı."""
+        ax = self.ax_vibration
+        ax.clear()
+        show = bool(vibration) and self._vibration_panel_visible_pref
+        self._sync_vibration_layout()
+        if not show:
+            ax.set_visible(False)
+            self.ax_motors.set_xlabel("Zaman (s)", color=TEXT_SECONDARY)
+            return
+
+        ax.set_visible(True)
+        self.ax_motors.set_xlabel("")
+        self._style_axes(ax, "Titreşim (m/s²)")
+        ax.set_xlabel("Zaman (s)", color=TEXT_SECONDARY)
+        for i, series in enumerate(vibration):
+            color, linestyle = _series_style(i)
+            ax.plot(series["time_s"], series["magnitude"], color=color, linestyle=linestyle,
+                    linewidth=1, label=f"IMU {series['id']}")
+        if len(vibration) > 1:
+            ax.legend(loc="upper right", facecolor=SURFACE, edgecolor=AXIS_LINE,
+                      labelcolor=TEXT_SECONDARY, fontsize=9)
+        self._draw_flight_events(ax, show_labels=False)
 
     def _plot_voltage_lines(self, batteries: list):
         self._style_axes(self.ax_voltage, "Voltaj (V)")
@@ -4356,6 +4425,7 @@ class App(ctk.CTk):
         yticks gibi ayarların temiz kalması için); colorbar için ayrılan sabit
         eksen (_current_cax) ise SİLİNMEZ, sadece temizlenip gizlenir — bu
         sayede ana grafik alanının genişliği iki görünüm arasında değişmez."""
+        self._sync_vibration_layout()
         self.figure.delaxes(self.ax_current)
         self.ax_current = self.figure.add_subplot(self._current_gs_cell, sharex=self.ax_voltage)
         self._current_cax.clear()
@@ -4484,6 +4554,7 @@ class App(ctk.CTk):
         diye); colorbar için ayrılan sabit eksen (_motors_cax) SİLİNMEZ,
         sadece temizlenip gizlenir — ana grafik alanının genişliği iki
         görünüm arasında değişmesin diye."""
+        self._sync_vibration_layout()
         self.figure.delaxes(self.ax_motors)
         self.ax_motors = self.figure.add_subplot(self._motors_gs_cell, sharex=self.ax_voltage)
         self._motors_cax.clear()
@@ -4508,6 +4579,7 @@ class App(ctk.CTk):
         else:
             self._plot_motor_lines(motors)
         self._draw_flight_events(self.ax_motors, show_labels=False)
+        self._plot_vibration_panel(self._last_vibration)
 
     def _plot_motor_lines(self, motors: list):
         """Her motorun akımını kendi renginde çizer; kullanılabilir ölçüm

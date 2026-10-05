@@ -1439,6 +1439,54 @@ class SmokeTests(unittest.TestCase):
         self.assertIsNotNone(found)
         self.assertEqual(found[0], "Batarya 1")
 
+    # --- Titreşim paneli (IMU serileri, dördüncü satır) -----------------------
+
+    def test_vibration_switch_is_on_by_default(self):
+        self.assertEqual(self.app.vibration_panel_switch.get(), 1)
+
+    def test_vibration_panel_shows_one_line_per_imu_when_data_exists(self):
+        self._load_and_plot("ArduCopter-MaxAltFence-00000067.BIN")
+        self.assertTrue(self.app.ax_vibration.get_visible())
+        labels = [line.get_label() for line in self._data_lines(self.app.ax_vibration)]
+        self.assertEqual(labels, ["IMU 1", "IMU 2"])
+        self.assertEqual(self.app._plot_gs.get_height_ratios()[3], frontend_main.VIBRATION_VISIBLE_RATIO)
+        self.assertEqual(self.app.ax_vibration.get_xlabel(), "Zaman (s)")
+        self.assertEqual(self.app.ax_motors.get_xlabel(), "")
+
+    def test_vibration_panel_collapses_and_keeps_motor_axis_label_without_data(self):
+        self._load_and_plot("synthetic_test_log.BIN")
+        self.assertFalse(self.app.ax_vibration.get_visible())
+        self.assertEqual(self.app._plot_gs.get_height_ratios()[3], frontend_main.VIBRATION_HIDDEN_RATIO)
+        self.assertEqual(self.app.ax_motors.get_xlabel(), "Zaman (s)")
+
+    def test_vibration_switch_off_collapses_panel_and_on_restores(self):
+        self._load_and_plot("ArduCopter-MaxAltFence-00000067.BIN")
+        self.app.vibration_panel_switch.deselect()
+        self.app._on_toggle_vibration_panel()
+        self.assertFalse(self.app.ax_vibration.get_visible())
+        self.app.vibration_panel_switch.select()
+        self.app._on_toggle_vibration_panel()
+        self.assertTrue(self.app.ax_vibration.get_visible())
+
+    def test_vibration_hover_reports_m_per_s2(self):
+        self._load_and_plot("ArduCopter-MaxAltFence-00000067.BIN")
+        series = self.app._last_vibration[0]
+        probe = SimpleNamespace(xdata=series["time_s"][0], ydata=series["magnitude"][0])
+        found = self.app._hover_nearest_line_point(self.app.ax_vibration, probe)
+        self.assertIsNotNone(found)
+        self.assertIn("m/s²", found[3])
+
+    def test_time_normalization_shifts_vibration_series_too(self):
+        data = {
+            "batteries": [{"time_s": [1450.0, 1460.0]}],
+            "motors": [], "pwm_outputs": [], "events": [],
+            "vibration": [{"id": 1, "time_s": [1449.0, 1451.0], "magnitude": [0.1, 0.2],
+                           "clip_count": [0.0, 0.0]}],
+        }
+        frontend_main._normalize_time_axis(data)
+        self.assertEqual(data["vibration"][0]["time_s"], [0.0, 2.0])
+        self.assertEqual(data["batteries"][0]["time_s"], [1.0, 11.0])
+
     # --- Analiz ekranı sidebar'ı (gezinme rayı) --------------------------------
 
     @staticmethod

@@ -53,6 +53,14 @@ Birden fazla batarya ya da motor olabileceği için ikisi de dizi.
       "pwm_us": [number, ...]  // darbe genişliği (mikrosaniye), time_s ile aynı uzunlukta
     }
   ],
+  "vibration": [
+    {
+      "id": number,            // IMU sırası (1, 2, ...); bkz. aşağı
+      "time_s": [number, ...],
+      "magnitude": [number, ...],  // titreşim büyüklüğü (m/s²), time_s ile aynı uzunlukta
+      "clip_count": [number, ...]  // sensör doygunluk sayacı, time_s ile aynı uzunlukta
+    }
+  ],
   "events": [
     {
       "time_s": number,      // diğer serilerle aynı zaman tabanında
@@ -241,6 +249,27 @@ ve `multirotor` tiplerinin hem ESC telemetrisi olanı hem olmayanı var
 içermiyor, `px4_hexarotor_flight.ulg` içeriyor). "Rover ise motor panelini
 gizle" gibi bir kural, akım sensörlü bir rover'da paneli haksız yere gizler,
 ESC'siz bir multirotor'da ise sahte sıfırı göstermeye devam ederdi.
+
+## `vibration` alanı
+
+IMU titreşim serileri. Kaynak: ArduPilot `VIBE` (`IMU`, `VibeX/Y/Z`, `Clip`)
+ve PX4 `sensor_accel` (`x`, `y`, `z`, `clip_counter`). Her IMU ayrı bir `id`
+(`IMU/instance + 1`) altında tutulur. Veri yoksa dizi `[]` olur.
+
+**Büyüklük iki kaynakta farklı hesaplanır — karşılaştırılırken dikkat:**
+- ArduPilot `VIBE` zaten titreşim seviyesidir; `magnitude` = `√(VibeX² + VibeY² + VibeZ²)`.
+- PX4 `sensor_accel` HAM ivmedir ve içinde yerçekimi (~9.81 m/s²) vardır.
+  `magnitude` = `|√(x²+y²+z²) − 9.80665|` — yerçekimi çıkarılır. |g| yönelimden
+  bağımsız olduğu için bu güvenli bir yaklaşımdır; ancak manevra ivmesi de
+  dahil olur, yani PX4 değerleri "saf titreşim" değildir.
+
+**Titreşim IMU'ya aittir, motora değil.** Bir uçakta tek IMU vardır, motorların
+hangisinin titrediği bu veriden ÇIKARILAMAZ. Bu yüzden titreşim hiçbir motora
+atfedilmez; pervane dengesizliği uyarısını yalnızca "doğrulayabilir" (aynı
+zaman penceresinde gerçek titreşim de yüksek mi?).
+
+`clip_count`: sensörün doygunluğa ulaştığı örnek sayısı (PX4'te üç eksenin
+sayaçlarının toplamı). Yüksek değer, ölçümün güvenilmez olabileceğine işaret eder.
 
 ## `events` alanı
 

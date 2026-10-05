@@ -1938,6 +1938,91 @@ class FlightEventTests(unittest.TestCase):
             path.unlink(missing_ok=True)
 
 
+class VibrationTests(unittest.TestCase):
+    """vibration alanı: ArduPilot VIBE ve PX4 sensor_accel (bkz. shared/
+    power_log_schema.md, "vibration" bölümü)."""
+
+    @staticmethod
+    def _assert_well_formed(test, series):
+        for s in series:
+            test.assertEqual(len(s["time_s"]), len(s["magnitude"]))
+            test.assertEqual(len(s["time_s"]), len(s["clip_count"]))
+            test.assertEqual(s["time_s"], sorted(s["time_s"]))
+            test.assertTrue(all(m >= 0.0 for m in s["magnitude"]))
+
+    def test_ardupilot_real_log_has_one_series_per_imu(self):
+        data = run_backend(DATA_DIR / "ArduCopter-MaxAltFence-00000067.BIN")
+        self.assertEqual([s["id"] for s in data["vibration"]], [1, 2])
+        self._assert_well_formed(self, data["vibration"])
+
+    def test_px4_real_log_has_one_series_per_imu(self):
+        data = run_backend(DATA_DIR / "px4_hexarotor_flight.ulg")
+        self.assertEqual([s["id"] for s in data["vibration"]], [1, 2, 3])
+        self._assert_well_formed(self, data["vibration"])
+
+    def test_log_without_vibration_data_yields_empty_list(self):
+        data = run_backend(DATA_DIR / "synthetic_test_log.BIN")
+        self.assertEqual(data["vibration"], [])
+
+    def test_ardupilot_vibe_magnitude_is_vector_norm(self):
+        """VibeX=3, VibeY=4, VibeZ=0 -> büyüklük 5.0; Clip=7; IMU=0 -> id 1."""
+        VIBE_TYPE, BAT_TYPE = 106, make_synthetic_log.BAT_TYPE
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(
+            VIBE_TYPE, "VIBE", "QBfffI", "TimeUS,IMU,VibeX,VibeY,VibeZ,Clip")
+        out += bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, VIBE_TYPE])
+        out += struct.pack("<QBfffI", int(1.0 * 1e6), 0, 3.0, 4.0, 0.0, 7)
+        out += make_synthetic_log.build_fmt_message(BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr")
+        out += make_synthetic_log.build_bat_message(1.0, 0, 12.6, 5.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            self.assertEqual(len(data["vibration"]), 1)
+            series = data["vibration"][0]
+            self.assertEqual(series["id"], 1)
+            self.assertAlmostEqual(series["magnitude"][0], 5.0, places=5)
+            self.assertEqual(series["clip_count"][0], 7)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_px4_accel_subtracts_gravity_from_magnitude(self):
+        """Ham ivme (0, 0, g + 1) -> titreşim büyüklüğü 1.0 (yerçekimi çıkar).
+        Yerçekimi tek başına (0, 0, g) ~0 vermeli. clip_counter 1+2+3 = 6."""
+        def accel_message(ts_s, z, clip_bytes):
+            payload = struct.pack("<H", 2) + struct.pack("<Q", int(ts_s * 1e6))
+            payload += struct.pack("<fff", 0.0, 0.0, z) + bytes(clip_bytes)
+            return make_synthetic_ulog.build_message(make_synthetic_ulog.MSG_DATA, payload)
+
+        out = bytearray()
+        out += make_synthetic_ulog.build_header()
+        out += make_synthetic_ulog.build_flag_bits_message()
+        out += make_synthetic_ulog.build_format_message(
+            "battery_status:uint64_t timestamp;float voltage_v;float current_a;")
+        out += make_synthetic_ulog.build_format_message(
+            "sensor_accel:uint64_t timestamp;float x;float y;float z;uint8_t[3] clip_counter;")
+        out += make_synthetic_ulog.build_subscription_message(1, "battery_status", multi_id=0)
+        out += make_synthetic_ulog.build_subscription_message(2, "sensor_accel", multi_id=0)
+        out += make_synthetic_ulog.build_battery_data_message(1, 1.0, 16.0, 5.0)
+        out += accel_message(1.0, 9.80665, [0, 0, 0])
+        out += accel_message(2.0, 9.80665 + 1.0, [1, 2, 3])
+
+        with tempfile.NamedTemporaryFile(suffix=".ulog", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            series = data["vibration"][0]
+            self.assertEqual(series["id"], 1)
+            self.assertAlmostEqual(series["magnitude"][0], 0.0, places=4)
+            self.assertAlmostEqual(series["magnitude"][1], 1.0, places=4)
+            self.assertEqual(series["clip_count"], [0.0, 6.0])
+        finally:
+            path.unlink(missing_ok=True)
+
+
 class SchemaConformanceTests(unittest.TestCase):
     """shared/power_log_schema.md'de dokümante edilen alanların gerçekten
     üretildiğini doğrudan kontrol eder. Öncesinde şemayla backend'in çıktısı
