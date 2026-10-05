@@ -208,6 +208,21 @@ VTOL araçlar `vehicle_type`'ı uçuş fazına göre rotary_wing ile fixed_wing
 arasında değiştirir; ayrı bir `is_vtol` bayrağı taşıdıkları için tek ve
 sabit bir etiket üretmek adına ona öncelik verilir (`"vtol"`).
 
+**ArduPilot QuadPlane'ler için aynı sorunun çözümü:** ArduPilot firmware adı
+("ArduPlane") QuadPlane (VTOL) olup olmadığını ayırt etmez — `Q_ENABLE` bir
+çalışma zamanı parametresi, derleme zamanı bir firmware türü değil. Backend
+bu yüzden `PARM` mesajlarını tarayıp `Q_ENABLE` parametresini arar; firmware
+zaten `"fixed_wing"` olarak çözülmüş VE `Q_ENABLE != 0` ise `vehicle_type`
+ayrıştırma bittikten sonra (`applyVtolOverride`, PARM mesajları firmware
+adından önce de sonra da gelebildiği için post-process olarak) `"vtol"`'a
+çevrilir. `Q_ENABLE` parametresi SADECE ArduPlane firmware'inde var —
+ArduCopter/Rover loglarında PARM içinde hiç geçmez, bu beklenen bir durumdur,
+hata değildir ve `vehicle_type`'ı etkilemez. Gerçek bir log üzerinde
+doğrulandı: `ArduPlane-FlyEachFrame-00000182.BIN` (`Q_ENABLE=1.0`, 5 motorlu
+gerçek bir QuadPlane geçiş uçuşu) artık `"vtol"`, `ArduPlane-
+GpsSensorPreArmEAHRS-00000115.BIN` (`Q_ENABLE=0.0`, gerçek bir sabit kanat)
+`"fixed_wing"` kalıyor.
+
 **Bu alan yalnızca bilgi amaçlıdır** — frontend'de dosya adının yanında bir
 etiket olarak gösterilir. Hangi panellerin çizileceği buna göre **belirlenmez**;
 o karar `has_current_data`'ya bakar. Sebebi ölçülmüş bir gerçek: araç tipi,

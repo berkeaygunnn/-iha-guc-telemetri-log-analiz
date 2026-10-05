@@ -1265,6 +1265,104 @@ class VehicleTypeTests(unittest.TestCase):
         finally:
             path.unlink(missing_ok=True)
 
+    @staticmethod
+    def _build_param_message(msg_type, name, value):
+        """Sentetik bir ArduPilot "PARM" mesajı (format "Nf": Name char[16],
+        Value float) -- gerçek loglarda Q_ENABLE'ın bulunduğu mesaj tipiyle
+        aynı yapı."""
+        return (
+            bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, msg_type])
+            + name.encode("ascii").ljust(16, b"\x00")
+            + struct.pack("<f", value)
+        )
+
+    def _build_ardupilot_log_with_param(self, firmware_name, q_enable_value, param_before_msg):
+        MSG_TYPE = 103
+        PARM_TYPE = 104
+        msg_fmt = make_synthetic_log.build_fmt_message(MSG_TYPE, "MSG", "QZ", "TimeUS,Message")
+        msg_data = (
+            bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, MSG_TYPE])
+            + struct.pack("<Q", int(0.5 * 1e6)) + firmware_name.encode("ascii").ljust(64, b"\x00")
+        )
+        parm_fmt = make_synthetic_log.build_fmt_message(PARM_TYPE, "PARM", "Nf", "Name,Value")
+        parm_data = self._build_param_message(PARM_TYPE, "Q_ENABLE", q_enable_value)
+
+        out = bytearray()
+        out += msg_fmt
+        out += parm_fmt
+        # Gerçek loglarda PARM mesajları MSG'den önce de sonra da gelebilir
+        # (sıra garantisi yok); bu yüzden override post-process olarak
+        # uygulanıyor -- iki sıra da burada test ediliyor.
+        if param_before_msg:
+            out += parm_data
+            out += msg_data
+        else:
+            out += msg_data
+            out += parm_data
+        out += make_synthetic_log.build_fmt_message(
+            make_synthetic_log.BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr"
+        )
+        out += make_synthetic_log.build_bat_message(1.0, 0, 12.6, 5.0)
+        return bytes(out)
+
+    def test_ardupilot_quadplane_q_enable_one_overrides_fixed_wing_to_vtol(self):
+        """Q_ENABLE=1 taşıyan bir ArduPlane logu "vtol" etiketlenmeli (gerçek
+        logla da doğrulanan davranış, bkz. ArduPlaneQuadPlaneRealLogTests)."""
+        log_bytes = self._build_ardupilot_log_with_param(
+            "ArduPlane V4.8.0-dev", q_enable_value=1.0, param_before_msg=False
+        )
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(log_bytes)
+            path = Path(f.name)
+        try:
+            self.assertEqual(run_backend(path)["meta"]["vehicle_type"], "vtol")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_ardupilot_q_enable_zero_stays_fixed_wing(self):
+        """Q_ENABLE=0 (gerçek bir sabit kanat, quadplane değil) etiketi
+        değiştirmemeli."""
+        log_bytes = self._build_ardupilot_log_with_param(
+            "ArduPlane V4.8.0-dev", q_enable_value=0.0, param_before_msg=False
+        )
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(log_bytes)
+            path = Path(f.name)
+        try:
+            self.assertEqual(run_backend(path)["meta"]["vehicle_type"], "fixed_wing")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_ardupilot_q_enable_before_firmware_message_still_overrides(self):
+        """PARM mesajı MSG'den (firmware adı satırı) ÖNCE gelse de override
+        doğru uygulanmalı -- bu yüzden override ayrıştırma bittikten sonra
+        post-process olarak yapılıyor, inline değil."""
+        log_bytes = self._build_ardupilot_log_with_param(
+            "ArduPlane V4.8.0-dev", q_enable_value=1.0, param_before_msg=True
+        )
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(log_bytes)
+            path = Path(f.name)
+        try:
+            self.assertEqual(run_backend(path)["meta"]["vehicle_type"], "vtol")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_ardupilot_q_enable_only_applies_to_fixed_wing(self):
+        """Q_ENABLE parametresi ArduCopter/Rover loglarında teorik olarak
+        (sentetik bir testte) bulunsa bile vehicle_type'ı DEĞİŞTİRMEMELİ --
+        override sadece firmware zaten "fixed_wing" ise uygulanıyor."""
+        log_bytes = self._build_ardupilot_log_with_param(
+            "ArduCopter V4.3.7", q_enable_value=1.0, param_before_msg=False
+        )
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(log_bytes)
+            path = Path(f.name)
+        try:
+            self.assertEqual(run_backend(path)["meta"]["vehicle_type"], "multirotor")
+        finally:
+            path.unlink(missing_ok=True)
+
 
 class HasCurrentDataTests(unittest.TestCase):
     """has_current_data bayrağı: akım sensörü bağlı değilken ArduPilot/PX4 bu
@@ -1719,11 +1817,11 @@ class ArduPlaneQuadPlaneRealLogTests(unittest.TestCase):
 
     def test_format_and_vehicle_type(self):
         self.assertEqual(self.data["meta"]["format"], "ardupilot")
-        # ArduPilot firmware adı quadplane çerçeve sınıfını ayırt etmiyor
-        # (Q_ENABLE bir parametre, firmware string'i değil) -- bu yüzden
-        # "vtol" değil "fixed_wing" kalır. Bilinen bir sınırlama, bu testin
-        # kapsamı dışında.
-        self.assertEqual(self.data["meta"]["vehicle_type"], "fixed_wing")
+        # ArduPilot firmware adı ("ArduPlane") tek başına quadplane çerçeve
+        # sınıfını ayırt etmiyor, ama bu log PARM içinde Q_ENABLE=1 taşıyor
+        # (gerçek loglarla doğrulandı) -- backend bu parametreyi okuyup
+        # "fixed_wing"i "vtol"a çeviriyor (bkz. applyVtolOverride).
+        self.assertEqual(self.data["meta"]["vehicle_type"], "vtol")
 
     def test_no_battery_data_but_processing_succeeds(self):
         self.assertEqual(self.data["batteries"], [])

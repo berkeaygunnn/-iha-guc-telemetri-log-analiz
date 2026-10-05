@@ -383,13 +383,12 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   yoktu). `shared/power_log_schema.md`'ye "Batarya verisi hiç yoksa"
   bölümü eklendi. Backend 92→97, frontend 117→118 test.
 
-  **Bilinen, kapsam dışı bırakılan sınırlama:** ArduPilot firmware adı
-  quadplane çerçeve sınıfını ayırt etmiyor (`Q_ENABLE` bir parametre,
-  firmware string'i değil) — bu yüzden bu logun `vehicle_type`'ı `"vtol"`
-  değil `"fixed_wing"` kalıyor. PX4 tarafında `is_vtol` bayrağı sayesinde
-  bu ayrım zaten var; ArduPilot tarafında düzeltmek FMT/PARM mesajlarından
-  `Q_ENABLE` parametresinin değerini okumayı gerektirir — ayrı bir iş,
-  bu turun kapsamı dışında.
+  **Sonradan düzeltildi (bkz. "VTOL/Q_ENABLE düzeltmesi" maddesi aşağıda):**
+  o dönemde ArduPilot firmware adının quadplane çerçeve sınıfını ayırt
+  etmediği (`Q_ENABLE` bir parametre, firmware string'i değil) ve bu logun
+  `vehicle_type`'ının `"vtol"` değil `"fixed_wing"` kaldığı not edilmişti;
+  sonraki bir turda `PARM`/`Q_ENABLE` okunarak düzeltildi, bu log artık
+  `"vtol"` etiketleniyor.
 
 - **Zaman ekseni artık 0'dan başlıyor (görüntüleme katmanı normalizasyonu):**
   kullanıcı haklı bir tutarsızlık yakaladı — süre kartı 90.0 s derken
@@ -729,6 +728,42 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   `test_smoke.py`'a 13 yeni test (günlük kontrol sınırı, dialog/atla/güncel
   senaryoları, indirme başarı/hata yolu, Ayarlar'daki bölümün sadece
   paketlenmiş sürümde göründüğü), toplam 182 smoke testi (169→182).
+
+- **VTOL/Q_ENABLE düzeltmesi.** Kullanıcı için hazırlanan bir durum raporu
+  ("hangi veriler okunmuyor") ArduPilot `MODE`/`ERR`/`VIBE` ve PX4
+  `vehicle_status` mod geçişi/`sensor_accel` verisinin hiç okunmadığını
+  ortaya çıkardı; bu, üç parçalı bir takip işinin (uçuş olayları, titreşim
+  paneli ile birlikte) ilk adımı. Kod yazmadan önce `data/` klasöründeki
+  TÜM örnek loglar gerçek byte seviyesinde tarandı (backend'in kendi FMT
+  ayrıştırma mantığı — header/offset/format-karakter tablosu — birebir
+  taklit edilerek) ve önceden not edilmiş "ArduPilot firmware adı quadplane
+  çerçeve sınıfını ayırt etmiyor" sınırlamasının gerçek çözümü doğrulandı:
+  `PARM` mesajları içinde `Q_ENABLE` parametresi var ve `ArduPlane-
+  FlyEachFrame-00000182.BIN`'de (5 motorlu gerçek bir QuadPlane geçiş
+  uçuşu) `1.0`, gerçek bir sabit kanat olan `ArduPlane-
+  GpsSensorPreArmEAHRS-00000115.BIN`'de `0.0` çıktı — ArduCopter/Rover
+  loglarında bu parametre hiç yok (beklenen, hata değil).
+
+  Backend'e (`backend/src/main.cpp`) `extractParamSample` (PARM mesajından
+  `Q_ENABLE` değerini okur) ve `applyVtolOverride` (firmware zaten
+  `"fixed_wing"` VE `Q_ENABLE != 0` ise `"vtol"`a çevirir) eklendi.
+  **Sıra garantisi önemli bir tasarım noktasıydı:** PARM mesajları
+  firmware adını taşıyan `MSG` satırından önce de sonra da gelebilir, bu
+  yüzden override ayrıştırma döngüsü BİTTİKTEN SONRA (`parseLog` içinde,
+  `sortSamplesByTime`'dan önce) post-process olarak uygulanıyor — inline
+  bir kontrol olsaydı sıraya bağlı yanlış sonuç riski olurdu (bu, sentetik
+  bir testle de doğrulandı: PARM mesajı MSG'den önce yerleştirilmiş bir
+  logda da override doğru çalışıyor).
+
+  Önceden bu sınırlamayı belgeleyen eski bir test
+  (`ArduPlaneQuadPlaneRealLogTests.test_format_and_vehicle_type`,
+  `"fixed_wing"` bekliyordu) artık düzeltilmiş davranışı (`"vtol"`)
+  doğruluyor; `shared/power_log_schema.md`'nin `vehicle_type` bölümü
+  güncellendi. Düzeltme mutasyonla doğrulandı (override koşulu
+  devre dışı bırakılıp 3 testin kırmızı çıktığı teyit edildi, sonra
+  geri getirildi). Backend 103→107 test (4 yeni: Q_ENABLE=1→vtol,
+  Q_ENABLE=0→fixed_wing kalır, PARM MSG'den önce gelse de override çalışır,
+  Q_ENABLE sadece zaten "fixed_wing" olan loglara uygulanır).
 
 ## Kapsam dışı bırakılan fikirler
 
