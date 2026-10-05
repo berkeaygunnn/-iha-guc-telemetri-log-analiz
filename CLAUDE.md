@@ -783,6 +783,23 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   veri sanmıyor; zaman ekseni t0'ı olaylar dahil edilerek hesaplanıyor (ilk
   olay ilk örnekten birkaç ms önceyse olayın konumu bozulmasın diye).
 
+- **Titreşim paneli (IMU serileri).** ArduPilot `VIBE` ve PX4 `sensor_accel`
+  verisi `vibration` dizisi olarak aktarılıyor (IMU başına bir seri). ArduPilot
+  için büyüklük `√(VibeX²+VibeY²+VibeZ²)`; PX4 ham ivme olduğu için
+  `|‖a‖ − 9.80665|` (yerçekimi çıkarılıyor, mutasyonla doğrulandı). Titreşim
+  IMU'ya aittir, motora değil: motora atıf yapılmıyor. Ana grafik tek figür
+  olarak kalıyor; titreşim dördüncü bir satır (`ax_vibration`, ortak zaman
+  ekseni). Veri yoksa satır neredeyse sıfır yüksekliğe iniyor. Tespit edilen
+  sorun: satır oranı, eksenler oluşturulmadan ÖNCE ayarlanmazsa ısı haritası
+  geçişinde panel kayıyordu — her çizim geçişinin başında `_sync_vibration_layout`
+  çağrılarak giderildi. Backend 116→121 test.
+
+  **Planla bilerek farklı yapılan şey:** pervane dengesizliği uyarısının
+  titreşimle "doğrulanması" uygulanmadı. Mevcut dengesizlik olayı tüm uçuşu
+  tek pencere olarak kapsıyor; titreşim için bir karşılaştırma tabanı yok, bu
+  yüzden anlamlı bir doğrulama/çürütme cümlesi üretilemez. Yanıltıcı bir hüküm
+  eklemek yerine atlandı; zaman pencereli bir dengesizlik tespiti gerektirir.
+
 ## Kapsam dışı bırakılan fikirler
 
 - **Yapay zeka / makine öğrenmesi entegrasyonu:** Değerlendirildi, KESİN
