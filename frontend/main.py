@@ -825,11 +825,11 @@ def _draw_imbalance_band(ax, series_means: list, threshold: float):
     if overall_mean <= 0:
         return
     ax.axhspan(overall_mean * (1 - threshold), overall_mean * (1 + threshold), color=COLOR_WARNING, alpha=0.08, zorder=0)
-    # Bandın ne olduğu etiketsiz belirsizdi (kullanıcı geri bildirimi) — tek
-    # satır açıklama, panel köşesinde, ölçeği/veriyi etkilemeyen transAxes'te.
-    ax.text(
-        0.99, 0.02, f"bant: ortalama ±%{threshold * 100:.0f} dengesizlik eşiği",
-        transform=ax.transAxes, ha="right", va="bottom", fontsize=7, color=TEXT_MUTED,
+    # Bandın ne olduğu etiketsiz belirsizdi (kullanıcı geri bildirimi). Not
+    # veriyle çakışmasın diye eksenin ÜSTÜNDEKİ başlık şeridine yazılıyor.
+    ax.set_title(
+        f"bant: ortalama ±%{threshold * 100:.0f} dengesizlik eşiği",
+        loc="right", fontsize=7, color=TEXT_MUTED, pad=3,
     )
 
 
