@@ -500,6 +500,7 @@ def _normalize_time_axis(data: dict) -> dict:
     starts = [series["time_s"][0]
               for key in series_keys
               for series in data.get(key, []) if series.get("time_s")]
+    starts += [event["time_s"] for event in data.get("events", [])]
     if not starts:
         return data
     t0 = min(starts)
@@ -508,6 +509,8 @@ def _normalize_time_axis(data: dict) -> dict:
     for key in series_keys:
         for series in data.get(key, []):
             series["time_s"] = [t - t0 for t in series["time_s"]]
+    for event in data.get("events", []):
+        event["time_s"] = event["time_s"] - t0
     return data
 
 
@@ -887,6 +890,48 @@ def _draw_anomaly_overlay(ax, events: list, kind_filter: set, target: tuple):
             continue
         color = COLOR_CRITICAL if event.severity == "critical" else COLOR_WARNING
         ax.axvspan(event.t_start, event.t_end, color=color, alpha=0.15, zorder=0)
+
+
+FLIGHT_EVENT_LABEL_MAX_CHARS = 28
+
+
+def _flight_event_color(event: dict) -> str:
+    if event["type"] == "mode":
+        return TEXT_MUTED
+    return COLOR_CRITICAL if event["severity"] == "error" else COLOR_WARNING
+
+
+def _truncate_event_label(text: str) -> str:
+    if len(text) <= FLIGHT_EVENT_LABEL_MAX_CHARS:
+        return text
+    return text[: FLIGHT_EVENT_LABEL_MAX_CHARS - 1] + "…"
+
+
+def _draw_flight_events_overlay(ax, events: list, show_labels: bool):
+    """Uçuş olaylarını (mod değişimi, hata/uyarı) dikey kesikli çizgi olarak
+    çizer. Etiket (kısaltılmış, dikey yazılı) sadece show_labels=True olan
+    eksende (üst panel) ve art arda gelen çok yakın olaylarda bastırılarak
+    üst üste binmez; tam metin hover ipucunda (bkz. _on_plot_hover). Çizgiler
+    her panelde çizilir ki zaman ekseni görsel olarak hizalı kalsın. Olay yoksa
+    hiçbir şey çizilmez."""
+    if not events:
+        return
+    for event in events:
+        ax.axvline(event["time_s"], color=_flight_event_color(event), linestyle="--",
+                   linewidth=1, alpha=0.6, label="_flight_event", zorder=1)
+    if not show_labels:
+        return
+    xmin, xmax = ax.get_xlim()
+    min_label_gap_s = max(1.0, (xmax - xmin) * 0.02)
+    last_label_x = None
+    for event in events:
+        x = event["time_s"]
+        if last_label_x is not None and x - last_label_x < min_label_gap_s:
+            continue
+        last_label_x = x
+        ax.text(x, 0.98, _truncate_event_label(event["label"]),
+                transform=ax.get_xaxis_transform(), rotation=90, ha="right", va="top",
+                fontsize=7, color=_flight_event_color(event))
 
 
 def _format_relative_time(when: datetime) -> str:
@@ -1418,6 +1463,8 @@ class App(ctk.CTk):
         self.battery_view_mode = "line"  # "line" ya da "heatmap" (busbar yüklenmesi)
         self._battery_colorbar = None
         self._last_batteries = None
+        self._flight_events = []
+        self._flight_events_visible_pref = True
         # _load_file arka plan thread'i çalışırken True; testlerin yükleme
         # bitene kadar beklemesi için dışarıdan okunabilir basit bir bayrak.
         self._is_loading = False
@@ -2011,6 +2058,13 @@ class App(ctk.CTk):
         self.anomaly_panel_switch.select()
         self.anomaly_panel_switch.pack(fill="x", padx=SPACING["md"], pady=(0, SPACING["sm"]), anchor="w")
 
+        self.flight_events_switch = ctk.CTkSwitch(
+            self.analysis_sidebar, text="Uçuş Olayları", command=self._on_toggle_flight_events,
+            font=ctk.CTkFont(size=FONT_SIZES["body"]),
+        )
+        self.flight_events_switch.select()
+        self.flight_events_switch.pack(fill="x", padx=SPACING["md"], pady=(0, SPACING["sm"]), anchor="w")
+
     def _on_toggle_stats_panel(self):
         """stats_row hiçbir yerde ELSE pack_forget/pack edilmiyor (tek pack
         çağrısı _build_stats_row'da) — bu yüzden Tk'nin "yeniden pack'lenen
@@ -2047,6 +2101,13 @@ class App(ctk.CTk):
         else:
             self.warnings_frame.pack_forget()
         self._update_anomaly_panel(self._last_anomaly_events, self._last_pwm_notes)
+
+    def _on_toggle_flight_events(self):
+        self._flight_events_visible_pref = bool(self.flight_events_switch.get())
+        self._plot_voltage_panel(self._last_batteries or [])
+        self._plot_battery_currents(self._last_batteries or [])
+        self._plot_motor_currents(self._last_motors or [])
+        self.canvas.draw()
 
     def _build_toolbar(self):
         """Üst kısımdaki dosya yükleme/dışa aktarma/temizle butonları, son
@@ -3618,6 +3679,13 @@ class App(ctk.CTk):
             self.canvas.draw_idle()
             return
 
+        flight_event_hit = self._hover_nearest_flight_event(ax, event)
+        if flight_event_hit is not None:
+            text, x, y = flight_event_hit
+            self._show_hover_annotation(ax, x, y, text)
+            self.canvas.draw_idle()
+            return
+
         # Isı haritasında eksende hiç çizgi yok; hücre bilgisi çizim sırasında
         # saklanan ızgaradan okunur (bkz. _plot_*_heatmap).
         heatmap = self._heatmap_for_axes(ax)
@@ -3634,6 +3702,33 @@ class App(ctk.CTk):
         self._show_hover_annotation(ax, x, y, f"{label}\n{x:.1f}s → {value_text}")
         self.canvas.draw_idle()
 
+    def _hover_nearest_flight_event(self, ax, event):
+        """İmleç bir uçuş olayı çizgisine (x ekseninde ~%1 mesafe) ve etiketin
+        bulunduğu üst şeride (eksenin üst %20'si) yakınsa olayın tam metnini
+        döndürür: (tooltip metni, x, y) ya da None. Üst şerit dışında kalan
+        imleçler normal değer tooltip'ine bırakılır; ısı haritalarında hücre
+        bilgisi öncelikli olduğu için olay tooltip'i orada hiç devreye girmez."""
+        if not self._flight_events_visible_pref or not self._flight_events:
+            return None
+        if self._heatmap_for_axes(ax) is not None:
+            return None
+        ymin, ymax = ax.get_ylim()
+        if event.ydata < ymin + 0.8 * (ymax - ymin):
+            return None
+        xmin, xmax = ax.get_xlim()
+        tolerance = (xmax - xmin) * 0.01
+        best = None
+        for flight_event in self._flight_events:
+            distance = abs(flight_event["time_s"] - event.xdata)
+            if distance <= tolerance and (best is None or distance < best[0]):
+                best = (distance, flight_event)
+        if best is None:
+            return None
+        flight_event = best[1]
+        kind = "Mod değişimi" if flight_event["type"] == "mode" else "Hata/uyarı"
+        x = flight_event["time_s"]
+        return f"{kind}: {flight_event['label']}\n{x:.1f}s", x, event.ydata
+
     def _heatmap_for_axes(self, ax):
         """Verilen eksen şu an ısı haritası çiziyorsa hover verisini döndürür."""
         if ax is self.ax_current:
@@ -3647,6 +3742,8 @@ class App(ctk.CTk):
         Dönüş: (etiket, zaman, değer, gösterilecek metin) ya da None."""
         best = None
         for line in ax.get_lines():
+            if line.get_label().startswith("_"):
+                continue  # eşik/olay çizgileri veri değil, dekoratif (bkz. _data_lines)
             xdata, ydata = line.get_xdata(), line.get_ydata()
             if len(xdata) == 0:
                 continue
@@ -4031,6 +4128,7 @@ class App(ctk.CTk):
         self._pwm_saturation = []
         self._pwm_saturation_overall = None
         self._last_loaded_path = None
+        self._flight_events = []
 
         self._plot_voltage_panel([])
         self._plot_battery_currents([])
@@ -4130,6 +4228,7 @@ class App(ctk.CTk):
         self._anomaly_events.extend(motor_imbalance_events)
         self._update_anomaly_panel(self._anomaly_events, pwm_imbalance_notes)
 
+        self._flight_events = data.get("events", [])
         self._plot_voltage_panel(batteries)
 
         self._last_batteries = batteries
@@ -4176,6 +4275,11 @@ class App(ctk.CTk):
             self._plot_temperature_lines(batteries)
         else:
             self._plot_voltage_lines(batteries)
+        self._draw_flight_events(self.ax_voltage, show_labels=True)
+
+    def _draw_flight_events(self, ax, show_labels: bool):
+        events = self._flight_events if self._flight_events_visible_pref else []
+        _draw_flight_events_overlay(ax, events, show_labels)
 
     def _plot_voltage_lines(self, batteries: list):
         self._style_axes(self.ax_voltage, "Voltaj (V)")
@@ -4269,6 +4373,7 @@ class App(ctk.CTk):
             self._plot_battery_heatmap(batteries)
         else:
             self._plot_battery_lines(batteries)
+        self._draw_flight_events(self.ax_current, show_labels=False)
 
     def _plot_battery_lines(self, batteries: list):
         """Her bataryanın (busbar'ın) toplam akımını kendi renginde çizer.
@@ -4402,6 +4507,7 @@ class App(ctk.CTk):
             self._plot_motor_heatmap(motors)
         else:
             self._plot_motor_lines(motors)
+        self._draw_flight_events(self.ax_motors, show_labels=False)
 
     def _plot_motor_lines(self, motors: list):
         """Her motorun akımını kendi renginde çizer; kullanılabilir ölçüm

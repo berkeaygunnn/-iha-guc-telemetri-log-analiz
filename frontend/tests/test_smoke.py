@@ -21,7 +21,10 @@ import types
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+from matplotlib.figure import Figure
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = FRONTEND_DIR.parent / "data"
@@ -135,7 +138,7 @@ class SmokeTests(unittest.TestCase):
         data = self._load_and_plot("px4_sample_log_small.ulg")
         self.assertEqual(len(data["batteries"]), 2)
         self.assertEqual(len(self._data_lines(self.app.ax_voltage)), 2)
-        self.assertEqual(len(self.app.ax_current.get_lines()), 2)
+        self.assertEqual(len(self._data_lines(self.app.ax_current)), 2)
 
     def test_synthetic_bin_with_heatmap_toggle(self):
         data = self._load_and_plot("synthetic_test_log.BIN")
@@ -151,7 +154,7 @@ class SmokeTests(unittest.TestCase):
         dönüldüğünde eski çizgi sayısı korunmalı."""
         data = self._load_and_plot("px4_sample_log_small.ulg")
         self.assertEqual(len(data["batteries"]), 2)
-        self.assertEqual(len(self.app.ax_current.get_lines()), 2)
+        self.assertEqual(len(self._data_lines(self.app.ax_current)), 2)
 
         self.app.battery_view_toggle.set("Isı Haritası")
         self.app._on_battery_view_change("Isı Haritası")
@@ -163,7 +166,7 @@ class SmokeTests(unittest.TestCase):
 
         self.app.battery_view_toggle.set("Çizgi Grafiği")
         self.app._on_battery_view_change("Çizgi Grafiği")
-        self.assertEqual(len(self.app.ax_current.get_lines()), 2)
+        self.assertEqual(len(self._data_lines(self.app.ax_current)), 2)
 
     def test_synthetic_bin_shows_motor_imbalance_warnings(self):
         self._load_and_plot("synthetic_test_log.BIN")
@@ -241,22 +244,22 @@ class SmokeTests(unittest.TestCase):
         file_path = str(DATA_DIR / "synthetic_test_log.BIN")
         self._load_file_and_wait(file_path)
         self.app._on_clear_click()
-        self.assertEqual(len(self.app.ax_voltage.get_lines()), 0)
+        self.assertEqual(len(self._data_lines(self.app.ax_voltage)), 0)
 
         label = next(iter(self.app._recent_label_to_path))
         self.app._on_recent_file_selected(label)
         self._wait_for_load()
-        self.assertGreater(len(self.app.ax_voltage.get_lines()), 0)
+        self.assertGreater(len(self._data_lines(self.app.ax_voltage)), 0)
 
     def test_clear_button_resets_everything(self):
         self._load_and_plot("synthetic_test_log.BIN")
-        self.assertGreater(len(self.app.ax_voltage.get_lines()), 0)
+        self.assertGreater(len(self._data_lines(self.app.ax_voltage)), 0)
 
         self.app._on_clear_click()
 
-        self.assertEqual(len(self.app.ax_voltage.get_lines()), 0)
-        self.assertEqual(len(self.app.ax_current.get_lines()), 0)
-        self.assertEqual(len(self.app.ax_motors.get_lines()), 0)
+        self.assertEqual(len(self._data_lines(self.app.ax_voltage)), 0)
+        self.assertEqual(len(self._data_lines(self.app.ax_current)), 0)
+        self.assertEqual(len(self._data_lines(self.app.ax_motors)), 0)
         self.assertEqual(self.app._warning_labels, [])
         self.assertEqual(self.app.file_label.cget("text"), "Henüz dosya seçilmedi.")
         self.assertEqual(self.app.stat_labels["duration"].cget("text"), "—")
@@ -514,7 +517,7 @@ class SmokeTests(unittest.TestCase):
         self._load_and_plot("px4_hexarotor_flight.ulg")
         self.app.motor_view_toggle.set("Isı Haritası")
         self.app._on_motor_view_change("Isı Haritası")
-        self.assertEqual(len(self.app.ax_motors.get_lines()), 0)  # okunacak çizgi yok
+        self.assertEqual(len(self._data_lines(self.app.ax_motors)), 0)  # okunacak çizgi yok
 
         first_label = self.app.ax_motors.get_yticklabels()[0].get_text()
         text = self._hover_text(self.app.ax_motors, self.app._motors_heatmap["times"][3], 1.0)
@@ -796,7 +799,7 @@ class SmokeTests(unittest.TestCase):
 
         self.app._on_voltage_view_change("Sıcaklık")
         self.assertIn("°C", self.app.ax_voltage.get_ylabel())
-        self.assertGreater(len(self.app.ax_voltage.get_lines()), 0)
+        self.assertGreater(len(self._data_lines(self.app.ax_voltage)), 0)
 
         self.app._on_voltage_view_change("Voltaj")
         self.assertIn("V", self.app.ax_voltage.get_ylabel())
@@ -808,7 +811,7 @@ class SmokeTests(unittest.TestCase):
         self._load_and_plot("synthetic_test_log.BIN")
 
         self.app._on_voltage_view_change("Sıcaklık")
-        self.assertEqual(len(self.app.ax_voltage.get_lines()), 0)
+        self.assertEqual(len(self._data_lines(self.app.ax_voltage)), 0)
         texts = [t.get_text() for t in self.app.ax_voltage.texts]
         self.assertTrue(any("sıcaklık verisi yok" in t.lower() for t in texts))
 
@@ -838,7 +841,7 @@ class SmokeTests(unittest.TestCase):
         data = self._load_and_plot("px4_ground_rover_flight.ulg")
         self.assertFalse(data["batteries"][0]["has_current_data"])
 
-        self.assertEqual(len(self.app.ax_current.get_lines()), 0)
+        self.assertEqual(len(self._data_lines(self.app.ax_current)), 0)
         self.assertIn("akım sensörü verisi yok", self._rover_axis_texts(self.app.ax_current))
 
     def test_rover_log_shows_message_in_motor_panel(self):
@@ -847,7 +850,7 @@ class SmokeTests(unittest.TestCase):
         data = self._load_and_plot("px4_ground_rover_flight.ulg")
         self.assertEqual(len(data["motors"]), 0)
 
-        self.assertEqual(len(self.app.ax_motors.get_lines()), 0)
+        self.assertEqual(len(self._data_lines(self.app.ax_motors)), 0)
         self.assertIn("motor (esc) akım verisi yok", self._rover_axis_texts(self.app.ax_motors))
 
     def test_rover_log_shows_message_in_heatmap_view_too(self):
@@ -912,7 +915,7 @@ class SmokeTests(unittest.TestCase):
     def test_ardupilot_rover_draws_current_unlike_the_px4_rover(self):
         """Akım paneli burada durum mesajı DEĞİL gerçek bir çizgi göstermeli."""
         self._load_and_plot(self.ARDUROVER_LOG)
-        self.assertEqual(len(self.app.ax_current.get_lines()), 1)
+        self.assertEqual(len(self._data_lines(self.app.ax_current)), 1)
         self.assertNotIn("akım sensörü verisi yok",
                          self._rover_axis_texts(self.app.ax_current))
 
@@ -992,7 +995,7 @@ class SmokeTests(unittest.TestCase):
         self.app.motor_view_toggle.set("PWM Çıkışı")
         self.app._on_motor_view_change("PWM Çıkışı")
 
-        self.assertEqual(len(self.app.ax_motors.get_lines()), 0)
+        self.assertEqual(len(self._data_lines(self.app.ax_motors)), 0)
         texts = [t.get_text().lower() for t in self.app.ax_motors.texts]
         self.assertTrue(any("pwm çıkış verisi yok" in t for t in texts))
 
@@ -1010,7 +1013,7 @@ class SmokeTests(unittest.TestCase):
             if expect == "image":
                 self.assertEqual(len(self.app.ax_motors.get_images()), 1, label)
             else:
-                self.assertGreater(len(self.app.ax_motors.get_lines()), 0, label)
+                self.assertGreater(len(self._data_lines(self.app.ax_motors)), 0, label)
 
     def test_pwm_deviation_heatmap_draws_image_and_labels(self):
         """PWM Sapma modu, kanal sayısı kadar satırlı bir ısı haritası
@@ -1326,6 +1329,115 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(self.app._warning_wraplength, 700 - sidebar_w - 32)
         self.assertEqual(self.app._warning_labels[0].cget("wraplength"), 700 - sidebar_w - 32)
         self.assertEqual(self.app.status_label.cget("wraplength"), 700 - sidebar_w - 32)
+
+    # --- Uçuş olayları (MODE/ERR/nav_state/'L' -> dikey çizgi + etiket) ----------
+
+    @staticmethod
+    def _event_lines(ax):
+        return [line for line in ax.get_lines() if line.get_label() == "_flight_event"]
+
+    def test_flight_events_switch_is_on_by_default(self):
+        self.assertEqual(self.app.flight_events_switch.get(), 1)
+
+    def test_flight_events_drawn_on_all_panels_with_labels_only_on_top(self):
+        data = self._load_and_plot("ArduCopter-MaxAltFence-00000067.BIN")
+        self.assertEqual(len(data["events"]), 6)  # 5 MODE + 1 ERR
+        self.assertEqual(len(self._event_lines(self.app.ax_voltage)), 6)
+        self.assertEqual(len(self._event_lines(self.app.ax_current)), 6)
+        self.assertEqual(len(self._event_lines(self.app.ax_motors)), 6)
+        top_labels = [t for t in self.app.ax_voltage.texts if t.get_rotation() == 90]
+        self.assertGreater(len(top_labels), 0)
+        self.assertEqual([t for t in self.app.ax_current.texts if t.get_rotation() == 90], [])
+
+    def test_flight_events_switch_off_removes_lines_and_on_restores(self):
+        self._load_and_plot("ArduCopter-MaxAltFence-00000067.BIN")
+        self.app.flight_events_switch.deselect()
+        self.app._on_toggle_flight_events()
+        self.assertEqual(self._event_lines(self.app.ax_voltage), [])
+        self.app.flight_events_switch.select()
+        self.app._on_toggle_flight_events()
+        self.assertEqual(len(self._event_lines(self.app.ax_voltage)), 6)
+
+    def test_log_without_events_draws_no_event_lines(self):
+        self._load_and_plot("synthetic_test_log.BIN")
+        self.assertEqual(self._event_lines(self.app.ax_voltage), [])
+        self.assertEqual(self._event_lines(self.app.ax_current), [])
+
+    def test_event_labels_do_not_overlap_in_dense_sequences(self):
+        """100 s'lik eksende 10,11,12,13 s'deki olaylar: min aralık
+        max(1, %2 * 100) = 2 s; yani 10 ve 12 etiketli, 11 ve 13 bastırılır."""
+        figure = Figure()
+        ax = figure.add_subplot(111)
+        ax.set_xlim(0, 100)
+        events = [
+            {"time_s": t, "type": "error", "label": f"olay {t}", "severity": "warning"}
+            for t in (10, 11, 12, 13, 50)
+        ]
+        frontend_main._draw_flight_events_overlay(ax, events, show_labels=True)
+        texts = [t.get_text() for t in ax.texts]
+        self.assertEqual(texts, ["olay 10", "olay 12", "olay 50"])
+
+    def test_long_event_label_is_truncated(self):
+        short = "[commander] Takeoff detected"
+        self.assertEqual(frontend_main._truncate_event_label(short), short)
+        long = "[health_and_arming_checks] Preflight Fail: Motor failure detected"
+        truncated = frontend_main._truncate_event_label(long)
+        self.assertLessEqual(len(truncated), frontend_main.FLIGHT_EVENT_LABEL_MAX_CHARS)
+        self.assertTrue(truncated.endswith("…"))
+
+    def test_normalize_time_axis_shifts_events_with_series(self):
+        data = {
+            "batteries": [{"time_s": [1450.0, 1460.0]}],
+            "motors": [],
+            "pwm_outputs": [],
+            "events": [{"time_s": 1453.0}, {"time_s": 1510.0}],
+        }
+        frontend_main._normalize_time_axis(data)
+        self.assertEqual(data["batteries"][0]["time_s"], [0.0, 10.0])
+        self.assertEqual([e["time_s"] for e in data["events"]], [3.0, 60.0])
+
+    def test_normalize_time_axis_handles_event_before_first_sample(self):
+        """Olay ilk veri örneğinden önce olsa bile eksen tutarlı kalmalı:
+        t0 olayı da kapsar, negatif zaman çıkmaz."""
+        data = {
+            "batteries": [{"time_s": [1450.0, 1460.0]}],
+            "motors": [], "pwm_outputs": [],
+            "events": [{"time_s": 1440.0}],
+        }
+        frontend_main._normalize_time_axis(data)
+        self.assertEqual(data["events"][0]["time_s"], 0.0)
+        self.assertEqual(data["batteries"][0]["time_s"], [10.0, 20.0])
+
+    def test_hover_returns_full_event_text_near_its_line(self):
+        self.app._flight_events = [
+            {"time_s": 20.0, "type": "error", "label": "[failsafe] Failsafe activated",
+             "severity": "warning"},
+        ]
+        figure = Figure()
+        ax = figure.add_subplot(111)
+        ax.set_xlim(0, 100)
+        ax.set_ylim(0, 10)
+        top_zone_hit = SimpleNamespace(xdata=20.3, ydata=9.5)
+        text, x, y = self.app._hover_nearest_flight_event(ax, top_zone_hit)
+        self.assertIn("[failsafe] Failsafe activated", text)
+        self.assertEqual(x, 20.0)
+        # Üst şerit dışı (orta yükseklik): değer tooltip'i çalışsın diye None
+        mid_height_hit = SimpleNamespace(xdata=20.3, ydata=5.0)
+        self.assertIsNone(self.app._hover_nearest_flight_event(ax, mid_height_hit))
+        far_event = SimpleNamespace(xdata=60.0, ydata=9.5)
+        self.assertIsNone(self.app._hover_nearest_flight_event(ax, far_event))
+
+    def test_data_hover_ignores_decorative_event_lines(self):
+        """axvline'lar ax.get_lines() içinde; hover bunları veri sanmamalı
+        (aksi halde tooltip "_flight_event" gösterirdi)."""
+        figure = Figure()
+        ax = figure.add_subplot(111)
+        ax.plot([0, 10], [12.0, 12.0], label="Batarya 1")
+        ax.axvline(0.0, label="_flight_event")
+        probe = SimpleNamespace(xdata=0.0, ydata=0.0)
+        found = self.app._hover_nearest_line_point(ax, probe)
+        self.assertIsNotNone(found)
+        self.assertEqual(found[0], "Batarya 1")
 
     # --- Analiz ekranı sidebar'ı (gezinme rayı) --------------------------------
 
@@ -2184,7 +2296,7 @@ class SmokeTests(unittest.TestCase):
             {"id": 2, "time_s": [0.0, 1.0], "voltage_v": [16.8, 16.5],
              "current_a": [0.0, 0.0], "has_current_data": False},
         ])
-        self.assertEqual(len(self.app.ax_current.get_lines()), 1)
+        self.assertEqual(len(self._data_lines(self.app.ax_current)), 1)
         self.assertEqual(self.app.ax_current.get_lines()[0].get_label(), "Batarya 1")
         self.assertEqual(len(self.app.ax_current.texts), 0)  # "veri yok" mesajı çıkmamalı
 
@@ -2203,7 +2315,7 @@ class SmokeTests(unittest.TestCase):
             log_path.write_bytes(make_synthetic_log.generate())
             self._load_file_and_wait(str(log_path))
             self.assertEqual(self.app.status_label.cget("text"), "")
-            self.assertGreater(len(self.app.ax_voltage.get_lines()), 0)
+            self.assertGreater(len(self._data_lines(self.app.ax_voltage)), 0)
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -2232,7 +2344,7 @@ class SmokeTests(unittest.TestCase):
         try:
             data = self.app._run_backend(str(path))
             self.app._plot_battery_currents(data["batteries"])
-            self.assertEqual(len(self.app.ax_current.get_lines()), 3)
+            self.assertEqual(len(self._data_lines(self.app.ax_current)), 3)
             self.assertEqual(len(self.app.ax_current.patches), 1)  # dengesizlik bandı
         finally:
             shutil.rmtree(path.parent, ignore_errors=True)
@@ -2275,11 +2387,11 @@ class SmokeTests(unittest.TestCase):
         çizilmeli."""
         data = self._load_and_plot("ArduPlane-GpsSensorPreArmEAHRS-00000115.BIN")
         self.assertEqual(data["meta"]["vehicle_type"], "fixed_wing")
-        self.assertEqual(len(self.app.ax_current.get_lines()), 1)
+        self.assertEqual(len(self._data_lines(self.app.ax_current)), 1)
         self.assertEqual(len(self._data_lines(self.app.ax_current)), 1)
 
         self.app._plot_motor_currents(data["motors"])
-        self.assertEqual(len(self.app.ax_motors.get_lines()), 1)
+        self.assertEqual(len(self._data_lines(self.app.ax_motors)), 1)
         self.assertEqual(len(self.app.ax_motors.texts), 0)  # "veri yok" mesajı çıkmamalı
 
     def test_real_quadplane_log_with_no_battery_data_does_not_crash(self):
@@ -2300,7 +2412,7 @@ class SmokeTests(unittest.TestCase):
         self.assertIn(frontend_main.NO_BATTERY_CURRENT_MESSAGE, current_texts)
 
         self.app._plot_motor_currents(data["motors"])
-        self.assertEqual(len(self.app.ax_motors.get_lines()), 5)
+        self.assertEqual(len(self._data_lines(self.app.ax_motors)), 5)
 
     def test_time_axis_starts_at_zero_and_matches_duration_card(self):
         """PX4 zaman damgaları kontrolcünün açılışından itibaren sayılıyor;
@@ -2313,8 +2425,11 @@ class SmokeTests(unittest.TestCase):
         data = self._load_and_plot("px4_hexarotor_flight.ulg")
 
         all_times = [t for battery in data["batteries"] for t in battery["time_s"]]
+        # t0 seriler VE olaylardan birlikte hesaplanır (bkz. _normalize_time_axis):
+        # ilk olay ilk batarya örneğinden birkaç ms önceyse eksen olayla başlar.
+        axis_start = min(all_times + [e["time_s"] for e in data["events"]])
         first, last = min(all_times), max(all_times)
-        self.assertAlmostEqual(first, 0.0, places=6)
+        self.assertAlmostEqual(axis_start, 0.0, places=6)
         # Kayıt ~90 s; normalizasyon olmasaydı last ~1543.5 olurdu.
         self.assertLess(last, 200.0)
 

@@ -1846,6 +1846,98 @@ class ArduPlaneQuadPlaneRealLogTests(unittest.TestCase):
         self.assertGreaterEqual(len(wide_range_channels), 1)
 
 
+class FlightEventTests(unittest.TestCase):
+    """events alanı: ArduPilot MODE/ERR, PX4 nav_state değişimi ve 'L' (logged
+    message) mesajları. Her iddia gerçek bir logla (ya da bilinen bir
+    sentetik girdiyle) doğrulanır."""
+
+    @staticmethod
+    def _labels(data, event_type):
+        return [e["label"] for e in data["events"] if e["type"] == event_type]
+
+    def test_ardupilot_mode_names_resolved_from_copter_table(self):
+        data = run_backend(DATA_DIR / "ArduCopter-MaxAltFence-00000067.BIN")
+        self.assertEqual(self._labels(data, "mode"),
+                         ["STABILIZE", "LOITER", "LOITER", "CIRCLE", "RTL"])
+        for event in data["events"]:
+            if event["type"] == "mode":
+                self.assertEqual(event["severity"], "info")
+
+    def test_ardupilot_err_is_raw_subsys_ecode_with_error_severity(self):
+        data = run_backend(DATA_DIR / "ArduCopter-MaxAltFence-00000067.BIN")
+        errors = [e for e in data["events"] if e["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["label"], "Subsys 3 / ECode 0")
+        self.assertEqual(errors[0]["severity"], "error")
+
+    def test_ardupilot_quadplane_mode_names_use_plane_table(self):
+        """vtol araçlar ArduPlane mod tablosunu kullanır (QuadPlane modları
+        aynı Mode::Number enum'unda)."""
+        data = run_backend(DATA_DIR / "ArduPlane-FlyEachFrame-00000182.BIN")
+        self.assertEqual(data["meta"]["vehicle_type"], "vtol")
+        self.assertEqual(self._labels(data, "mode"),
+                         ["FLY_BY_WIRE_A", "FLY_BY_WIRE_A", "AUTO"])
+
+    def test_px4_nav_state_emits_one_event_per_change_not_per_sample(self):
+        """hexarotor logunda vehicle_status yüzlerce kez tekrarlanır ama
+        nav_state sadece 3 kez değişiyor (OFFBOARD -> AUTO_LAND -> OFFBOARD)."""
+        data = run_backend(DATA_DIR / "px4_hexarotor_flight.ulg")
+        self.assertEqual(self._labels(data, "mode"), ["OFFBOARD", "AUTO_LAND", "OFFBOARD"])
+
+    def test_px4_warning_messages_extracted_with_trailing_whitespace_removed(self):
+        data = run_backend(DATA_DIR / "px4_hexarotor_flight.ulg")
+        errors = [e for e in data["events"] if e["type"] == "error"]
+        labels = [e["label"] for e in errors]
+        self.assertIn("[health_and_arming_checks] Preflight Fail: Motor failure detected", labels)
+        self.assertIn("[failsafe] Failsafe activated", labels)
+        for label in labels:
+            self.assertEqual(label, label.rstrip(), "sondaki boşluk/sekme temizlenmeli")
+        for event in errors:
+            self.assertEqual(event["severity"], "warning")
+
+    def test_px4_info_level_messages_are_filtered_out(self):
+        """'[commander] Takeoff detected' INFO (syslog 6) seviyesinde; olay
+        listesine girmemeli, aksi halde gürültü olur."""
+        data = run_backend(DATA_DIR / "px4_sample_log_small.ulg")
+        labels = [e["label"] for e in data["events"]]
+        self.assertFalse(any("Takeoff detected" in label for label in labels))
+        for event in data["events"]:
+            if event["type"] == "error":
+                self.assertIn(event["severity"], ("error", "warning"))
+
+    def test_events_are_sorted_by_time(self):
+        data = run_backend(DATA_DIR / "px4_hexarotor_flight.ulg")
+        times = [e["time_s"] for e in data["events"]]
+        self.assertEqual(times, sorted(times))
+
+    def test_log_without_mode_or_err_messages_has_empty_events(self):
+        data = run_backend(DATA_DIR / "synthetic_test_log.BIN")
+        self.assertEqual(data["events"], [])
+
+    def test_unknown_ardupilot_mode_number_falls_back_to_raw_label(self):
+        """Tabloda olmayan bir mod numarası isim uydurmadan "Mod N" olarak
+        gösterilmeli (yeni bir ArduPilot sürümü için güvenli davranış)."""
+        MSG_TYPE, MODE_TYPE, BAT_TYPE = 103, 105, make_synthetic_log.BAT_TYPE
+        out = bytearray()
+        out += make_synthetic_log.build_fmt_message(MSG_TYPE, "MSG", "QZ", "TimeUS,Message")
+        out += bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, MSG_TYPE])
+        out += struct.pack("<Q", int(0.5 * 1e6)) + b"ArduCopter V4.3.7".ljust(64, b"\x00")
+        out += make_synthetic_log.build_fmt_message(MODE_TYPE, "MODE", "QBBB", "TimeUS,Mode,ModeNum,Rsn")
+        out += bytes([make_synthetic_log.HEAD1, make_synthetic_log.HEAD2, MODE_TYPE])
+        out += struct.pack("<QBBB", int(1.0 * 1e6), 99, 99, 0)
+        out += make_synthetic_log.build_fmt_message(BAT_TYPE, "BAT", "QBff", "TimeUS,Inst,Volt,Curr")
+        out += make_synthetic_log.build_bat_message(1.0, 0, 12.6, 5.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".BIN", delete=False) as f:
+            f.write(bytes(out))
+            path = Path(f.name)
+        try:
+            data = run_backend(path)
+            self.assertEqual(self._labels(data, "mode"), ["Mod 99"])
+        finally:
+            path.unlink(missing_ok=True)
+
+
 class SchemaConformanceTests(unittest.TestCase):
     """shared/power_log_schema.md'de dokümante edilen alanların gerçekten
     üretildiğini doğrudan kontrol eder. Öncesinde şemayla backend'in çıktısı

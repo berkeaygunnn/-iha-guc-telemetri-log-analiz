@@ -765,6 +765,24 @@ Proje MIT lisansıyla açık kaynak olarak GitHub'da paylaşılacak.
   Q_ENABLE=0→fixed_wing kalır, PARM MSG'den önce gelse de override çalışır,
   Q_ENABLE sadece zaten "fixed_wing" olan loglara uygulanır).
 
+- **Uçuş olayları (mod değişimleri + hata/uyarılar).** ArduPilot `MODE`/`ERR`
+  ve PX4 `vehicle_status.nav_state`/`'L'` (logged message) mesajları JSON'a
+  `events` dizisi olarak aktarılıyor ve analiz grafiklerinde dikey kesikli
+  çizgi + kısa dikey etiket olarak gösteriliyor. Mod adları ArduPilot
+  (`ArduCopter/ArduPlane/Rover/ArduSub` `mode.h`) ve PX4
+  (`msg/versioned/VehicleStatus.msg`) resmi kaynaklarından satır satır teyit
+  edildi. PX4 nav_state yalnızca değiştiğinde olay üretiyor (her D-mesajında
+  tekrar olay olmasın diye); PX4 'L' mesajlarında sadece WARNING ve üstü
+  severity alınıyor (INFO gürültüsü filtrelendi). ArduPilot ERR ham kod
+  olarak kalıyor (isim tablosu yok, bilerek). Etiketler art arda gelen çok
+  yakın olaylarda bastırılıyor; tam metin üst şeritteki hover ipucunda.
+  Gerçek bir PX4 hexarotor logunda "Motor failure detected" + "Failsafe
+  activated" + AUTO_LAND dizisi yakalandı. Backend 107→116 test (9 yeni,
+  mutasyonla doğrulanan nav_state tekilleştirmesi dahil), frontend'e 10 yeni
+  test. Frontend'de iki düzeltme: hover artık dekoratif (`_` önekli) çizgileri
+  veri sanmıyor; zaman ekseni t0'ı olaylar dahil edilerek hesaplanıyor (ilk
+  olay ilk örnekten birkaç ms önceyse olayın konumu bozulmasın diye).
+
 ## Kapsam dışı bırakılan fikirler
 
 - **Yapay zeka / makine öğrenmesi entegrasyonu:** Değerlendirildi, KESİN
