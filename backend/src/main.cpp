@@ -110,6 +110,15 @@ struct ParsedLog {
     // "batarya verisi yok" durumunda kullanıcıya daha isabetli bir hata mesajı
     // verebilmek için bu konunun görülüp görülmediği izleniyor.
     bool hasSystemPowerTopic = false;
+    // ArduPilot'ta QuadPlane (VTOL) olup olmadığının tek göstergesi "Q_ENABLE"
+    // parametresidir (PARM mesajı) — firmware adı ("ArduPlane") tek başına
+    // ayırt etmiyor, çünkü Q_ENABLE bir çalışma zamanı ayarı, derleme zamanı
+    // bir firmware türü değil. PARM mesajları ArduPilot'un araç tipini
+    // belirleyen "MSG" satırından önce de sonra da gelebilir, bu yüzden bu
+    // bayrak önce toplanır, araç tipi override'ı ayrıştırma bittikten sonra
+    // uygulanır (bkz. applyVtolOverride).
+    bool hasQEnableParam = false;
+    double qEnableValue = 0.0;
     // Kümülatif tüketilen kapasite (mAh) ve kalan yüzde (0-100) — batarya
     // zaman serisinin tamamı değil, o bataryada en son görülen tek değer
     // (ArduPilot'ta "CurrTot"/"RemPct", PX4'te "discharged_mah"/"remaining").
@@ -399,6 +408,29 @@ void extractVehicleTypeFromMsg(const uint8_t* payload, const FormatDef& def, siz
     if (!vehicleType.empty()) result.vehicleType = vehicleType;
 }
 
+// "PARM" mesajının payload'ından parametre adını ("Name", char[16]) ve
+// değerini ("Value", float) okur; sadece "Q_ENABLE" ile ilgileniyoruz
+// (QuadPlane/VTOL tespiti için, bkz. applyVtolOverride). Bir logda binlerce
+// PARM mesajı olabilir; Q_ENABLE bir kez bulunduktan sonra tekrar aranmaz.
+void extractParamSample(const uint8_t* payload, const FormatDef& def, size_t payloadSize,
+                         ParsedLog& result) {
+    if (result.hasQEnableParam) return;
+
+    FieldLocator nameField = locateField(def, "Name", payloadSize);
+    FieldLocator valueField = locateField(def, "Value", payloadSize);
+    if (!nameField.found || !valueField.found) return;
+
+    size_t maxLength = payloadSize - nameField.byteOffset;
+    if (maxLength > fieldByteSize(nameField.formatChar)) maxLength = fieldByteSize(nameField.formatChar);
+    std::string name(reinterpret_cast<const char*>(payload + nameField.byteOffset), maxLength);
+    name = name.c_str();  // ilk null byte'a kadar keser
+
+    if (name == "Q_ENABLE") {
+        result.hasQEnableParam = true;
+        result.qEnableValue = readFieldAsDouble(payload + valueField.byteOffset, valueField.formatChar);
+    }
+}
+
 // ArduPilot .bin buffer'ını baştan sona tarar: FMT mesajlarından sözlüğü
 // kurar, "BAT" ve "ESC" mesajlarını tek geçişte çözer.
 ParsedLog parseArduPilotBuffer(const std::vector<uint8_t>& buffer) {
@@ -448,6 +480,8 @@ ParsedLog parseArduPilotBuffer(const std::vector<uint8_t>& buffer) {
             extractRcouSample(buffer.data() + pos + 3, def, payloadSize, result.pwmOutputs);
         } else if (def.name == "MSG") {
             extractVehicleTypeFromMsg(buffer.data() + pos + 3, def, payloadSize, result);
+        } else if (def.name == "PARM") {
+            extractParamSample(buffer.data() + pos + 3, def, payloadSize, result);
         }
 
         pos += def.length;
@@ -957,6 +991,24 @@ ParsedLog parseUlogBuffer(const std::vector<uint8_t>& buffer) {
 // bittikten hemen sonra her diziyi zamana göre sıralamak front()/back()'i
 // otomatik olarak gerçek min/max yapar; computeDuration vb. hiç değişmeden
 // doğru çalışmaya devam eder.
+
+// ArduPilot firmware adı "ArduPlane" olan bir QuadPlane (Q_ENABLE=1), uçuş
+// fazına göre "fixed_wing" ya da "multirotor" gibi davranabilir ama tek ve
+// sabit bir etiket gerektiğinden (PX4'ün "is_vtol" bayrağıyla aynı mantık,
+// bkz. main.cpp'deki PX4 araç tipi çözümü) burada "vtol"a çevriliyor.
+// Q_ENABLE parametresi SADECE ArduPlane firmware'inde var (ArduCopter/Rover
+// loglarında PARM içinde hiç geçmez, bu beklenen/doğru bir durum, hata
+// değil) — bu yüzden override sadece firmware zaten "fixed_wing" ise
+// uygulanıyor, diğer araç tiplerine dokunmuyor. Parse döngüsü sırasında PARM
+// mesajları "MSG" (firmware adı) satırından önce de sonra da gelebileceği
+// için bu override ayrıştırma TAMAMEN BİTTİKTEN SONRA (post-process)
+// uygulanıyor.
+void applyVtolOverride(ParsedLog& result) {
+    if (result.vehicleType == "fixed_wing" && result.hasQEnableParam && result.qEnableValue != 0.0) {
+        result.vehicleType = "vtol";
+    }
+}
+
 template <typename SampleMap>
 void sortSamplesByTime(SampleMap& samples) {
     for (auto& [id, points] : samples) {
@@ -993,6 +1045,7 @@ ParsedLog parseLog(const std::string& logPath) {
                                  std::istreambuf_iterator<char>());
 
     ParsedLog result = isUlogFile(buffer) ? parseUlogBuffer(buffer) : parseArduPilotBuffer(buffer);
+    applyVtolOverride(result);
     sortSamplesByTime(result.batteries);
     sortSamplesByTime(result.motors);
     sortSamplesByTime(result.pwmOutputs);
