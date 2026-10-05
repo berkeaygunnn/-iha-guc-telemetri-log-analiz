@@ -897,7 +897,7 @@ FLIGHT_EVENT_LABEL_MAX_CHARS = 28
 # Titreşim satırının yüksekliği: veri yoksa neredeyse sıfır (diğer paneller
 # yerini korur), varsa diğer üç panelin yanında görünür bir pay.
 VIBRATION_HIDDEN_RATIO = 0.0001
-VIBRATION_VISIBLE_RATIO = 0.8
+VIBRATION_VISIBLE_RATIO = 1.0
 
 
 def _flight_event_color(event: dict) -> str:
@@ -3548,7 +3548,7 @@ class App(ctk.CTk):
         Not: farklı ölçekli veriler için tek grafikte çift y-ekseni (twinx)
         kullanmak yanıltıcı olabiliyor; bunun yerine üst üste panel tercih edildi.
         """
-        figure = Figure(figsize=(5, 6), dpi=100)
+        figure = Figure(figsize=(5, 8), dpi=100)
         figure.set_facecolor(SURFACE)
 
         # 2 sütunlu grid: sol sütun asıl grafikler, sağ (dar) sütun ısı
@@ -3590,7 +3590,11 @@ class App(ctk.CTk):
         self._motors_cax.axis("off")
 
         self.figure = figure
-        self.canvas = FigureCanvasTkAgg(figure, master=self.analysis_content)
+        # Grafik sabit yükseklikte (figür boyutu kadar) ve kaydırılabilir bir
+        # alanın içinde: pencere kısa olduğunda paneller ezilip yazılar üst
+        # üste binmez, alt kısım kaydırılarak görülür.
+        self._plot_scroll = ctk.CTkScrollableFrame(self.analysis_content, fg_color="transparent", corner_radius=0)
+        self.canvas = FigureCanvasTkAgg(figure, master=self._plot_scroll)
 
         # Zoom/pan araç çubuğu: matplotlib'in hazır gelen NavigationToolbar2Tk'ı.
         # canvas'ın hemen üstüne, side="top" ile paketlenen son widget olarak
@@ -3602,13 +3606,16 @@ class App(ctk.CTk):
         self.nav_toolbar.update()
         self._style_nav_toolbar()
 
+        self._plot_scroll.pack(side="top", fill="both", expand=True, padx=16, pady=(0, 16))
+
         # FigureCanvasTkAgg'in altındaki ham Tk widget'ının arka planı varsayılan
         # olarak BEYAZ. Tema değişiminde (ör. açık→koyu) figür yeniden çizilene
         # kadar bu beyaz zemin bir an görünüp "ekran komple beyaz oldu" etkisine
         # yol açıyordu. Zemini SURFACE'e sabitleyince, çizim tamamlanana kadarki
         # o kısacık boşlukta bile doğru tema rengi görünür — beyaz parlama olmaz.
-        self.canvas.get_tk_widget().configure(bg=SURFACE)
-        self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True, padx=16, pady=(0, 16))
+        canvas_widget = self.canvas.get_tk_widget()
+        canvas_widget.configure(bg=SURFACE, height=int(figure.get_figheight() * figure.dpi))
+        canvas_widget.pack(side="top", fill="x")
 
         # Hover tooltip: canvas bir kere oluşturulduğunda bağlanır (axes'ler
         # her ısı haritası/çizgi geçişinde yeniden yaratılsa da canvas hep
@@ -4321,6 +4328,12 @@ class App(ctk.CTk):
         geçişinin başında çağrılır."""
         ratio = VIBRATION_VISIBLE_RATIO if self._vibration_layout_visible() else VIBRATION_HIDDEN_RATIO
         self._plot_gs.set_height_ratios([1, 1, 1, ratio])
+        # Eksen konumları oluşturulduğu andaki orana göre sabitleniyor; oran
+        # sonradan değişince her eksenin konumu gridspec'ten yeniden alınmalı.
+        for ax in self.figure.axes:
+            spec = ax.get_subplotspec()
+            if spec is not None:
+                ax.set_position(spec.get_position(self.figure))
 
     def _plot_vibration_panel(self, vibration: list):
         """Titreşim (IMU) panelini çizer. Veri yoksa veya kullanıcı kapattıysa
