@@ -1690,6 +1690,7 @@ class SmokeTests(unittest.TestCase):
 
         with patch.object(update_check, "fetch_latest_release", return_value=self._FAKE_UPDATE_INFO), \
              patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve) as mock_retrieve, \
+             patch("sys.platform", "win32"), \
              patch("os.startfile", create=True) as mock_startfile:
             self.app._check_for_update(manual=False)
             self._wait_until(lambda: self._toplevels(self.app))
