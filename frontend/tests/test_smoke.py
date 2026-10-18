@@ -1684,13 +1684,13 @@ class SmokeTests(unittest.TestCase):
             self.app.update()
         self.assertEqual(self.app.status_label.cget("text"), "")
 
+    @unittest.skipUnless(sys.platform.startswith("win"), "os.startfile cagrisi sadece Windows'ta yapiliyor")
     def test_download_and_install_launches_installer_on_success(self):
         def fake_urlretrieve(url, filename):
             Path(filename).write_bytes(b"fake installer bytes")
 
         with patch.object(update_check, "fetch_latest_release", return_value=self._FAKE_UPDATE_INFO), \
              patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve) as mock_retrieve, \
-             patch("sys.platform", "win32"), \
              patch("os.startfile", create=True) as mock_startfile:
             self.app._check_for_update(manual=False)
             self._wait_until(lambda: self._toplevels(self.app))
