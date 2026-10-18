@@ -1690,7 +1690,7 @@ class SmokeTests(unittest.TestCase):
 
         with patch.object(update_check, "fetch_latest_release", return_value=self._FAKE_UPDATE_INFO), \
              patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve) as mock_retrieve, \
-             patch("os.startfile") as mock_startfile:
+             patch("os.startfile", create=True) as mock_startfile:
             self.app._check_for_update(manual=False)
             self._wait_until(lambda: self._toplevels(self.app))
             dialog = self._toplevels(self.app)[0]
@@ -1709,7 +1709,7 @@ class SmokeTests(unittest.TestCase):
     def test_download_failure_shows_error_and_reenables_buttons_without_installing(self):
         with patch.object(update_check, "fetch_latest_release", return_value=self._FAKE_UPDATE_INFO), \
              patch("urllib.request.urlretrieve", side_effect=OSError("ağ hatası")), \
-             patch("os.startfile") as mock_startfile:
+             patch("os.startfile", create=True) as mock_startfile:
             self.app._check_for_update(manual=False)
             self._wait_until(lambda: self._toplevels(self.app))
             dialog = self._toplevels(self.app)[0]
